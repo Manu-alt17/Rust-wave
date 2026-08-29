@@ -46,8 +46,10 @@ mod firmware {
         alarm::{AlarmEngine, AlarmSnapshot, AlarmUiOutcome, ALARMS_CONFIG_PATH},
         app::{
             display::{DisplayPreferences, DISPLAY_CONFIG_PATH},
-            render_current_screen, AppState, ScreenRoute, ALARM_POLL_SECONDS,
-            IMU_EVENT_SCREEN_REFRESH_SECONDS, MOTION_LIVE_REFRESH_SECONDS,
+            render_current_screen,
+            screens::reader::library_visible_books,
+            AppState, ScreenRoute, ALARM_POLL_SECONDS, IMU_EVENT_SCREEN_REFRESH_SECONDS,
+            LIBRARY_THUMBNAIL_REFRESH_SECONDS, MOTION_LIVE_REFRESH_SECONDS,
             NETWORK_LIVE_REFRESH_SECONDS, NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
             SAMPLE_LIVE_REFRESH_SECONDS, VOICE_RECORD_SCREEN_REFRESH_SECONDS,
         },
@@ -58,22 +60,33 @@ mod firmware {
         board_services::{BoardServices, BoardSnapshot},
         build_info::{FIRMWARE_VERSION, PRODUCT_SLUG, UI_SHELL_MILESTONE},
         buttons::{
-            BootButtonEvent, ButtonEvent, Buttons, LongPressBackButton, BOOT_BACK_LONG_PRESS_MS,
+            BootBackButton, ButtonEvent, Buttons, SelectHoldButton, SelectPressEvent,
+            SELECT_LONG_PRESS_MS,
         },
         calendar::{
             create_personal_event, delete_personal_event, update_personal_event, CalendarUiRequest,
             CALENDAR_EVENTS_FILE, CALENDAR_ROOT, CALENDAR_US_EVENTS_FILE,
         },
+        cover_cache::CoverCache,
         dictionary::{DICTIONARY_ROOT, DICTIONARY_SHARD_MAX_BYTES},
         epaper::Epaper397,
         framebuffer::FrameBuffer,
         games::dirty_regions::MAX_DIRTY_REGIONS,
         imu_events::IMU_EVENT_SAMPLE_INTERVAL_MS,
+        input_events::{InputEvent, InputEventQueue},
         lua_runtime::{catalog::LUA_APPS_DIRECTORY, loader::LUA_LOADER_WORKER_STACK_BYTES},
+        mcu_deep_sleep,
         network::{
             espidf::NetworkRuntime, NetworkLogFingerprint, NetworkSnapshot, WifiConnectionState,
         },
-        network_config::{NetworkConfig, WIFI_CONFIG_PATH},
+        network_config::{
+            NetworkConfig, SavedNetwork, DEFAULT_NTP_SERVER, DEFAULT_TIMEZONE, WIFI_CONFIG_PATH,
+        },
+        network_provision::{
+            espidf::NetworkProvisionServer, NetworkProvisionSnapshot, NetworkProvisionUiRequest,
+            NETWORK_PROVISION_RESCAN_SECONDS,
+        },
+        network_saved::SavedNetworkEntry,
         panel_refresh::{
             PanelGlobalReason, PanelRefreshCoordinator, PanelRefreshPlan, PanelRefreshRequest,
             PANEL_PARTIAL_REFRESH_LIMIT,
@@ -83,8 +96,8 @@ mod firmware {
             PowerKeyEvent, SleepWakeGuard, SleepWakeGuardDecision, POWER_KEY_POLL_MS,
             POWER_KEY_WAKE_GUARD_QUIET_MS,
         },
-        reader::ReaderTickOutcome,
-        regional::RegionalPreferences,
+        reader::{ReaderDictionaryMode, ReaderTickOutcome},
+        regional::{self, RegionalPreferences, CLOCK_CONFIG_PATH},
         rtc::RtcDateTime,
         rtc_alarm_interrupt::{espidf::RtcAlarmInterruptMonitor, RTC_ALARM_INTERRUPT_GPIO},
         runtime_memory::log_runtime_memory,
@@ -92,6 +105,7 @@ mod firmware {
         sleep_images::{SleepImageCatalog, SleepImageSelection, SLEEP_IMAGE_DIRECTORY},
         sleep_mode::{SleepModeState, SleepWakeCause},
         sleep_network::SleepNetworkState,
+        sleep_wake_overlay,
         storage::{
             StorageBrowser, StorageSnapshot, StorageUiOutcome, SDMMC_COMMAND_TIMEOUT_MS,
             SDMMC_STABLE_SPEED_KHZ, SD_MOUNT_POINT, STORAGE_IO_RETRY_ATTEMPTS,
@@ -120,8 +134,38 @@ mod firmware {
         sys::link_patches();
         EspLogger::initialize_default();
         info!("rustmix-wave=epd397-rust-app-start");
+
+        // Battery optimization: let the CPU drop to XTAL frequency (40 MHz)
+        // and, whenever every FreeRTOS task is blocked/suspended for long
+        // enough, into automatic light sleep, instead of always running at
+        // the configured 160 MHz ceiling. Enabled here for the ordinary
+        // active-use main loop; `mcu_deep_sleep::espidf::enter` disables it
+        // again immediately before arming GPIO5's real deep-sleep EXT1
+        // wakeup (the two were observed to conflict when both were active
+        // at once -- see that function's docs) and restores it if the
+        // real-deep-sleep attempt fails and the software-only fallback loop
+        // keeps running instead. Wi-Fi's own modem sleep already defaults to
+        // WIFI_PS_MIN_MODEM and is unaffected by this call.
+        let pm_config = sys::esp_pm_config_t {
+            max_freq_mhz: mcu_deep_sleep::CPU_MAX_FREQ_MHZ,
+            min_freq_mhz: mcu_deep_sleep::CPU_MIN_FREQ_MHZ,
+            light_sleep_enable: true,
+        };
+        match unsafe { sys::esp_pm_configure((&raw const pm_config).cast::<core::ffi::c_void>()) } {
+            sys::ESP_OK => info!(
+                "rustmix-wave=power-management status=enabled max-mhz={} min-mhz={} light-sleep={}",
+                pm_config.max_freq_mhz, pm_config.min_freq_mhz, pm_config.light_sleep_enable
+            ),
+            error => warn!("rustmix-wave=power-management status=failed error-code={error}"),
+        }
         info!(
             "rustmix-wave=product-ui-shell-start product={PRODUCT_SLUG} version={FIRMWARE_VERSION} milestone={UI_SHELL_MILESTONE}"
+        );
+        let boot_cause = mcu_deep_sleep::espidf::boot_cause();
+        info!(
+            "rustmix-wave=boot-cause status=classified cause={} wake-gpio={}",
+            boot_cause.marker(),
+            mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO
         );
 
         let peripherals = Peripherals::take()?;
@@ -169,6 +213,83 @@ mod firmware {
         };
         let mut storage_browser = StorageBrowser::new(SD_MOUNT_POINT, mounted_sd.is_some());
         let _mounted_sd = mounted_sd;
+
+        // The e-paper panel and the I2C-driven PMIC rail that powers it are
+        // brought up here, ahead of the display/network/weather/alarm config
+        // loads and sensor bring-up below, so a real hardware deep-sleep wake
+        // (a full reboot; see mcu_deep_sleep) can show the "RIATTIVAZIONE"
+        // wake overlay as early as possible instead of leaving the retained
+        // sleep image on screen with no feedback through the rest of boot.
+        //
+        // PMIC (power key), RTC (alarms) and IMU all share this bus and are
+        // polled continuously by the main loop regardless of which screen is
+        // active. Without an explicit hardware timeout, esp-idf-hal's
+        // embedded_hal::i2c::I2c impl blocks each transaction for BLOCK
+        // (TickType_t::MAX, i.e. forever): a single stuck SCL line (a slave
+        // glitch, electrical noise) would then freeze the entire
+        // single-threaded event loop, including power-key polling itself,
+        // with no way to recover short of a reset. This bounds every
+        // transaction so a wedged bus surfaces as a recoverable I2C error
+        // instead of a silent, total lockup.
+        const I2C_BUS_TIMEOUT_MS: u64 = 20;
+        let i2c_config = I2cConfig::new()
+            .baudrate(400.kHz().into())
+            .timeout(Duration::from_millis(I2C_BUS_TIMEOUT_MS).into());
+        let i2c = I2cDriver::new(
+            peripherals.i2c0,
+            peripherals.pins.gpio41,
+            peripherals.pins.gpio42,
+            &i2c_config,
+        )?;
+        let shared_i2c = SharedI2cBus::new(i2c);
+        let panel_power = Axp2101::new(shared_i2c.clone());
+
+        let spi_driver_config = SpiDriverConfig::new().dma(Dma::Auto(4096));
+        let spi_driver = SpiDriver::new(
+            peripherals.spi3,
+            peripherals.pins.gpio11,
+            peripherals.pins.gpio12,
+            None::<AnyIOPin>,
+            &spi_driver_config,
+        )?;
+        let spi_config = SpiConfig::new().baudrate(20.MHz().into()).write_only(true);
+        let spi = SpiBusDriver::new(spi_driver, &spi_config)?;
+
+        let dc = PinDriver::output(peripherals.pins.gpio9)?;
+        let reset = PinDriver::output(peripherals.pins.gpio46)?;
+        let cs = PinDriver::output(peripherals.pins.gpio10)?;
+        // GPIO3 is display busy. Do not reuse it for rotary or app input.
+        let busy = PinDriver::input(peripherals.pins.gpio3, Pull::Up)?;
+
+        let mut panel = Epaper397::new(spi, dc, reset, cs, busy, FreeRtosDelay, panel_power)?;
+        // GPIO5 may still be RTC-owned from an `ext1` deep-sleep wakeup armed
+        // by `mcu_deep_sleep::espidf::enter` on the previous cycle. Release it
+        // back to the digital domain before the SELECT PinDriver claims it.
+        mcu_deep_sleep::espidf::release_wake_pin()?;
+
+        // Real deep sleep is a full reboot: nothing in RAM survived, but the
+        // e-paper image itself needs no redraw to "stay" since it is still
+        // physically on the glass with no power applied. Only the overlay
+        // box is new work here; the rest of boot (SD-backed config loads,
+        // sensor bring-up) proceeds exactly as on any other boot afterward,
+        // ending in the same single clean global refresh to Home. Best
+        // effort: a failure here just means the ordinary panel-initialize
+        // path below runs instead, same as a normal boot.
+        let mut panel_initialized = false;
+        if boot_cause == mcu_deep_sleep::BootCause::DeepSleepGpioWake {
+            match draw_deep_sleep_wake_overlay(&mut panel) {
+                Ok(()) => {
+                    panel_initialized = true;
+                    info!(
+                        "rustmix-wave=wake-overlay status=shown label=RIATTIVAZIONE cause=deep-sleep-gpio-wake"
+                    );
+                }
+                Err(error) => warn!(
+                    "rustmix-wave=wake-overlay status=failed cause=deep-sleep-gpio-wake error={error:#}"
+                ),
+            }
+        }
+
         let display_preferences = match DisplayPreferences::load_from_path(DISPLAY_CONFIG_PATH) {
             Ok(preferences) => {
                 info!(
@@ -190,11 +311,13 @@ mod firmware {
         };
 
         // Credentials are read from removable storage. Never log the password.
-        let network_config = match NetworkConfig::load_from_path(WIFI_CONFIG_PATH) {
+        // Mutable so a save from the on-device Wi-Fi setup screen keeps this
+        // cache in sync for later sleep/wake reconnects.
+        let mut network_config = match NetworkConfig::load_from_path(WIFI_CONFIG_PATH) {
             Ok(config) => {
                 info!(
-                    "rustmix-wave=wifi-config status=ready path={WIFI_CONFIG_PATH} ssid={} timezone={} ntp-server={}",
-                    config.ssid, config.timezone, config.ntp_server
+                    "rustmix-wave=wifi-config status=ready path={WIFI_CONFIG_PATH} ssid={} saved-networks={} timezone={} ntp-server={}",
+                    first_saved_ssid(&config), config.networks.len(), config.timezone, config.ntp_server
                 );
                 Some(config)
             }
@@ -244,21 +367,310 @@ mod firmware {
             }
         };
 
-        let i2c_config = I2cConfig::new().baudrate(400.kHz().into());
-        let i2c = I2cDriver::new(
-            peripherals.i2c0,
-            peripherals.pins.gpio41,
-            peripherals.pins.gpio42,
-            &i2c_config,
-        )?;
-        let shared_i2c = SharedI2cBus::new(i2c);
-        let panel_power = Axp2101::new(shared_i2c.clone());
         let mut board_services = BoardServices::new(shared_i2c.clone());
+
+        // Schematic trace confirmed ALDO1, ALDO4, BLDO1, BLDO2, CPUSLDO,
+        // DLDO1, DLDO2, and DCDC2-4 have no downstream load on this board
+        // revision (unmounted resistor, no net, or no inductor on LX), so
+        // disable them once at boot regardless of the PMIC's power-on
+        // default. DCDC1 (system VCC3V3) and DCDC5 are never touched.
+        let mut misc_power = Axp2101::new(shared_i2c.clone());
+        match misc_power.disable_unused_pmic_rails() {
+            Ok(()) => info!("rustmix-wave=pmic-unused-rails-disable status=done rails=aldo1,aldo4,bldo1,bldo2,cpusldo,dldo1,dldo2,dcdc2,dcdc3,dcdc4"),
+            Err(error) => {
+                warn!("rustmix-wave=pmic-unused-rails-disable status=failed error={error:#}")
+            }
+        }
+
+        let buttons = Buttons::new(
+            PinDriver::input(peripherals.pins.gpio4, Pull::Up)?,
+            PinDriver::input(peripherals.pins.gpio6, Pull::Up)?,
+        );
+        let select_button =
+            SelectHoldButton::new(PinDriver::input(peripherals.pins.gpio5, Pull::Up)?);
+        let back_button = BootBackButton::new(PinDriver::input(peripherals.pins.gpio0, Pull::Up)?);
+        info!(
+            "rustmix-wave=boot-button-back status=ready gpio=0 active-low=true press=short action=back"
+        );
+        info!(
+            "rustmix-wave=select-button-hold status=ready gpio=5 active-low=true short-press=confirm hold-ms={SELECT_LONG_PRESS_MS} long-press=contextual-navigation"
+        );
+        // The uploaded BSP routes the PCF85063 active-low alarm output to
+        // GPIO45. Validate that board-level line before introducing MCU
+        // deep-sleep entry in the following isolated power milestone.
+        let mut rtc_alarm_interrupt =
+            RtcAlarmInterruptMonitor::new(PinDriver::input(peripherals.pins.gpio45, Pull::Up)?);
+        info!(
+            "rustmix-wave=rtc-alarm-int status=ready gpio={RTC_ALARM_INTERRUPT_GPIO} active-low=true wake-policy=active-loop-readiness"
+        );
+
+        // Button GPIOs are polled on a dedicated background thread so a
+        // press is never dropped while the main loop is stuck busy-waiting
+        // inside a slow e-paper panel refresh (`Epaper397::wait_until_idle`
+        // can block for hundreds of ms up to ~1.5s). The thread only detects
+        // and enqueues events (same boundary contract as the BLE remote
+        // queue below); the main loop remains the sole owner of `AppState`
+        // and all rendering, draining one event per tick in FIFO order.
+        const INPUT_POLL_STACK_BYTES: usize = 8 * 1024;
+        const INPUT_POLL_IDLE_SLEEP_MS: u64 = 10;
+        let input_queue = InputEventQueue::default();
+        {
+            let input_queue = input_queue.clone();
+            std::thread::Builder::new()
+                .name("input-poll".into())
+                .stack_size(INPUT_POLL_STACK_BYTES)
+                .spawn(move || {
+                    let (mut buttons, mut back_button, mut select_button) =
+                        (buttons, back_button, select_button);
+                    let mut delay = FreeRtosDelay;
+                    loop {
+                        let mut activity = false;
+                        match back_button.poll(&mut delay) {
+                            Ok(true) => {
+                                input_queue.push(InputEvent::Back);
+                                activity = true;
+                            }
+                            Ok(false) => {}
+                            Err(error) => warn!(
+                                "rustmix-wave=input-poll-thread component=back status=read-failed error={error:#}"
+                            ),
+                        }
+                        match select_button.poll(&mut delay) {
+                            Ok(Some(SelectPressEvent::LongPress)) => {
+                                input_queue.push(InputEvent::SelectLongPress);
+                                activity = true;
+                            }
+                            Ok(Some(SelectPressEvent::ShortPress)) => {
+                                input_queue.push(InputEvent::Button(ButtonEvent::Select));
+                                activity = true;
+                            }
+                            Ok(None) => {}
+                            Err(error) => warn!(
+                                "rustmix-wave=input-poll-thread component=select status=read-failed error={error:#}"
+                            ),
+                        }
+                        match buttons.poll(&mut delay) {
+                            Ok(Some(event)) => {
+                                input_queue.push(InputEvent::Button(event));
+                                activity = true;
+                            }
+                            Ok(None) => {}
+                            Err(error) => warn!(
+                                "rustmix-wave=input-poll-thread component=up-down status=read-failed error={error:#}"
+                            ),
+                        }
+                        if !activity {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                INPUT_POLL_IDLE_SLEEP_MS,
+                            ));
+                        }
+                    }
+                })?;
+        }
+        info!(
+            "rustmix-wave=input-poll-thread status=ready stack-bytes={INPUT_POLL_STACK_BYTES} idle-sleep-ms={INPUT_POLL_IDLE_SLEEP_MS}"
+        );
+
+        let mut service_delay = FreeRtosDelay;
+        let mut frame = FrameBuffer::new_white();
+        // Keep the growing product UI state off the firmware main-task stack.
+        // HTTPS weather retrieval and display refreshes still execute from the
+        // same orchestrator, but their stack budget is no longer reduced by a
+        // long-lived inline AppState allocation.
+        let mut state = Box::new(AppState::default());
+        let mut panel_refresh = PanelRefreshCoordinator::default();
+        sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+        state.display = display_preferences;
+        // Reader/voice-notes/Lua SD catalog scans, and the audio codec
+        // bring-up right after them, are deferred until after the first
+        // e-paper frame is visible (see below the panel draw). The Home
+        // screen's menu tiles are a static const list and never read these,
+        // so nothing before the first frame needs them.
+        let mut sleep_images = SleepImageCatalog::default();
+        let mut sleep_mode = SleepModeState::default();
+        let mut sleep_wake_guard = SleepWakeGuard::default();
+        let mut sleep_wake_guard_started_at: Option<Instant> = None;
+        let mut sleep_network = SleepNetworkState::default();
+        if let Some(config) = network_config.as_ref() {
+            state.regional = state.regional.with_timezone_name(&config.timezone)?;
+            state.update_network_snapshot(NetworkSnapshot::provisioned(config));
+        }
+        // A timezone chosen on-device from Clock > Set date & time is saved
+        // to its own file rather than only to WIFI.TXT, so it survives a
+        // reboot (a real deep-sleep wake is a full reboot) even when Wi-Fi
+        // has never been configured. When present, it overrides whatever
+        // WIFI.TXT's `timezone=` line above set, since it reflects the more
+        // recent explicit on-device choice.
+        match regional::load_timezone_name(CLOCK_CONFIG_PATH) {
+            Ok(timezone) => {
+                state.regional = state.regional.with_timezone_name(&timezone)?;
+                info!(
+                    "rustmix-wave=clock-config status=ready path={CLOCK_CONFIG_PATH} timezone={timezone}"
+                );
+            }
+            Err(error) => {
+                info!(
+                    "rustmix-wave=clock-config status=unavailable path={CLOCK_CONFIG_PATH} error={error:#}"
+                );
+            }
+        }
+        if let Some(config) = weather_config.as_ref() {
+            state.update_weather_snapshot(WeatherSnapshot::provisioned(config));
+        }
+        state.update_alarm_snapshot(alarm_engine.snapshot());
+        state.update_storage_snapshot(storage_browser.snapshot());
+        log_storage_snapshot(&state.storage);
+        info!(
+            "rustmix-wave=regional-profile timezone={} display-offset={} rtc-storage-offset={} temperature-unit={}",
+            state.regional.timezone_name(),
+            state.regional.timezone_label_for_rtc(state.board.rtc),
+            state.regional.rtc_storage_label(),
+            state.regional.temperature_unit.marker()
+        );
+
+        let init = board_services.initialize(&mut service_delay);
+        info!(
+            "rustmix-wave=sample-board-services-init rtc={} environment={} power={} imu={} rtc-integrity-lost={} shtc3-id={} qmi8658-address={} qmi8658-revision={}",
+            init.rtc_available,
+            init.environment_available,
+            init.power_monitoring_available,
+            init.imu_available,
+            init.rtc_clock_integrity_was_lost,
+            init.environment_sensor_id
+                .map_or_else(|| "unavailable".into(), |id| format!("0x{id:04X}")),
+            init.imu_address
+                .map_or_else(|| "unavailable".into(), |value| format!("0x{value:02X}")),
+            init.imu_revision
+                .map_or_else(|| "unavailable".into(), |value| format!("0x{value:02X}"))
+        );
+        let mut power_key_available = match board_services.initialize_power_key_events() {
+            Ok(()) => {
+                info!("rustmix-wave=power-key status=ready source=axp2101-pek events=short-menu,long-sleep poll-ms={POWER_KEY_POLL_MS}");
+                true
+            }
+            Err(error) => {
+                warn!(
+                    "rustmix-wave=power-key status=unavailable source=axp2101-pek error={error:#}"
+                );
+                false
+            }
+        };
+        state.update_board_snapshot(board_services.read_snapshot(&mut service_delay));
+        log_board_snapshot(state.board, state.regional);
+        if let Some(rtc) = state.board.rtc {
+            alarm_engine.recompute_next(state.regional.localize_rtc(rtc));
+        }
+        sync_alarm_hardware(&mut alarm_engine, &mut board_services, state.regional);
+        state.update_alarm_snapshot(alarm_engine.snapshot());
+        log_alarm_snapshot(&state.alarms);
+
+        // A real hardware deep-sleep wake is a full reboot: nothing in RAM,
+        // including the router's route, survived. Reader persistence is
+        // normally deferred until after the first frame (see below) to keep
+        // every other boot fast, but when the durable marker recorded at the
+        // last deep-sleep entry (see the long-press handler below) says the
+        // Reader was active, load it now so the very first frame can route
+        // straight into resuming the last book instead of Home.
+        let mut reader_persistence_preloaded = None;
+        if boot_cause == mcu_deep_sleep::BootCause::DeepSleepGpioWake
+            && _mounted_sd.is_some()
+            && state.reader.deep_sleep_marker_indicates_active()
+        {
+            let report = state.reader.load_persistent_state();
+            if state.reader.request_continue() {
+                state.router.navigate_to(ScreenRoute::ReaderLoading);
+                info!("rustmix-wave=deep-sleep-restore status=reader-resume-requested");
+            } else {
+                info!("rustmix-wave=deep-sleep-restore status=no-resumable-book");
+            }
+            reader_persistence_preloaded = Some(report);
+        }
+
+        if !panel_initialized {
+            panel.initialize()?;
+        }
+        // On a real hardware deep-sleep wake, the "RIATTIVAZIONE" overlay
+        // drawn above is still on the glass and must stay there until the
+        // device can actually respond to input: the button-polling loop
+        // below does not start until every subsystem in between (reader
+        // persistence, audio codec, networking, SD-backed catalogs) has
+        // finished. Removing the overlay/sleep image here, before any of
+        // that has run, would show what looks like a ready screen while
+        // button presses still go nowhere. Every other boot keeps the prior
+        // fast-first-frame behavior: there is no overlay promise to keep.
+        if boot_cause != mcu_deep_sleep::BootCause::DeepSleepGpioWake {
+            render_current_screen(&mut frame, &state)?;
+            panel.show_base(frame.as_bytes())?;
+            panel_refresh.reset_after_external_global(PanelGlobalReason::InitialBoot);
+            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+            info!(
+                "rustmix-wave=panel-refresh plan=global-base reason=initial-boot transport=global-base"
+            );
+        }
+        info!("rustmix-wave=epd397-rust-display-ready");
+
+        // Reader/voice-notes/Lua SD catalog scans and the audio codec
+        // bring-up happen only after the first e-paper frame is visible.
+        // None of them are needed to draw the Home screen (its menu tiles
+        // are a static const list), and on a real deep-sleep wake this is a
+        // full reboot, so keeping them off the path to the first frame and
+        // the button-polling main loop matters every time the device wakes.
+        // Skipped here when the block above already loaded it to decide
+        // whether to auto-resume the Reader before that first frame.
+        let reader_persistence = match reader_persistence_preloaded {
+            Some(report) => report,
+            None => state.reader.load_persistent_state(),
+        };
+        state.reader.refresh_library();
+        if _mounted_sd.is_some() {
+            match cleanup_stale_voice_tmp(std::path::Path::new(VOICE_NOTES_ROOT)) {
+                Ok(removed) => info!(
+                    "rustmix-wave=voice-note-stale-tmp-cleanup status=completed removed={removed} root={VOICE_NOTES_ROOT}"
+                ),
+                Err(error) => warn!(
+                    "rustmix-wave=voice-note-stale-tmp-cleanup status=failed root={VOICE_NOTES_ROOT} error={error:#}"
+                ),
+            }
+        }
+        if _mounted_sd.is_some() {
+            match load_voice_notes_preferences(std::path::Path::new(VOICE_NOTES_ROOT)) {
+                Ok(preferences) => {
+                    state.voice_notes.mic_gain = preferences.mic_gain;
+                    info!(
+                        "rustmix-wave=voice-note-settings-load status=completed mic-gain={} path={VOICE_NOTES_ROOT}/SETTINGS.TXT",
+                        preferences.mic_gain.marker()
+                    );
+                }
+                Err(error) => warn!(
+                    "rustmix-wave=voice-note-settings-load status=failed path={VOICE_NOTES_ROOT}/SETTINGS.TXT error={error:#}"
+                ),
+            }
+        }
+        refresh_voice_note_storage_available(&mut state, _mounted_sd.is_some());
+        state.refresh_voice_notes_catalog();
+        state.refresh_lua_app_catalog(_mounted_sd.is_some());
+        log_lua_runtime_events(&mut state);
+        info!(
+            "rustmix-wave=reader-persistence-load state-loaded={} preferences-loaded={} positions={} recent={} bookmarks={} warning={}",
+            reader_persistence.state_loaded,
+            reader_persistence.preferences_loaded,
+            reader_persistence.position_count,
+            reader_persistence.recent_count,
+            reader_persistence.bookmark_count,
+            reader_persistence.warning.as_deref().unwrap_or("none")
+        );
 
         // Bidirectional ES8311 Voice Notes milestone. The uploaded BSP uses I2S0 with
         // MCLK GPIO13, BCLK GPIO14, WS GPIO47, ESP-to-codec DOUT GPIO48,
         // codec-to-ESP DIN GPIO21 and amplifier GPIO39. Start muted with the
         // amplifier disabled; audio failure remains non-fatal.
+        //
+        // ALDO2 (Audio_VCC) feeds the codec AVDD pin and the onboard digital
+        // microphone and must be enabled before the codec is probed over I2C.
+        // PVDD/DVDD stay powered from the always-on VCC3V3 rail regardless.
+        if let Err(error) = misc_power.enable_audio_rail() {
+            warn!("rustmix-wave=pmic-audio-rail status=enable-failed error={error:#}");
+        }
         info!("rustmix-wave=audio-init status=starting codec=es8311 address=0x18 wire-write=0x30");
         let audio_attempt = (|| -> Result<_> {
             let i2s_config = StdConfig::new(
@@ -312,163 +724,8 @@ mod firmware {
                 (None, AudioSnapshot::unavailable(format!("{error:#}")))
             }
         };
-
-        let spi_driver_config = SpiDriverConfig::new().dma(Dma::Auto(4096));
-        let spi_driver = SpiDriver::new(
-            peripherals.spi3,
-            peripherals.pins.gpio11,
-            peripherals.pins.gpio12,
-            None::<AnyIOPin>,
-            &spi_driver_config,
-        )?;
-        let spi_config = SpiConfig::new().baudrate(20.MHz().into()).write_only(true);
-        let spi = SpiBusDriver::new(spi_driver, &spi_config)?;
-
-        let dc = PinDriver::output(peripherals.pins.gpio9)?;
-        let reset = PinDriver::output(peripherals.pins.gpio46)?;
-        let cs = PinDriver::output(peripherals.pins.gpio10)?;
-        // GPIO3 is display busy. Do not reuse it for rotary or app input.
-        let busy = PinDriver::input(peripherals.pins.gpio3, Pull::Up)?;
-
-        let mut panel = Epaper397::new(spi, dc, reset, cs, busy, FreeRtosDelay, panel_power)?;
-        let mut buttons = Buttons::new(
-            PinDriver::input(peripherals.pins.gpio4, Pull::Up)?,
-            PinDriver::input(peripherals.pins.gpio5, Pull::Up)?,
-            PinDriver::input(peripherals.pins.gpio6, Pull::Up)?,
-        );
-        let mut back_button =
-            LongPressBackButton::new(PinDriver::input(peripherals.pins.gpio0, Pull::Up)?);
-        info!(
-            "rustmix-wave=boot-button-back status=ready gpio=0 active-low=true short-press=contextual-navigation hold-ms={BOOT_BACK_LONG_PRESS_MS}"
-        );
-        // The uploaded BSP routes the PCF85063 active-low alarm output to
-        // GPIO45. Validate that board-level line before introducing MCU
-        // deep-sleep entry in the following isolated power milestone.
-        let mut rtc_alarm_interrupt =
-            RtcAlarmInterruptMonitor::new(PinDriver::input(peripherals.pins.gpio45, Pull::Up)?);
-        info!(
-            "rustmix-wave=rtc-alarm-int status=ready gpio={RTC_ALARM_INTERRUPT_GPIO} active-low=true wake-policy=active-loop-readiness"
-        );
-        let mut button_delay = FreeRtosDelay;
-        let mut service_delay = FreeRtosDelay;
-        let mut frame = FrameBuffer::new_white();
-        // Keep the growing product UI state off the firmware main-task stack.
-        // HTTPS weather retrieval and display refreshes still execute from the
-        // same orchestrator, but their stack budget is no longer reduced by a
-        // long-lived inline AppState allocation.
-        let mut state = Box::new(AppState::default());
-        let mut panel_refresh = PanelRefreshCoordinator::default();
-        sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
-        state.display = display_preferences;
-        let reader_persistence = state.reader.load_persistent_state();
-        state.reader.refresh_library();
-        if _mounted_sd.is_some() {
-            match cleanup_stale_voice_tmp(std::path::Path::new(VOICE_NOTES_ROOT)) {
-                Ok(removed) => info!(
-                    "rustmix-wave=voice-note-stale-tmp-cleanup status=completed removed={removed} root={VOICE_NOTES_ROOT}"
-                ),
-                Err(error) => warn!(
-                    "rustmix-wave=voice-note-stale-tmp-cleanup status=failed root={VOICE_NOTES_ROOT} error={error:#}"
-                ),
-            }
-        }
-        if _mounted_sd.is_some() {
-            match load_voice_notes_preferences(std::path::Path::new(VOICE_NOTES_ROOT)) {
-                Ok(preferences) => {
-                    state.voice_notes.mic_gain = preferences.mic_gain;
-                    info!(
-                        "rustmix-wave=voice-note-settings-load status=completed mic-gain={} path={VOICE_NOTES_ROOT}/SETTINGS.TXT",
-                        preferences.mic_gain.marker()
-                    );
-                }
-                Err(error) => warn!(
-                    "rustmix-wave=voice-note-settings-load status=failed path={VOICE_NOTES_ROOT}/SETTINGS.TXT error={error:#}"
-                ),
-            }
-        }
-        refresh_voice_note_storage_available(&mut state, _mounted_sd.is_some());
-        state.refresh_voice_notes_catalog();
-        state.refresh_lua_app_catalog(_mounted_sd.is_some());
-        log_lua_runtime_events(&mut state);
-        info!(
-            "rustmix-wave=reader-persistence-load state-loaded={} preferences-loaded={} positions={} recent={} bookmarks={} warning={}",
-            reader_persistence.state_loaded,
-            reader_persistence.preferences_loaded,
-            reader_persistence.position_count,
-            reader_persistence.recent_count,
-            reader_persistence.bookmark_count,
-            reader_persistence.warning.as_deref().unwrap_or("none")
-        );
-        let mut sleep_images = SleepImageCatalog::default();
-        let mut sleep_mode = SleepModeState::default();
-        let mut sleep_wake_guard = SleepWakeGuard::default();
-        let mut sleep_wake_guard_started_at: Option<Instant> = None;
-        let mut sleep_network = SleepNetworkState::default();
         state.update_audio_snapshot(initial_audio_snapshot);
         log_audio_snapshot(&state.audio);
-        if let Some(config) = network_config.as_ref() {
-            state.regional = state.regional.with_timezone_name(&config.timezone)?;
-            state.update_network_snapshot(NetworkSnapshot::provisioned(config));
-        }
-        if let Some(config) = weather_config.as_ref() {
-            state.update_weather_snapshot(WeatherSnapshot::provisioned(config));
-        }
-        state.update_alarm_snapshot(alarm_engine.snapshot());
-        state.update_storage_snapshot(storage_browser.snapshot());
-        log_storage_snapshot(&state.storage);
-        info!(
-            "rustmix-wave=regional-profile timezone={} display-offset={} rtc-storage-offset={} temperature-unit={}",
-            state.regional.timezone_name(),
-            state.regional.timezone_label_for_rtc(state.board.rtc),
-            state.regional.rtc_storage_label(),
-            state.regional.temperature_unit.marker()
-        );
-
-        let init = board_services.initialize(&mut service_delay);
-        info!(
-            "rustmix-wave=sample-board-services-init rtc={} environment={} power={} imu={} rtc-integrity-lost={} shtc3-id={} qmi8658-address={} qmi8658-revision={}",
-            init.rtc_available,
-            init.environment_available,
-            init.power_monitoring_available,
-            init.imu_available,
-            init.rtc_clock_integrity_was_lost,
-            init.environment_sensor_id
-                .map_or_else(|| "unavailable".into(), |id| format!("0x{id:04X}")),
-            init.imu_address
-                .map_or_else(|| "unavailable".into(), |value| format!("0x{value:02X}")),
-            init.imu_revision
-                .map_or_else(|| "unavailable".into(), |value| format!("0x{value:02X}"))
-        );
-        let mut power_key_available = match board_services.initialize_power_key_events() {
-            Ok(()) => {
-                info!("rustmix-wave=power-key status=ready source=axp2101-pek events=short-menu,long-sleep poll-ms={POWER_KEY_POLL_MS}");
-                true
-            }
-            Err(error) => {
-                warn!(
-                    "rustmix-wave=power-key status=unavailable source=axp2101-pek error={error:#}"
-                );
-                false
-            }
-        };
-        state.update_board_snapshot(board_services.read_snapshot(&mut service_delay));
-        log_board_snapshot(state.board, state.regional);
-        if let Some(rtc) = state.board.rtc {
-            alarm_engine.recompute_next(state.regional.localize_rtc(rtc));
-        }
-        sync_alarm_hardware(&mut alarm_engine, &mut board_services, state.regional);
-        state.update_alarm_snapshot(alarm_engine.snapshot());
-        log_alarm_snapshot(&state.alarms);
-
-        panel.initialize()?;
-        render_current_screen(&mut frame, &state)?;
-        panel.show_base(frame.as_bytes())?;
-        panel_refresh.reset_after_external_global(PanelGlobalReason::InitialBoot);
-        sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
-        info!(
-            "rustmix-wave=panel-refresh plan=global-base reason=initial-boot transport=global-base"
-        );
-        info!("rustmix-wave=epd397-rust-display-ready");
 
         // Start optional networking only after the first e-paper frame is
         // visible. A missing config or failed association never blocks shell
@@ -500,7 +757,7 @@ mod firmware {
             let runtime = if let Some(config) = network_config.as_ref() {
                 warn!(
                     "rustmix-wave=wifi-connect status=skipped ssid={} reason=rustmix-remote-ble-r1-owns-modem",
-                    config.ssid
+                    first_saved_ssid(config)
                 );
                 NetworkRuntime::failed(
                     config,
@@ -514,27 +771,41 @@ mod firmware {
         #[cfg(not(feature = "rustmix-remote-ble"))]
         let mut network_runtime = if let Some(config) = network_config.as_ref() {
             info!(
-                "rustmix-wave=wifi-connect status=starting ssid={}",
-                config.ssid
+                "rustmix-wave=wifi-connect status=starting ssid={} saved-networks={}",
+                first_saved_ssid(config),
+                config.networks.len()
             );
             match NetworkRuntime::connect(peripherals.modem, config) {
                 Ok(runtime) => {
+                    // Association and DHCP are not awaited here: connect()
+                    // only queues the driver start so the main loop (and
+                    // button polling) can start immediately. Completion is
+                    // logged from the loop once network.tick() observes it.
                     info!(
-                        "rustmix-wave=wifi-connect status=connected ssid={}",
-                        config.ssid
+                        "rustmix-wave=wifi-connect status=starting-async ssid={}",
+                        first_saved_ssid(config)
                     );
                     runtime
                 }
                 Err(error) => {
                     warn!(
                         "rustmix-wave=wifi-connect status=failed ssid={} error={error:#}",
-                        config.ssid
+                        first_saved_ssid(config)
                     );
                     NetworkRuntime::failed(config, format!("{error:#}"))
                 }
             }
         } else {
-            NetworkRuntime::configuration_missing()
+            // No `WIFI.TXT` yet: still bring up a Wi-Fi driver (radio kept
+            // off until Wi-Fi setup is actually opened) so phone
+            // provisioning works on a first-ever boot without a reboot.
+            match NetworkRuntime::provision(peripherals.modem) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    warn!("rustmix-wave=wifi-provision status=failed error={error:#}");
+                    NetworkRuntime::configuration_missing()
+                }
+            }
         };
         state.update_network_snapshot(network_runtime.snapshot());
         log_network_snapshot(&state.network);
@@ -543,6 +814,12 @@ mod firmware {
         // Explicitly activated only.  Normal boot never starts the portal.
         let mut wifi_transfer_server: Option<WifiTransferServer> = None;
         state.update_wifi_transfer_snapshot(WifiTransferSnapshot::default());
+        // Explicitly activated only, from Network > Configure via phone.
+        let mut network_provision_server: Option<NetworkProvisionServer> = None;
+        state.update_network_provision_snapshot(NetworkProvisionSnapshot::default());
+        let mut network_provision_join_pending: Option<(String, String)> = None;
+        let mut network_provision_last_rescan = Instant::now();
+        state.set_saved_networks(saved_network_entries(&network_config, None));
         let mut voice_recording: Option<VoiceRecordingSession> = None;
         let mut voice_playback: Option<VoicePlaybackSession> = None;
         let mut voice_stereo_buffer = vec![0_u8; VOICE_PCM_STEREO_CAPTURE_BYTES];
@@ -559,12 +836,12 @@ mod firmware {
             "rustmix-wave=wifi-monitor-log-quieting-ready policy=state-change-or-heartbeat heartbeat-seconds={NETWORK_LOG_HEARTBEAT_SECONDS} rssi-immediate=false"
         );
         info!("rustmix-wave=rtc-alarm-int-readiness-ready gpio={RTC_ALARM_INTERRUPT_GPIO} active-low=true");
-        info!("rustmix-wave=power-key-sleep-image-mode-ready path={SLEEP_IMAGE_DIRECTORY} format=native-800x480-1bpp-bmp mcu-sleep=false");
+        info!("rustmix-wave=power-key-sleep-image-mode-ready path={SLEEP_IMAGE_DIRECTORY} format=native-800x480-1bpp-bmp mcu-sleep=true wake-gpio={} rtc-alarm-wake=disabled", mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO);
         info!("rustmix-wave=power-key-short-menu-long-sleep-ready short-press=display-maintenance-menu long-press=sleep-image wake=power-key menu-action=manual-global-refresh");
         info!("rustmix-wave=release-flash-workflow-safety-ready docs=consolidated workflow=ci release-artifact=elf supported-flash=espflash-flash factory-image=deferred");
-        info!("rustmix-wave=text-editor-layout-alignment-ready voice-title-editor=shared-grid-keyboard calendar-editor-status=compact-date keyboard=boot-hv-axis footer=width-safe");
+        info!("rustmix-wave=text-editor-layout-alignment-ready voice-title-editor=shared-grid-keyboard calendar-editor-status=compact-date keyboard=select-hold-hv-axis footer=width-safe");
         info!("rustmix-wave=sleep-image-directory-classification-fix-ready policy=fat-metadata-fallback");
-        info!("rustmix-wave=network-suspended-sleep-image-mode-ready wifi=stop-on-sleep sntp=paused weather=paused mcu-sleep=false");
+        info!("rustmix-wave=network-suspended-sleep-image-mode-ready wifi=stop-on-sleep sntp=paused weather=paused mcu-sleep=true");
         info!("rustmix-wave=random-sleep-image-selection-ready source=esp-random policy=avoid-immediate-repeat-when-multiple");
         info!("rustmix-wave=main-category-navigation-ready categories=5");
         info!("rustmix-wave=reader-category-ready entries=3");
@@ -574,8 +851,8 @@ mod firmware {
         info!("rustmix-wave=settings-category-ready entries=9 display=true");
         info!("rustmix-wave=display-settings-ready default-family=inter alternate-family=atkinson-hyperlegible default-size=standard profiles=compact,standard,large persistence={DISPLAY_CONFIG_PATH} scope=all-user-facing-screens");
         info!("rustmix-wave=global-ui-typography-ready default-family=inter alternate-family=atkinson-hyperlegible default-size=standard profiles=compact,standard,large persistence={DISPLAY_CONFIG_PATH} scope=all-user-facing-screens");
-        info!("rustmix-wave=boot-button-hierarchical-back-ready gpio=0 active-low=true short-press=contextual-navigation hold-ms={BOOT_BACK_LONG_PRESS_MS} policy=long-press-back");
-        info!("rustmix-wave=category-back-row-removal-ready policy=boot-long-press");
+        info!("rustmix-wave=boot-button-hierarchical-back-ready gpio=0 active-low=true press=short policy=short-press-back");
+        info!("rustmix-wave=category-back-row-removal-ready policy=boot-press");
         info!("rustmix-wave=global-typography-scale-increase-ready shift=two-raster-steps settings-page-size=6 display-copy=compact default-family=inter default-size=standard");
         info!("rustmix-wave=secondary-screen-readability-reflow-ready detail-role=technical-tokens-only pagination=device-info-3-pages details=weather,audio,rtc,environment,motion,network synthetic-back-rows=removed");
         info!("rustmix-wave=weather-fetch-resilience-ready retries=3 backoff-seconds=2,5,15 cache=last-known-good-in-memory retryable=tls-eof,http-connect,timeout,http-429,http-500,http-502,http-503,http-504");
@@ -584,26 +861,26 @@ mod firmware {
         info!(
             "rustmix-wave=calendar-local-date-ready timezone=regional-profile source=rtc-localized"
         );
-        info!("rustmix-wave=calendar-navigation-ready modes=day,month select=toggle-mode boot-short=agenda back=boot-long-press");
+        info!("rustmix-wave=calendar-navigation-ready modes=day,month select=toggle-mode select-hold=agenda back=boot-press");
         info!("rustmix-wave=calendar-us-events-daily-agenda-ready root={CALENDAR_ROOT} personal={CALENDAR_EVENTS_FILE} us={CALENDAR_US_EVENTS_FILE} hindu=excluded markers=month-grid agenda=scrollable details=personal-editor missing-files=safe alarms=separate");
-        info!("rustmix-wave=calendar-personal-event-editor-ready writable=EVENTS.TXT temp=EVENTS.TMP backup=EVENTS.BAK operations=create,edit,delete us-holidays=read-only keyboard=boot-hv-axis alarms=separate");
+        info!("rustmix-wave=calendar-personal-event-editor-ready writable=EVENTS.TXT temp=EVENTS.TMP backup=EVENTS.BAK operations=create,edit,delete us-holidays=read-only keyboard=select-hold-hv-axis alarms=separate");
         info!("rustmix-wave=power-key-sleep-entry-wake-guard-ready source=axp2101-pek minimum-quiet-ms={POWER_KEY_WAKE_GUARD_QUIET_MS} policy=suppress-stale-until-quiet-window");
         info!("rustmix-wave=unit-converter-foundation-ready categories=length,mass,temperature,volume mode=offline fixed-point=true precision=thousandths");
-        info!("rustmix-wave=unit-converter-navigation-ready fields=category,from-unit,value,to-unit,step-size back=boot-long-press");
+        info!("rustmix-wave=unit-converter-navigation-ready fields=category,from-unit,value,to-unit,step-size back=boot-press");
         info!("rustmix-wave=unit-converter-host-tests-ready coverage=length,mass,temperature,volume,bounds");
         info!("rustmix-wave=reader-library-txt-foundation-ready path=/sdcard/RUSTMIX/BOOKS formats=txt,epub encoding=utf8,bom,windows-1252 opening=staged-first-page-first cache=ram-nearby-pages");
         info!("rustmix-wave=reader-state-persistence-ready path=/sdcard/RUSTMIX/READER files=STATE.TXT,POSITS.TXT,RECENT.TXT,MARKS.TXT cache=CACHE atomic-replace=tmp-primary-backup fallback=corrupt-record-safe");
         info!("rustmix-wave=reader-bookmarks-ready add-remove=true list=true recent=true continue-reading=true cache-fingerprint=path,size,modified,format,layout");
-        info!("rustmix-wave=reader-loading-ui-ready stages=open,encoding,resume,first-page,cache cancel=boot-long-press refresh=coarse-stage-boundaries");
+        info!("rustmix-wave=reader-loading-ui-ready stages=open,encoding,resume,first-page,cache cancel=boot-press refresh=coarse-stage-boundaries");
         info!("rustmix-wave=reader-options-shell-ready toc=none-for-txt,list-for-epub bookmarks=persistent clear-ghosting=manual-global-refresh");
         info!("rustmix-wave=reader-ux-repair-ready menu=continue,library,bookmarks-ready normalization=utf8-punctuation,latin1,underscore-emphasis byte-offsets=preserved");
         info!("rustmix-wave=reader-preferences-ready path=/sdcard/RUSTMIX/READER/PREFS.TXT theme=classic,high-contrast orientation=portrait,landscape font-size=small,medium,large,xlarge book-font=inter,atkinson-hyperlegible,serif,literata paragraph-alignment=justified,left,center,right show-progress=on,off atomic-replace=tmp-primary-backup");
         info!("rustmix-wave=reader-high-contrast-layout-ready viewport=shared border=outside-text top-padding=true clip=right,bottom theme-change=redraw-only ghost-refresh=global-base");
         info!("rustmix-wave=reader-txt-emphasis-cleanup-ready multiline-gutenberg=true word-internal-underscores=preserved repeated-separators=preserved byte-offsets=preserved");
         info!("rustmix-wave=reader-per-book-resume-ready path=/sdcard/RUSTMIX/READER/POSITS.TXT records=64 fingerprint=path,size,modified,format atomic-replace=tmp-primary-backup routes=continue,books,files,bookmark");
-        info!("rustmix-wave=reader-controls-alignment-ready navigation=up-down-move-select-activate preferences=up-down-move-select-change back=boot-long-press");
+        info!("rustmix-wave=reader-controls-alignment-ready navigation=up-down-move-select-activate preferences=up-down-move-select-change back=boot-press");
         info!("rustmix-wave=reader-options-split-ready actions=bookmark,toc,preferences,clear-ghosting,library,home editor=theme,orientation,font-size,font,paragraph-alignment,show-progress");
-        info!("rustmix-wave=reader-preferences-settings-navigation-ready move=up-down change=select back=boot-long-press persistence=immediate rows=theme,orientation,font-size,font,paragraph-alignment,show-progress");
+        info!("rustmix-wave=reader-preferences-settings-navigation-ready move=up-down change=select back=boot-press persistence=immediate rows=theme,orientation,font-size,font,paragraph-alignment,show-progress");
         info!("rustmix-wave=reader-fat83-persistence-ready positions=POSITS.TXT legacy-read=POSITIONS.TXT cache-basename=8hex extensions=CCH,TMP,BAK atomic-replace=true");
         info!("rustmix-wave=reader-fat83-runtime-ready positions-write=POSITS.TXT legacy-read=POSITIONS.TXT cache-write=8hex-no-prefix extensions=CCH,TMP,BAK duplicate-degraded-log=suppressed");
         info!("rustmix-wave=reader-bookmark-page-labels-ready anchor=byte-offset display=page-number layout-aware=true fallback=stored-page");
@@ -619,10 +896,10 @@ mod firmware {
         info!("rustmix-wave=panel-refresh-coordinator-ready partial-limit={PANEL_PARTIAL_REFRESH_LIMIT} transport=existing-fullscreen-partial state=main-loop-owned lua-route-global-refresh=false");
         info!("rustmix-wave=runtime-worker-boundary-ready workers=weather-fetch,lua-loader policy=short-lived-named-stack panel-spi=main-task-only");
         info!("rustmix-wave=lua-loader-stack-isolation-ready worker=lua-loader stack-bytes={LUA_LOADER_WORKER_STACK_BYTES} main-task-stack-bytes=16384 policy=short-lived-worker-join");
-        info!("rustmix-wave=lua-sudoku-event-bridge-ready sample=SUDOKU input=up,down,select,boot-short-context board=native dirty=old-cell,new-cell,status refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        info!("rustmix-wave=lua-sudoku-boot-axis-navigation-ready short-press=boot nav=axis-toggle edit=cancel default-axis=horizontal long-press=hierarchical-back dirty=status-or-cell refresh=shared-panel-coordinator");
-        info!("rustmix-wave=lua-sudoku-boot-mode-ux-repair-ready nav=boot-short-axis-toggle edit=boot-short-cancel long-press=hierarchical-back dirty=axis-status-or-edit-cell-status refresh=shared-panel-coordinator");
-        info!("rustmix-wave=lua-minesweeper-event-bridge-ready sample=MINES board=beginner-9x9 mines=10 first-reveal=safe input=up,down,select,boot-short-context action=reveal,flag dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
+        info!("rustmix-wave=lua-sudoku-event-bridge-ready sample=SUDOKU input=up,down,select,select-hold-context board=native dirty=old-cell,new-cell,status refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
+        info!("rustmix-wave=lua-sudoku-boot-axis-navigation-ready long-press=select nav=axis-toggle edit=cancel default-axis=horizontal back=boot-press dirty=status-or-cell refresh=shared-panel-coordinator");
+        info!("rustmix-wave=lua-sudoku-boot-mode-ux-repair-ready nav=select-hold-axis-toggle edit=select-hold-cancel back=boot-press dirty=axis-status-or-edit-cell-status refresh=shared-panel-coordinator");
+        info!("rustmix-wave=lua-minesweeper-event-bridge-ready sample=MINES board=beginner-9x9 mines=10 first-reveal=safe input=up,down,select,select-hold-context action=reveal,flag dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
         info!("rustmix-wave=imu-event-bridge-ready events=tilt,shake,rotate,level sampling=motion-events-or-motion-game sample-ms={IMU_EVENT_SAMPLE_INTERVAL_MS} diagnostics=thresholds,debounce,counters redraw=event-or-{IMU_EVENT_SCREEN_REFRESH_SECONDS}s-heartbeat raw-i2c=rust-owned lua-api=none");
         info!("rustmix-wave=imu-event-thresholds tilt-mg={} shake-delta-mg={} rotate-dps={} level-tolerance-mg={} debounce-ms={}", state.imu_events.thresholds.tilt_enter_mg, state.imu_events.thresholds.shake_delta_mg, state.imu_events.thresholds.rotate_dps, state.imu_events.thresholds.level_tolerance_mg, state.imu_events.thresholds.debounce_ms);
         info!("rustmix-wave=imu-event-discrete-latching-ready tilt=release-to-neutral rotate=release-to-neutral level=edge-only shake=cooldown raw-i2c=rust-owned");
@@ -648,6 +925,22 @@ mod firmware {
             state.voice_notes.notes.len()
         );
 
+        // Everything the button-polling loop below depends on is now up:
+        // this is the single global refresh that replaces the retained
+        // sleep image and "RIATTIVAZIONE" overlay with the real screen (see
+        // the deferral above). Nothing in RAM survived the reboot, so this
+        // is also the first render of the actual route for this boot.
+        if boot_cause == mcu_deep_sleep::BootCause::DeepSleepGpioWake {
+            render_current_screen(&mut frame, &state)?;
+            panel.show_base(frame.as_bytes())?;
+            panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
+            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+            info!(
+                "rustmix-wave=panel-refresh plan=global-base reason=after-wake transport=global-base"
+            );
+            info!("rustmix-wave=wake-global-refresh reason=deep-sleep-gpio-wake-boot-complete");
+        }
+
         let mut last_activity = Instant::now();
         let mut last_status_refresh = Instant::now();
         let mut last_alarm_poll = Instant::now();
@@ -659,6 +952,19 @@ mod firmware {
         let mut last_imu_event_screen_refresh = Instant::now();
         let mut weather_retry = WeatherRetryState::default();
         let mut last_voice_record_refresh = Instant::now();
+        // Amortized EPUB cover-thumbnail generation: no dedicated thread (the
+        // main loop is single-threaded and this is the project's only SD
+        // consumer, so there is nothing to contend with). At most one
+        // thumbnail is built per loop iteration while the Library screen is
+        // on-panel, bounded to whatever is actually visible on the current
+        // page — see `cover_cache::CoverCache::pump_pending`. The resulting
+        // panel refresh is throttled separately (`last_library_thumbnail_refresh`):
+        // generation is cheap every tick, but an actual e-paper update is not,
+        // and firing one per newly generated thumbnail back-to-back would
+        // freeze button polling behind a burst of real panel refreshes.
+        let cover_cache = CoverCache::new(state.reader.cache_directory());
+        let mut last_library_thumbnail_refresh = Instant::now();
+        let mut library_thumbnail_refresh_pending = false;
         loop {
             maintain_wifi_transfer_server(
                 &mut wifi_transfer_server,
@@ -752,6 +1058,56 @@ mod firmware {
                 }
                 state.voice_notes.fail(error);
                 log_runtime_memory("after-voice-record-stop");
+            }
+
+            if state.panel_awake && state.active_route() == ScreenRoute::Library {
+                // Cheap step: bring already-cached-on-SD thumbnails for the
+                // current page into the render-side map (no-op once synced,
+                // since a HashMap lookup skips the read for anything already
+                // present).
+                let visible_books = library_visible_books(&state);
+                for book in &visible_books {
+                    if !state.reader.library_thumbnails.contains_key(&book.path) {
+                        if let Some(thumbnail) = cover_cache.load_cached_thumbnail(book) {
+                            state
+                                .reader
+                                .library_thumbnails
+                                .insert(book.path.clone(), thumbnail);
+                            library_thumbnail_refresh_pending = true;
+                        }
+                    }
+                }
+                // Bounded step: build at most one still-missing thumbnail
+                // this tick (~20-40ms budget on its own dedicated worker
+                // stack — see `CoverCache::generate_thumbnail`).
+                if let Some((book, thumbnail)) = cover_cache.pump_pending(&visible_books) {
+                    state.reader.library_thumbnails.insert(book.path, thumbnail);
+                    library_thumbnail_refresh_pending = true;
+                }
+                // Only actually drive the panel on the throttled cadence:
+                // button polling above stays reactive every tick regardless
+                // of how many thumbnails are still pending.
+                if library_thumbnail_refresh_pending
+                    && last_library_thumbnail_refresh.elapsed()
+                        >= Duration::from_secs(LIBRARY_THUMBNAIL_REFRESH_SECONDS)
+                {
+                    refresh_screen(
+                        &mut panel,
+                        &mut frame,
+                        &mut state,
+                        &mut panel_refresh,
+                        RefreshRequest::Normal,
+                    )?;
+                    last_library_thumbnail_refresh = Instant::now();
+                    library_thumbnail_refresh_pending = false;
+                }
+            } else if !state.reader.library_thumbnails.is_empty() {
+                // Leaving Library (or the panel went to sleep): drop the
+                // render-side map so it stays bounded to roughly one
+                // screenful instead of accumulating across a full scroll
+                // through a large library.
+                state.reader.library_thumbnails.clear();
+                library_thumbnail_refresh_pending = false;
             }
 
             let mut voice_playback_finished = None;
@@ -898,6 +1254,35 @@ mod firmware {
                 if latest_network != state.network {
                     state.update_network_snapshot(latest_network);
                 }
+                if let Some(scan_result) = network_runtime.poll_scan() {
+                    if let Some(server) = network_provision_server.as_ref() {
+                        server.set_scan_results(scan_result.unwrap_or_default());
+                    }
+                }
+                let provision_snapshot_before = state.network_provision.clone();
+                maintain_network_provision(
+                    &mut network_runtime,
+                    &mut network_provision_server,
+                    &mut network_config,
+                    &mut state,
+                    &mut network_provision_join_pending,
+                    &mut network_provision_last_rescan,
+                );
+                if state.panel_awake
+                    && state.network_provision != provision_snapshot_before
+                    && matches!(
+                        state.active_route(),
+                        ScreenRoute::NetworkProvision | ScreenRoute::Network
+                    )
+                {
+                    refresh_screen(
+                        &mut panel,
+                        &mut frame,
+                        &mut state,
+                        &mut panel_refresh,
+                        RefreshRequest::Normal,
+                    )?;
+                }
                 let latest_fingerprint = state.network.log_fingerprint();
                 if latest_fingerprint != last_network_fingerprint
                     || last_network_log.elapsed()
@@ -992,6 +1377,11 @@ mod firmware {
                                 panel_refresh
                                     .reset_after_external_global(PanelGlobalReason::AfterWake);
                                 sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                                if let Err(error) = board_services.wake_imu() {
+                                    warn!(
+                                        "rustmix-wave=imu-suspend status=resume-failed error={error:#}"
+                                    );
+                                }
                             }
                             state.router.navigate_to(ScreenRoute::Alarms);
                             info!("rustmix-wave=screen-route route=alarms cause=alarm-trigger");
@@ -1072,6 +1462,11 @@ mod firmware {
                             let restore_route = sleep_mode.exit(SleepWakeCause::PowerKey);
                             panel.initialize()?;
                             state.panel_awake = true;
+                            if let Err(error) = board_services.wake_imu() {
+                                warn!(
+                                    "rustmix-wave=imu-suspend status=resume-failed error={error:#}"
+                                );
+                            }
                             state.router.navigate_to(restore_route);
                             render_current_screen(&mut frame, &state)?;
                             panel.show_base(frame.as_bytes())?;
@@ -1123,6 +1518,67 @@ mod firmware {
                                 "rustmix-wave=sleep-mode-enter status=rejected reason=active-alarm"
                             );
                         } else {
+                            // Draw the sleep-confirmation image first, before any
+                            // of the slower teardown below (Wi-Fi transfer
+                            // server, voice/audio cleanup, network suspend). The
+                            // user long-pressed power to get immediate visual
+                            // confirmation the command was received; making them
+                            // wait through network suspend first defeats that.
+                            let selection =
+                                sleep_images.select_random(unsafe { sys::esp_random() });
+                            log_sleep_image_selection(&selection);
+                            if !state.panel_awake {
+                                panel.initialize()?;
+                                state.panel_awake = true;
+                            }
+                            let restore_route = state.power_key_sleep_restore_route();
+                            frame = selection.frame;
+                            panel.show_base(frame.as_bytes())?;
+                            panel_refresh
+                                .reset_after_external_global(PanelGlobalReason::SleepImage);
+                            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                            info!("rustmix-wave=panel-refresh plan=global-base reason=sleep-image transport=global-base");
+                            sleep_mode.enter(restore_route, selection.file_name.clone());
+                            // Real deep sleep is a full reboot, so nothing in
+                            // RAM survives a SELECT-key wake. This marker
+                            // lets the fresh boot reload the same frame and
+                            // draw the "RIATTIVAZIONE" wake overlay on top of
+                            // it. Best-effort, like the teardown steps below:
+                            // a failed write only means the wake overlay
+                            // falls back to the built-in sleep frame.
+                            match sleep_images.record_wake_marker(&selection.file_name) {
+                                Ok(()) => info!(
+                                    "rustmix-wave=sleep-wake-marker status=recorded file={}",
+                                    selection.file_name
+                                ),
+                                Err(error) => warn!(
+                                    "rustmix-wave=sleep-wake-marker status=failed file={} error={error:#}",
+                                    selection.file_name
+                                ),
+                            }
+                            // Same rationale as the sleep-image wake marker
+                            // above: record whether the device was actively
+                            // reading a book so a real hardware deep-sleep
+                            // wake (a full reboot) can auto-resume it instead
+                            // of always landing back on Home.
+                            let reader_was_active = restore_route.is_reader_active();
+                            match state
+                                .reader
+                                .record_deep_sleep_active_marker(reader_was_active)
+                            {
+                                Ok(()) => info!(
+                                    "rustmix-wave=deep-sleep-reader-marker status=recorded active={reader_was_active}"
+                                ),
+                                Err(error) => warn!(
+                                    "rustmix-wave=deep-sleep-reader-marker status=failed active={reader_was_active} error={error:#}"
+                                ),
+                            }
+                            sleep_wake_guard.begin_sleep_entry();
+                            sleep_wake_guard_started_at = Some(Instant::now());
+                            info!(
+                                "rustmix-wave=sleep-wake-guard status=waiting-for-quiet-window minimum-quiet-ms={POWER_KEY_WAKE_GUARD_QUIET_MS} policy=suppress-stale-power-key"
+                            );
+
                             stop_wifi_transfer_server(
                                 &mut wifi_transfer_server,
                                 &mut state,
@@ -1160,9 +1616,11 @@ mod firmware {
                                 state.update_audio_snapshot(runtime.snapshot());
                                 log_audio_snapshot(&state.audio);
                             }
-                            let selection =
-                                sleep_images.select_random(unsafe { sys::esp_random() });
-                            log_sleep_image_selection(&selection);
+                            // Best-effort like the IMU/audio-rail/RTC-alarm
+                            // teardown below: the sleep image is already shown
+                            // and committed to, so a failed network suspend no
+                            // longer aborts entering deep sleep, it only skips
+                            // the Wi-Fi/SNTP/weather pause.
                             if !suspend_network_for_sleep(
                                 &mut network_runtime,
                                 &mut state,
@@ -1170,34 +1628,83 @@ mod firmware {
                                 &mut last_network_fingerprint,
                                 &mut last_network_log,
                             ) {
-                                warn!("rustmix-wave=sleep-mode-enter status=rejected reason=network-suspend-failed");
-                                last_activity = Instant::now();
-                                continue;
+                                warn!("rustmix-wave=sleep-network-suspend status=failed-continuing reason=best-effort-deep-sleep");
                             }
-                            if !state.panel_awake {
-                                panel.initialize()?;
-                                state.panel_awake = true;
-                            }
-                            let restore_route = state.power_key_sleep_restore_route();
-                            frame = selection.frame;
-                            panel.show_base(frame.as_bytes())?;
-                            panel_refresh
-                                .reset_after_external_global(PanelGlobalReason::SleepImage);
-                            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
-                            info!("rustmix-wave=panel-refresh plan=global-base reason=sleep-image transport=global-base");
-                            sleep_mode.enter(restore_route, selection.file_name.clone());
-                            sleep_wake_guard.begin_sleep_entry();
-                            sleep_wake_guard_started_at = Some(Instant::now());
-                            info!(
-                                "rustmix-wave=sleep-wake-guard status=waiting-for-quiet-window minimum-quiet-ms={POWER_KEY_WAKE_GUARD_QUIET_MS} policy=suppress-stale-power-key"
-                            );
                             panel.sleep()?;
                             state.panel_awake = false;
+                            // QMI8658 sits on the always-on VCC3V3 rail, so it
+                            // cannot be power-gated by the AXP2101 the way the
+                            // e-paper panel's ALDO3 rail is. Disabling its
+                            // accelerometer/gyroscope over I2C is the only
+                            // available lever to cut its current draw while
+                            // the board is otherwise asleep.
+                            match board_services.sleep_imu() {
+                                Ok(()) => info!("rustmix-wave=imu-suspend status=low-power"),
+                                Err(error) => {
+                                    warn!("rustmix-wave=imu-suspend status=failed error={error:#}")
+                                }
+                            }
+                            // ALDO2 (Audio_VCC) feeds the codec AVDD pin and the
+                            // onboard digital microphone; cut it the same way
+                            // ALDO3 is cut for the e-paper panel. PVDD/DVDD stay
+                            // powered from the always-on VCC3V3 rail regardless.
+                            match misc_power.disable_audio_rail() {
+                                Ok(()) => info!("rustmix-wave=pmic-audio-rail status=disabled"),
+                                Err(error) => warn!(
+                                    "rustmix-wave=pmic-audio-rail status=disable-failed error={error:#}"
+                                ),
+                            }
                             info!(
-                                "rustmix-wave=sleep-mode-enter image={} restore-route={} display=global-refresh panel=deep-sleep aldo3=off wifi=off network-services=paused mcu-sleep=false",
+                                "rustmix-wave=sleep-mode-enter image={} restore-route={} display=global-refresh panel=deep-sleep aldo3=off aldo2=off imu=low-power wifi=off network-services=paused mcu-sleep=pending",
                                 selection.file_name,
                                 restore_route.marker()
                             );
+                            info!(
+                                "rustmix-wave=mcu-deep-sleep status=entering wake-gpio={} wake-level=active-low rtc-alarm-wake=disabled reason=gpio45-not-rtc-io-capable",
+                                mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO
+                            );
+                            // Disarm the PCF85063 hardware alarm slot before
+                            // powering down. It can never wake real MCU deep
+                            // sleep (GPIO45 is outside the RTC IO range), so
+                            // leaving it armed only risks the alarm firing
+                            // while the CPU is off: its interrupt line would
+                            // then latch low on GPIO45 — one of the ESP32-S3's
+                            // boot strapping pins (VDD_SPI voltage select) —
+                            // and stay that way until re-sampled at the next
+                            // reset, which can corrupt the GPIO5 wake boot.
+                            // The next boot's `sync_alarm_hardware` call
+                            // re-arms it for software polling, which is the
+                            // only path that ever actually rings the alarm.
+                            if let Err(error) = board_services.disable_rtc_alarm() {
+                                warn!(
+                                    "rustmix-wave=rtc-alarm-disable status=failed reason=pre-deep-sleep error={error:#}"
+                                );
+                            }
+                            // On success this call does not return: the chip
+                            // powers down and `run()` starts over from the
+                            // top on the next GPIO5 press. Only a failure to
+                            // disable automatic light sleep first or to arm
+                            // the wakeup source returns here, in which case
+                            // the state above (sleep image shown, ALDO3 off,
+                            // Wi-Fi suspended) is left in place and the event
+                            // loop keeps running as a software-only fallback
+                            // so the board is never stranded asleep with no
+                            // way to wake it.
+                            if let Err(error) = mcu_deep_sleep::espidf::enter() {
+                                warn!(
+                                    "rustmix-wave=mcu-deep-sleep status=fallback-software-only error={error:#}"
+                                );
+                                // `enter` only ever turns light sleep off, so
+                                // whether it failed before or after doing so,
+                                // the running loop below needs it back.
+                                if let Err(error) =
+                                    mcu_deep_sleep::espidf::set_light_sleep_enabled(true)
+                                {
+                                    warn!(
+                                        "rustmix-wave=power-management status=light-sleep-restore-failed error={error:#}"
+                                    );
+                                }
+                            }
                         }
                     }
                     Ok(None) => {}
@@ -1312,7 +1819,8 @@ mod firmware {
                     state.active_route(),
                     ScreenRoute::ReaderLoading | ScreenRoute::ReaderPage
                 )
-                && last_reader_tick.elapsed() >= Duration::from_millis(250)
+                && (state.active_route() == ScreenRoute::ReaderLoading
+                    || last_reader_tick.elapsed() >= Duration::from_millis(250))
             {
                 let previous_route = state.active_route();
                 let outcome = state.tick_reader();
@@ -1351,10 +1859,27 @@ mod firmware {
                     voice_recording.is_some(),
                     voice_playback.is_some(),
                 );
+                apply_network_provision_ui_request(
+                    &mut network_runtime,
+                    &mut network_provision_server,
+                    &mut network_config,
+                    &mut state,
+                    &mut network_provision_join_pending,
+                );
+                apply_network_saved_ui_request(
+                    &mut network_config,
+                    &mut state,
+                    &network_provision_server,
+                );
                 log_reader_persistence_event(&mut state);
+                // Intermediate LoadingStageChanged transitions are deliberately not
+                // redrawn: each e-paper partial refresh costs far more wall time than
+                // the (now metadata-only, page-granular) stage work it would be
+                // reporting, so redrawing every stage turned a sub-second cache-hit
+                // reopen into several stacked panel refreshes. Stage transitions are
+                // still logged above; only the terminal outcomes get pixels.
                 if state.panel_awake
-                    && (outcome == ReaderTickOutcome::LoadingStageChanged
-                        || outcome == ReaderTickOutcome::FirstPageReady
+                    && (outcome == ReaderTickOutcome::FirstPageReady
                         || outcome == ReaderTickOutcome::Failed
                         || state.active_route() != previous_route)
                 {
@@ -1436,32 +1961,285 @@ mod firmware {
                 last_status_refresh = Instant::now();
             }
 
-            match back_button.poll(&mut button_delay)? {
-                Some(BootButtonEvent::LongPress) => {
-                    info!(
-                        "rustmix-wave=boot-button event=long-press action=back hold-ms={BOOT_BACK_LONG_PRESS_MS}"
-                    );
-                    if sleep_mode.is_sleeping() {
-                        info!(
-                            "rustmix-wave=sleep-mode-input-suppressed event=boot-long-press-back"
+            if let Some(input_event) = input_queue.pop() {
+                match input_event {
+                    InputEvent::Back => {
+                        info!("rustmix-wave=boot-button event=press action=back");
+                        if sleep_mode.is_sleeping() {
+                            info!("rustmix-wave=sleep-mode-input-suppressed event=boot-press-back");
+                            FreeRtos::delay_ms(20);
+                            continue;
+                        }
+                        let woke_from_sleep = !state.panel_awake;
+                        if woke_from_sleep {
+                            panel.initialize()?;
+                            state.panel_awake = true;
+                            panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
+                            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                        }
+                        state.update_board_snapshot(
+                            board_services.read_snapshot(&mut service_delay),
                         );
-                        FreeRtos::delay_ms(20);
-                        continue;
+                        log_board_snapshot(state.board, state.regional);
+                        let previous_route = state.active_route();
+                        if previous_route == ScreenRoute::Home {
+                            info!("rustmix-wave=hierarchical-back outcome=ignored route=home");
+                        } else {
+                            state.back();
+                            apply_voice_notes_ui_request(
+                                &mut voice_recording,
+                                &mut voice_playback,
+                                &mut audio_runtime,
+                                &mut state,
+                                _mounted_sd.is_some(),
+                            );
+                            apply_wifi_transfer_ui_request(
+                                &mut wifi_transfer_server,
+                                &mut state,
+                                &mut storage_browser,
+                                _mounted_sd.is_some(),
+                                voice_recording.is_some(),
+                                voice_playback.is_some(),
+                            );
+                            apply_network_provision_ui_request(
+                                &mut network_runtime,
+                                &mut network_provision_server,
+                                &mut network_config,
+                                &mut state,
+                                &mut network_provision_join_pending,
+                            );
+                            log_lua_runtime_events(&mut state);
+                            info!(
+                                "rustmix-wave=hierarchical-back outcome=navigated from={} to={}",
+                                previous_route.marker(),
+                                state.active_route().marker()
+                            );
+                            info!(
+                                "rustmix-wave=screen-route route={}",
+                                state.active_route().marker()
+                            );
+                        }
+                        if woke_from_sleep || state.active_route() != previous_route {
+                            let request = if woke_from_sleep {
+                                RefreshRequest::ForceGlobalAfterWake
+                            } else {
+                                RefreshRequest::Normal
+                            };
+                            refresh_screen(
+                                &mut panel,
+                                &mut frame,
+                                &mut state,
+                                &mut panel_refresh,
+                                request,
+                            )?;
+                        }
+                        last_activity = Instant::now();
+                        last_status_refresh = Instant::now();
                     }
-                    let woke_from_sleep = !state.panel_awake;
-                    if woke_from_sleep {
-                        panel.initialize()?;
-                        state.panel_awake = true;
-                        panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
-                        sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                    InputEvent::SelectLongPress => {
+                        info!(
+                        "rustmix-wave=select-button event=long-press action=contextual-navigation"
+                    );
+                        if sleep_mode.is_sleeping() {
+                            info!("rustmix-wave=sleep-mode-input-suppressed event=select-long-press-contextual-navigation");
+                            FreeRtos::delay_ms(20);
+                            continue;
+                        }
+                        let calendar_agenda_context = state.apply_calendar_select_long_press();
+                        let keyboard_context = if calendar_agenda_context {
+                            false
+                        } else {
+                            state.apply_keyboard_select_long_press()
+                        };
+                        let lua_game_context = if calendar_agenda_context || keyboard_context {
+                            false
+                        } else {
+                            state.apply_lua_game_select_long_press()
+                        };
+                        let reader_dictionary_context =
+                            if calendar_agenda_context || keyboard_context || lua_game_context {
+                                false
+                            } else {
+                                state.apply_reader_dictionary_select_long_press()
+                            };
+                        let network_saved_context = if calendar_agenda_context
+                            || keyboard_context
+                            || lua_game_context
+                            || reader_dictionary_context
+                        {
+                            false
+                        } else {
+                            state.apply_network_saved_select_long_press()
+                        };
+                        if calendar_agenda_context
+                            || keyboard_context
+                            || lua_game_context
+                            || reader_dictionary_context
+                            || network_saved_context
+                        {
+                            if calendar_agenda_context {
+                                info!("rustmix-wave=calendar-agenda route=selected-day outcome=opened");
+                            }
+                            if reader_dictionary_context {
+                                info!(
+                                    "rustmix-wave=reader-dictionary-mode outcome=toggled active={}",
+                                    !matches!(
+                                        state.reader.dictionary_mode,
+                                        ReaderDictionaryMode::Off
+                                    )
+                                );
+                            }
+                            if network_saved_context {
+                                info!(
+                                "rustmix-wave=network-saved-forget-confirm outcome=toggled armed={}",
+                                state.network_saved.confirming_forget
+                            );
+                            }
+                            if keyboard_context {
+                                if state.active_route() == ScreenRoute::CalendarEventEditor {
+                                    if let Some(editor) = state.calendar.editor.as_ref() {
+                                        info!(
+                                        "rustmix-wave=calendar-editor-keyboard-nav axis={} outcome=toggled",
+                                        editor.navigation_mode_label()
+                                    );
+                                    }
+                                } else if state.active_route() == ScreenRoute::VoiceNoteDetails
+                                    && state.voice_notes.title_editing
+                                {
+                                    info!(
+                                    "rustmix-wave=voice-note-title-keyboard-nav axis={} outcome=toggled",
+                                    state.voice_notes.title_editor_navigation_mode_label()
+                                );
+                                } else {
+                                    info!(
+                                    "rustmix-wave=dictionary-keyboard-nav axis={} outcome=toggled",
+                                    state.dictionary.navigation_mode_label()
+                                );
+                                }
+                            }
+                            let woke_from_sleep = !state.panel_awake;
+                            if woke_from_sleep {
+                                panel.initialize()?;
+                                state.panel_awake = true;
+                                panel_refresh
+                                    .reset_after_external_global(PanelGlobalReason::AfterWake);
+                                sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                            }
+                            state.update_board_snapshot(
+                                board_services.read_snapshot(&mut service_delay),
+                            );
+                            log_board_snapshot(state.board, state.regional);
+                            log_lua_runtime_events(&mut state);
+                            let request = if woke_from_sleep {
+                                RefreshRequest::ForceGlobalAfterWake
+                            } else {
+                                RefreshRequest::Normal
+                            };
+                            refresh_screen(
+                                &mut panel,
+                                &mut frame,
+                                &mut state,
+                                &mut panel_refresh,
+                                request,
+                            )?;
+                            last_activity = Instant::now();
+                            last_status_refresh = Instant::now();
+                        } else {
+                            info!(
+                            "rustmix-wave=select-button event=long-press action=ignored route={}",
+                            state.active_route().marker()
+                        );
+                        }
                     }
-                    state.update_board_snapshot(board_services.read_snapshot(&mut service_delay));
-                    log_board_snapshot(state.board, state.regional);
-                    let previous_route = state.active_route();
-                    if previous_route == ScreenRoute::Home {
-                        info!("rustmix-wave=hierarchical-back outcome=ignored route=home");
-                    } else {
-                        state.back();
+                    InputEvent::Button(event) => {
+                        info!("rustmix-wave=button-event event={event:?}");
+                        if sleep_mode.is_sleeping() {
+                            info!("rustmix-wave=sleep-mode-input-suppressed event={event:?}");
+                            FreeRtos::delay_ms(20);
+                            continue;
+                        }
+                        let woke_from_sleep = !state.panel_awake;
+                        if woke_from_sleep {
+                            panel.initialize()?;
+                            state.panel_awake = true;
+                            panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
+                            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                        }
+
+                        state.update_board_snapshot(
+                            board_services.read_snapshot(&mut service_delay),
+                        );
+                        log_board_snapshot(state.board, state.regional);
+                        let previous_route = state.active_route();
+                        let previous_display = state.display;
+                        if previous_route == ScreenRoute::Files {
+                            apply_storage_event(&mut storage_browser, &mut state, event);
+                        } else if previous_route == ScreenRoute::Alarms {
+                            let local = state.board.rtc.map_or_else(fallback_local_time, |rtc| {
+                                state.regional.localize_rtc(rtc)
+                            });
+                            let outcome =
+                                apply_alarm_event(&mut alarm_engine, &mut state, event, local);
+                            if matches!(
+                                outcome,
+                                AlarmUiOutcome::Saved
+                                    | AlarmUiOutcome::Snoozed
+                                    | AlarmUiOutcome::Dismissed
+                            ) {
+                                sync_alarm_hardware(
+                                    &mut alarm_engine,
+                                    &mut board_services,
+                                    state.regional,
+                                );
+                                state.update_alarm_snapshot(alarm_engine.snapshot());
+                                log_alarm_snapshot(&state.alarms);
+                            }
+                            if matches!(
+                                outcome,
+                                AlarmUiOutcome::Snoozed | AlarmUiOutcome::Dismissed
+                            ) {
+                                if let Some(runtime) = audio_runtime.as_mut() {
+                                    match runtime.stop_playback() {
+                                Ok(()) => info!("rustmix-wave=audio-event outcome=alarm-chime-stop reason={outcome:?}"),
+                                Err(error) => {
+                                    warn!("rustmix-wave=audio-event outcome=alarm-chime-stop-failed error={error:#}");
+                                    runtime.record_failure(format!("{error:#}"));
+                                }
+                            }
+                                    state.update_audio_snapshot(runtime.snapshot());
+                                    log_audio_snapshot(&state.audio);
+                                }
+                            }
+                        } else if previous_route == ScreenRoute::Audio {
+                            if let Some(request) = state.apply_audio_button(event) {
+                                apply_audio_request(&mut audio_runtime, &mut state, request);
+                            }
+                        } else {
+                            state.apply(event);
+                            log_lua_runtime_events(&mut state);
+                            if state.active_route() == ScreenRoute::Files {
+                                storage_browser.refresh();
+                                state.update_storage_snapshot(storage_browser.snapshot());
+                                log_storage_snapshot(&state.storage);
+                            }
+                        }
+                        // Consume Settings > Network transfer start/stop intents before
+                        // rendering the next frame.  This guarantees that the transfer
+                        // route shows READY plus its LAN URL and code on the same normal
+                        // partial refresh that follows the SELECT event.
+                        apply_calendar_ui_request(&mut state, _mounted_sd.is_some());
+                        apply_network_provision_ui_request(
+                            &mut network_runtime,
+                            &mut network_provision_server,
+                            &mut network_config,
+                            &mut state,
+                            &mut network_provision_join_pending,
+                        );
+                        apply_network_saved_ui_request(
+                            &mut network_config,
+                            &mut state,
+                            &network_provision_server,
+                        );
                         apply_voice_notes_ui_request(
                             &mut voice_recording,
                             &mut voice_playback,
@@ -1477,94 +2255,67 @@ mod firmware {
                             voice_recording.is_some(),
                             voice_playback.is_some(),
                         );
-                        log_lua_runtime_events(&mut state);
-                        info!(
-                            "rustmix-wave=hierarchical-back outcome=navigated from={} to={}",
-                            previous_route.marker(),
-                            state.active_route().marker()
-                        );
-                        info!(
-                            "rustmix-wave=screen-route route={}",
-                            state.active_route().marker()
-                        );
-                    }
-                    if woke_from_sleep || state.active_route() != previous_route {
-                        let request = if woke_from_sleep {
-                            RefreshRequest::ForceGlobalAfterWake
-                        } else {
-                            RefreshRequest::Normal
-                        };
-                        refresh_screen(
-                            &mut panel,
-                            &mut frame,
+                        apply_clock_set_time_ui_request(
+                            &mut board_services,
+                            &mut service_delay,
+                            &mut alarm_engine,
                             &mut state,
-                            &mut panel_refresh,
-                            request,
-                        )?;
+                        );
+                        apply_clock_set_timezone_ui_request(&mut network_config, &mut state);
+                        log_reader_persistence_event(&mut state);
+                        if state.display != previous_display {
+                            match state.display.save_to_path(DISPLAY_CONFIG_PATH) {
+                        Ok(()) => info!(
+                            "rustmix-wave=display-config-write status=saved path={DISPLAY_CONFIG_PATH}"
+                        ),
+                        Err(error) => warn!(
+                            "rustmix-wave=display-config-write status=failed path={DISPLAY_CONFIG_PATH} error={error:#}"
+                        ),
                     }
-                    last_activity = Instant::now();
-                    last_status_refresh = Instant::now();
-                }
-                Some(BootButtonEvent::ShortPress) => {
-                    info!(
-                        "rustmix-wave=boot-button event=short-press action=contextual-navigation"
+                            info!(
+                        "rustmix-wave=display-settings-updated font-family={} font-size={} persistence=sd-file path={DISPLAY_CONFIG_PATH}",
+                        state.display.font_family.marker(),
+                        state.display.font_size.marker()
                     );
-                    if sleep_mode.is_sleeping() {
-                        info!("rustmix-wave=sleep-mode-input-suppressed event=boot-short-press-contextual-navigation");
-                        FreeRtos::delay_ms(20);
-                        continue;
-                    }
-                    let calendar_agenda_context = state.apply_calendar_boot_short_press();
-                    let keyboard_context = if calendar_agenda_context {
-                        false
-                    } else {
-                        state.apply_keyboard_boot_short_press()
-                    };
-                    let lua_game_context = if calendar_agenda_context || keyboard_context {
-                        false
-                    } else {
-                        state.apply_lua_game_boot_short_press()
-                    };
-                    if calendar_agenda_context || keyboard_context || lua_game_context {
-                        if calendar_agenda_context {
-                            info!("rustmix-wave=calendar-agenda route=selected-day outcome=opened");
                         }
-                        if keyboard_context {
-                            if state.active_route() == ScreenRoute::CalendarEventEditor {
-                                if let Some(editor) = state.calendar.editor.as_ref() {
-                                    info!(
-                                        "rustmix-wave=calendar-editor-keyboard-nav axis={} outcome=toggled",
-                                        editor.navigation_mode_label()
-                                    );
+                        if state.active_route() != previous_route {
+                            info!(
+                                "rustmix-wave=screen-route route={}",
+                                state.active_route().marker()
+                            );
+                        }
+                        if state.active_route() == ScreenRoute::Library {
+                            // Sync any thumbnails already cached on SD before this
+                            // event's paint below, instead of leaving the periodic
+                            // sync at the top of the loop to pick them up on some
+                            // later tick (a cache hit is just a small file read,
+                            // cheap enough to do inline here) — otherwise the next
+                            // frame shows blank cells with titles for covers that
+                            // were already generated on a previous visit. This runs
+                            // on every Library button event, not just on entering
+                            // the route: scrolling to a new page swaps in a whole
+                            // new visible window just as much as opening the screen
+                            // does, and without this it would sit on stale blank
+                            // cells until the throttled periodic redraw caught up.
+                            for book in library_visible_books(&state) {
+                                if !state.reader.library_thumbnails.contains_key(&book.path) {
+                                    if let Some(thumbnail) =
+                                        cover_cache.load_cached_thumbnail(&book)
+                                    {
+                                        state
+                                            .reader
+                                            .library_thumbnails
+                                            .insert(book.path, thumbnail);
+                                    }
                                 }
-                            } else if state.active_route() == ScreenRoute::VoiceNoteDetails
-                                && state.voice_notes.title_editing
-                            {
-                                info!(
-                                    "rustmix-wave=voice-note-title-keyboard-nav axis={} outcome=toggled",
-                                    state.voice_notes.title_editor_navigation_mode_label()
-                                );
-                            } else {
-                                info!(
-                                    "rustmix-wave=dictionary-keyboard-nav axis={} outcome=toggled",
-                                    state.dictionary.navigation_mode_label()
-                                );
                             }
                         }
-                        let woke_from_sleep = !state.panel_awake;
-                        if woke_from_sleep {
-                            panel.initialize()?;
-                            state.panel_awake = true;
-                            panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
-                            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
-                        }
-                        state.update_board_snapshot(
-                            board_services.read_snapshot(&mut service_delay),
-                        );
-                        log_board_snapshot(state.board, state.regional);
-                        log_lua_runtime_events(&mut state);
+                        let reader_clear_ghost = state.take_reader_clear_ghost_request();
+                        let power_key_clear_ghost = state.take_power_key_manual_refresh_request();
                         let request = if woke_from_sleep {
                             RefreshRequest::ForceGlobalAfterWake
+                        } else if reader_clear_ghost || power_key_clear_ghost {
+                            RefreshRequest::ForceGlobalManual
                         } else {
                             RefreshRequest::Normal
                         };
@@ -1577,14 +2328,8 @@ mod firmware {
                         )?;
                         last_activity = Instant::now();
                         last_status_refresh = Instant::now();
-                    } else {
-                        info!(
-                            "rustmix-wave=boot-button event=short-press action=ignored route={}",
-                            state.active_route().marker()
-                        );
                     }
                 }
-                None => {}
             }
 
             #[cfg(feature = "rustmix-remote-ble")]
@@ -1657,129 +2402,6 @@ mod firmware {
                 last_status_refresh = Instant::now();
             }
 
-            if let Some(event) = buttons.poll(&mut button_delay)? {
-                info!("rustmix-wave=button-event event={event:?}");
-                if sleep_mode.is_sleeping() {
-                    info!("rustmix-wave=sleep-mode-input-suppressed event={event:?}");
-                    FreeRtos::delay_ms(20);
-                    continue;
-                }
-                let woke_from_sleep = !state.panel_awake;
-                if woke_from_sleep {
-                    panel.initialize()?;
-                    state.panel_awake = true;
-                    panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
-                    sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
-                }
-
-                state.update_board_snapshot(board_services.read_snapshot(&mut service_delay));
-                log_board_snapshot(state.board, state.regional);
-                let previous_route = state.active_route();
-                let previous_display = state.display;
-                if previous_route == ScreenRoute::Files {
-                    apply_storage_event(&mut storage_browser, &mut state, event);
-                } else if previous_route == ScreenRoute::Alarms {
-                    let local = state
-                        .board
-                        .rtc
-                        .map_or_else(fallback_local_time, |rtc| state.regional.localize_rtc(rtc));
-                    let outcome = apply_alarm_event(&mut alarm_engine, &mut state, event, local);
-                    if matches!(
-                        outcome,
-                        AlarmUiOutcome::Saved | AlarmUiOutcome::Snoozed | AlarmUiOutcome::Dismissed
-                    ) {
-                        sync_alarm_hardware(&mut alarm_engine, &mut board_services, state.regional);
-                        state.update_alarm_snapshot(alarm_engine.snapshot());
-                        log_alarm_snapshot(&state.alarms);
-                    }
-                    if matches!(outcome, AlarmUiOutcome::Snoozed | AlarmUiOutcome::Dismissed) {
-                        if let Some(runtime) = audio_runtime.as_mut() {
-                            match runtime.stop_playback() {
-                                Ok(()) => info!("rustmix-wave=audio-event outcome=alarm-chime-stop reason={outcome:?}"),
-                                Err(error) => {
-                                    warn!("rustmix-wave=audio-event outcome=alarm-chime-stop-failed error={error:#}");
-                                    runtime.record_failure(format!("{error:#}"));
-                                }
-                            }
-                            state.update_audio_snapshot(runtime.snapshot());
-                            log_audio_snapshot(&state.audio);
-                        }
-                    }
-                } else if previous_route == ScreenRoute::Audio {
-                    if let Some(request) = state.apply_audio_button(event) {
-                        apply_audio_request(&mut audio_runtime, &mut state, request);
-                    }
-                } else {
-                    state.apply(event);
-                    log_lua_runtime_events(&mut state);
-                    if state.active_route() == ScreenRoute::Files {
-                        storage_browser.refresh();
-                        state.update_storage_snapshot(storage_browser.snapshot());
-                        log_storage_snapshot(&state.storage);
-                    }
-                }
-                // Consume Settings > Network transfer start/stop intents before
-                // rendering the next frame.  This guarantees that the transfer
-                // route shows READY plus its LAN URL and code on the same normal
-                // partial refresh that follows the SELECT event.
-                apply_calendar_ui_request(&mut state, _mounted_sd.is_some());
-                apply_voice_notes_ui_request(
-                    &mut voice_recording,
-                    &mut voice_playback,
-                    &mut audio_runtime,
-                    &mut state,
-                    _mounted_sd.is_some(),
-                );
-                apply_wifi_transfer_ui_request(
-                    &mut wifi_transfer_server,
-                    &mut state,
-                    &mut storage_browser,
-                    _mounted_sd.is_some(),
-                    voice_recording.is_some(),
-                    voice_playback.is_some(),
-                );
-                log_reader_persistence_event(&mut state);
-                if state.display != previous_display {
-                    match state.display.save_to_path(DISPLAY_CONFIG_PATH) {
-                        Ok(()) => info!(
-                            "rustmix-wave=display-config-write status=saved path={DISPLAY_CONFIG_PATH}"
-                        ),
-                        Err(error) => warn!(
-                            "rustmix-wave=display-config-write status=failed path={DISPLAY_CONFIG_PATH} error={error:#}"
-                        ),
-                    }
-                    info!(
-                        "rustmix-wave=display-settings-updated font-family={} font-size={} persistence=sd-file path={DISPLAY_CONFIG_PATH}",
-                        state.display.font_family.marker(),
-                        state.display.font_size.marker()
-                    );
-                }
-                if state.active_route() != previous_route {
-                    info!(
-                        "rustmix-wave=screen-route route={}",
-                        state.active_route().marker()
-                    );
-                }
-                let reader_clear_ghost = state.take_reader_clear_ghost_request();
-                let power_key_clear_ghost = state.take_power_key_manual_refresh_request();
-                let request = if woke_from_sleep {
-                    RefreshRequest::ForceGlobalAfterWake
-                } else if reader_clear_ghost || power_key_clear_ghost {
-                    RefreshRequest::ForceGlobalManual
-                } else {
-                    RefreshRequest::Normal
-                };
-                refresh_screen(
-                    &mut panel,
-                    &mut frame,
-                    &mut state,
-                    &mut panel_refresh,
-                    request,
-                )?;
-                last_activity = Instant::now();
-                last_status_refresh = Instant::now();
-            }
-
             FreeRtos::delay_ms(20);
         }
     }
@@ -1829,6 +2451,315 @@ mod firmware {
                 warn!("rustmix-wave=calendar-personal-event-write status=failed error={error:#}");
             }
         }
+    }
+
+    /// First saved SSID, for log lines; `"--"` when nothing is saved yet.
+    fn first_saved_ssid(config: &NetworkConfig) -> &str {
+        config
+            .networks
+            .first()
+            .map_or("--", |network| network.ssid.as_str())
+    }
+
+    /// Saved-network SSIDs as shown on the phone portal's list (no
+    /// passwords), or the empty list before `WIFI.TXT` exists.
+    fn saved_ssids(network_config: &Option<NetworkConfig>) -> Vec<String> {
+        network_config
+            .as_ref()
+            .map(|config| {
+                config
+                    .networks
+                    .iter()
+                    .map(|network| network.ssid.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Saved-network entries as shown on the on-device read-only "Saved
+    /// networks" screen, flagging whichever one matches the live connection.
+    fn saved_network_entries(
+        network_config: &Option<NetworkConfig>,
+        connected_ssid: Option<&str>,
+    ) -> Vec<SavedNetworkEntry> {
+        network_config
+            .as_ref()
+            .map(|config| {
+                config
+                    .networks
+                    .iter()
+                    .map(|network| SavedNetworkEntry {
+                        ssid: network.ssid.clone(),
+                        connected: connected_ssid == Some(network.ssid.as_str()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Start or stop the phone Wi-Fi provisioning portal from the Network ▸
+    /// Configure via phone action. Starting switches the driver into AP+STA
+    /// (Mixed) mode with a freshly generated hotspot and brings up the small
+    /// HTTP portal used to add, update or forget saved networks; stopping
+    /// tears both down and reconnects using the current saved-network list.
+    /// This replaces the old on-device rotary-keyboard credential editor.
+    fn apply_network_provision_ui_request(
+        runtime: &mut NetworkRuntime,
+        server: &mut Option<NetworkProvisionServer>,
+        network_config: &mut Option<NetworkConfig>,
+        state: &mut AppState,
+        join_pending: &mut Option<(String, String)>,
+    ) {
+        let Some(request) = state.take_network_provision_request() else {
+            return;
+        };
+        match request {
+            NetworkProvisionUiRequest::Start => {
+                if server.is_some() {
+                    return;
+                }
+                state.update_network_provision_snapshot(NetworkProvisionSnapshot::starting());
+                let ap_info = match runtime.start_provisioning() {
+                    Ok(ap_info) => ap_info,
+                    Err(error) => {
+                        warn!("rustmix-wave=network-provision status=failed error={error:#}");
+                        state.update_network_provision_snapshot(NetworkProvisionSnapshot::failed(
+                            format!("{error:#}"),
+                        ));
+                        return;
+                    }
+                };
+                match NetworkProvisionServer::start(&ap_info.portal_ip) {
+                    Ok(mut new_server) => {
+                        new_server.set_ap_credentials(
+                            ap_info.ap_ssid.clone(),
+                            ap_info.ap_password.clone(),
+                        );
+                        new_server.set_saved_networks(saved_ssids(network_config));
+                        *join_pending = None;
+                        let saved_count = network_config.as_ref().map_or(0, |c| c.networks.len());
+                        state.update_network_provision_snapshot(new_server.snapshot(saved_count));
+                        info!(
+                            "rustmix-wave=network-provision status=ready ap-ssid={} ip={}",
+                            ap_info.ap_ssid, ap_info.portal_ip
+                        );
+                        *server = Some(new_server);
+                    }
+                    Err(error) => {
+                        warn!(
+                            "rustmix-wave=network-provision-server status=failed error={error:#}"
+                        );
+                        state.update_network_provision_snapshot(NetworkProvisionSnapshot::failed(
+                            format!("{error:#}"),
+                        ));
+                    }
+                }
+            }
+            NetworkProvisionUiRequest::Stop => {
+                stop_network_provision(
+                    runtime,
+                    server,
+                    network_config,
+                    state,
+                    join_pending,
+                    "user-stop",
+                );
+            }
+        }
+    }
+
+    /// Tear down the provisioning hotspot/portal (if running) and reconnect
+    /// the driver using the current saved-network list.
+    fn stop_network_provision(
+        runtime: &mut NetworkRuntime,
+        server: &mut Option<NetworkProvisionServer>,
+        network_config: &Option<NetworkConfig>,
+        state: &mut AppState,
+        join_pending: &mut Option<(String, String)>,
+        reason: &str,
+    ) {
+        if server.take().is_none() {
+            return;
+        }
+        *join_pending = None;
+        if let Err(error) = runtime.stop_provisioning(network_config.as_ref()) {
+            warn!(
+                "rustmix-wave=network-provision status=stop-reconnect-failed reason={reason} error={error:#}"
+            );
+        }
+        state.update_network_snapshot(runtime.snapshot());
+        state.update_network_provision_snapshot(NetworkProvisionSnapshot::default());
+        state.set_saved_networks(saved_network_entries(network_config, None));
+        info!("rustmix-wave=network-provision-server status=stopped reason={reason}");
+    }
+
+    /// Drive the provisioning portal each main-loop iteration while it is
+    /// active: feed it fresh scan results, drain a phone-submitted
+    /// SSID/password into a real (validate-before-save) connection attempt,
+    /// watch that attempt resolve to persist or report failure, drain a
+    /// "Forget" request from the phone, and auto-stop on inactivity.
+    #[allow(clippy::too_many_arguments)]
+    fn maintain_network_provision(
+        runtime: &mut NetworkRuntime,
+        server: &mut Option<NetworkProvisionServer>,
+        network_config: &mut Option<NetworkConfig>,
+        state: &mut AppState,
+        join_pending: &mut Option<(String, String)>,
+        last_rescan: &mut Instant,
+    ) {
+        let Some(active_server) = server.as_ref() else {
+            return;
+        };
+        if active_server.is_expired() {
+            stop_network_provision(
+                runtime,
+                server,
+                network_config,
+                state,
+                join_pending,
+                "inactivity-timeout",
+            );
+            return;
+        }
+        let Some(active_server) = server.as_ref() else {
+            return;
+        };
+
+        if join_pending.is_none() {
+            if let Some(request) = active_server.take_pending_join() {
+                match runtime.try_join_candidate(request.ssid.clone(), request.password.clone()) {
+                    Ok(()) => *join_pending = Some((request.ssid, request.password)),
+                    Err(error) => {
+                        active_server.record_join_failed(request.ssid, format!("{error:#}"));
+                    }
+                }
+            }
+        }
+
+        if let Some((ssid, password)) = join_pending.clone() {
+            let snapshot = runtime.snapshot();
+            match snapshot.wifi_state {
+                WifiConnectionState::Connected => {
+                    let base = network_config.clone().unwrap_or_else(|| {
+                        NetworkConfig::validated(
+                            vec![SavedNetwork {
+                                ssid: ssid.clone(),
+                                password: password.clone(),
+                            }],
+                            DEFAULT_TIMEZONE.into(),
+                            DEFAULT_NTP_SERVER.into(),
+                        )
+                        .expect("first saved network is always valid here")
+                    });
+                    let mut merged = base;
+                    let upsert_result = merged.upsert(ssid.clone(), password);
+                    let save_result =
+                        upsert_result.and_then(|()| merged.save_to_path(WIFI_CONFIG_PATH));
+                    match save_result {
+                        Ok(()) => {
+                            *network_config = Some(merged);
+                            active_server.record_join_succeeded(ssid.clone());
+                            active_server.set_saved_networks(saved_ssids(network_config));
+                            state.set_saved_networks(saved_network_entries(
+                                network_config,
+                                Some(&ssid),
+                            ));
+                            info!("rustmix-wave=network-provision-join status=saved ssid={ssid}");
+                        }
+                        Err(error) => {
+                            active_server.record_join_failed(ssid, format!("{error:#}"));
+                            warn!("rustmix-wave=network-provision-join status=save-failed error={error:#}");
+                        }
+                    }
+                    *join_pending = None;
+                }
+                WifiConnectionState::Failed => {
+                    let error = snapshot
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "connection failed".into());
+                    active_server.record_join_failed(ssid, error);
+                    *join_pending = None;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(ssid) = active_server.take_pending_delete() {
+            if let Some(config) = network_config.as_mut() {
+                if config.remove(&ssid) {
+                    if let Err(error) = config.save_to_path(WIFI_CONFIG_PATH) {
+                        warn!(
+                            "rustmix-wave=network-provision-forget status=failed error={error:#}"
+                        );
+                    } else {
+                        active_server.set_saved_networks(saved_ssids(network_config));
+                        state.set_saved_networks(saved_network_entries(network_config, None));
+                        info!("rustmix-wave=network-provision-forget status=completed ssid={ssid}");
+                    }
+                }
+            }
+        }
+
+        // Skip the rescan once a phone has joined the hotspot: it shares the
+        // AP's single radio, so an active scan briefly leaves the AP's
+        // channel and can reset the phone's in-flight requests, including
+        // the captive-portal probe this portal depends on to auto-open (see
+        // `NetworkRuntime::provisioning_client_count`).
+        if join_pending.is_none()
+            && last_rescan.elapsed() >= Duration::from_secs(NETWORK_PROVISION_RESCAN_SECONDS)
+            && runtime.provisioning_client_count() == 0
+        {
+            *last_rescan = Instant::now();
+            let _ = runtime.start_scan();
+        }
+
+        let saved_count = network_config
+            .as_ref()
+            .map_or(0, |config| config.networks.len());
+        let latest = active_server.snapshot(saved_count);
+        if latest != state.network_provision {
+            state.update_network_provision_snapshot(latest);
+        }
+    }
+
+    /// Forget a saved network requested from the on-device "Saved networks"
+    /// screen. If it was the network currently connected, provisioning stays
+    /// off (the list is simply shorter); the next boot or provisioning-stop
+    /// reconnect uses the updated list.
+    fn apply_network_saved_ui_request(
+        network_config: &mut Option<NetworkConfig>,
+        state: &mut AppState,
+        server: &Option<NetworkProvisionServer>,
+    ) {
+        let Some(ssid) = state.take_network_saved_forget_request() else {
+            return;
+        };
+        let Some(config) = network_config.as_mut() else {
+            return;
+        };
+        if !config.remove(&ssid) {
+            return;
+        }
+        if let Err(error) = config.save_to_path(WIFI_CONFIG_PATH) {
+            warn!("rustmix-wave=network-saved-forget status=failed error={error:#}");
+            return;
+        }
+        if let Some(server) = server {
+            server.set_saved_networks(saved_ssids(network_config));
+        }
+        state.set_saved_networks(saved_network_entries(
+            network_config,
+            state.network.ssid.as_deref(),
+        ));
+        // The Network overview screen's "Saved" count reads this cached
+        // field, not the live saved-networks list, so it stays stuck on the
+        // pre-forget count (looking like the network is still configured)
+        // unless it is refreshed here too.
+        state.network.saved_network_count = network_config
+            .as_ref()
+            .map_or(0, |config| config.networks.len());
+        info!("rustmix-wave=network-saved-forget status=completed ssid={ssid}");
     }
 
     fn maintain_wifi_transfer_server(
@@ -2135,13 +3066,13 @@ mod firmware {
         if let Some(config) = config {
             info!(
                 "rustmix-wave=wifi-resume status=starting ssid={}",
-                config.ssid
+                first_saved_ssid(config)
             );
             match runtime.resume(config) {
                 Ok(()) => {
                     info!(
                         "rustmix-wave=wifi-resume status=connected ssid={}",
-                        config.ssid
+                        first_saved_ssid(config)
                     );
                     info!("rustmix-wave=sntp-resume status=started");
                     info!("rustmix-wave=weather-resume status=pending-network-ready");
@@ -2149,7 +3080,7 @@ mod firmware {
                 Err(error) => {
                     warn!(
                         "rustmix-wave=wifi-resume status=failed ssid={} error={error:#}",
-                        config.ssid
+                        first_saved_ssid(config)
                     );
                     runtime.record_resume_failure(format!("{error:#}"));
                 }
@@ -2190,6 +3121,87 @@ mod firmware {
             state.alarms.hardware_programmed
         );
         outcome
+    }
+
+    /// Persist a manually edited local wall-clock value committed from the
+    /// Clock screen's Set Date & Time editor and refresh dependent state:
+    /// the board snapshot and, since alarm scheduling depends on the wall
+    /// clock, the alarm engine's next occurrence and hardware programming.
+    fn apply_clock_set_time_ui_request<I2C, D>(
+        board_services: &mut BoardServices<I2C>,
+        service_delay: &mut D,
+        alarm_engine: &mut AlarmEngine,
+        state: &mut AppState,
+    ) where
+        I2C: embedded_hal::i2c::I2c,
+        I2C::Error: core::fmt::Debug,
+        D: embedded_hal::delay::DelayNs,
+    {
+        let Some(stored) = state.take_clock_set_time_request() else {
+            return;
+        };
+        match board_services.write_rtc_datetime(stored) {
+            Ok(()) => info!(
+                "rustmix-wave=rtc-manual-set status=updated stored={}",
+                stored.date_time()
+            ),
+            Err(error) => warn!("rustmix-wave=rtc-manual-set status=failed error={error:#}"),
+        }
+        state.update_board_snapshot(board_services.read_snapshot(service_delay));
+        log_board_snapshot(state.board, state.regional);
+        if let Some(rtc) = state.board.rtc {
+            alarm_engine.recompute_next(state.regional.localize_rtc(rtc));
+            sync_alarm_hardware(alarm_engine, board_services, state.regional);
+            state.update_alarm_snapshot(alarm_engine.snapshot());
+            log_alarm_snapshot(&state.alarms);
+        }
+    }
+
+    /// Persist a timezone committed from the Clock screen's Set Date & Time
+    /// editor into its own `CLOCK.TXT` file, independent of whether Wi-Fi has
+    /// ever been configured. `state.regional` already reflects the new
+    /// timezone live regardless of whether persistence below succeeds, so a
+    /// write failure only costs the selection surviving the next reboot, not
+    /// the current session. When `WIFI.TXT` already exists, its `timezone=`
+    /// line is kept in sync too, preserving the SSID/password/NTP fields the
+    /// editor never touches, purely so the two files do not disagree.
+    fn apply_clock_set_timezone_ui_request(
+        network_config: &mut Option<NetworkConfig>,
+        state: &mut AppState,
+    ) {
+        let Some(timezone) = state.take_clock_set_timezone_request() else {
+            return;
+        };
+        match regional::save_timezone_name(CLOCK_CONFIG_PATH, timezone.name()) {
+            Ok(()) => info!(
+                "rustmix-wave=clock-timezone-set status=persisted path={CLOCK_CONFIG_PATH} timezone={}",
+                timezone.name()
+            ),
+            Err(error) => warn!(
+                "rustmix-wave=clock-timezone-set status=write-failed path={CLOCK_CONFIG_PATH} error={error:#}"
+            ),
+        }
+
+        let Some(existing) = network_config.as_ref() else {
+            return;
+        };
+        let updated = match NetworkConfig::validated(
+            existing.networks.clone(),
+            timezone.name().to_string(),
+            existing.ntp_server.clone(),
+        ) {
+            Ok(config) => config,
+            Err(error) => {
+                warn!("rustmix-wave=clock-timezone-set status=wifi-sync-validate-failed error={error:#}");
+                return;
+            }
+        };
+        match updated.save_to_path(WIFI_CONFIG_PATH) {
+            Ok(()) => *network_config = Some(updated),
+            Err(error) => warn!(
+                "rustmix-wave=clock-timezone-set status=wifi-sync-write-failed error={error:#}"
+            ),
+        }
     }
 
     fn apply_audio_request<'d, I2C>(
@@ -2619,6 +3631,37 @@ mod firmware {
         ForceGlobalManual,
         #[allow(dead_code)]
         ForceGlobalSafetyFallback,
+    }
+
+    /// Best-effort redraw of the retained sleep image plus a "RIATTIVAZIONE"
+    /// box, called as early as possible after a real hardware deep-sleep
+    /// reboot (SELECT/GPIO5). The e-paper image itself needs no redraw to
+    /// "stay" visible — it is still physically on the glass with no power
+    /// applied — this only reloads the same frame from the wake marker and
+    /// adds the wake-in-progress box on top of it before the rest of boot
+    /// (SD/network/sensor init) has run.
+    fn draw_deep_sleep_wake_overlay<SPI, DC, RST, CS, BUSY, DELAY, POWER>(
+        panel: &mut Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER>,
+    ) -> Result<()>
+    where
+        SPI: embedded_hal::spi::SpiBus<u8>,
+        SPI::Error: core::fmt::Debug,
+        DC: embedded_hal::digital::OutputPin,
+        DC::Error: core::fmt::Debug,
+        RST: embedded_hal::digital::OutputPin,
+        RST::Error: core::fmt::Debug,
+        CS: embedded_hal::digital::OutputPin,
+        CS::Error: core::fmt::Debug,
+        BUSY: embedded_hal::digital::InputPin,
+        BUSY::Error: core::fmt::Debug,
+        DELAY: DelayNs,
+        POWER: waveshare_epd397_rust_app::power::PanelPower,
+    {
+        panel.initialize()?;
+        let catalog = SleepImageCatalog::new(SLEEP_IMAGE_DIRECTORY);
+        let mut frame = catalog.load_wake_marker_frame();
+        sleep_wake_overlay::draw_wake_overlay(&mut frame)?;
+        panel.show_partial_fullscreen(frame.as_bytes())
     }
 
     fn refresh_screen<SPI, DC, RST, CS, BUSY, DELAY, POWER>(

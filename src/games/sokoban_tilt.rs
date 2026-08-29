@@ -397,7 +397,7 @@ impl SokobanTiltGame {
         canvas.text(
             24,
             734,
-            "TILT move  SELECT reset  Hold BOOT back".into(),
+            "TILT move  SELECT reset  BOOT back".into(),
             CanvasTextStyle::Body,
         )?;
         Ok(())

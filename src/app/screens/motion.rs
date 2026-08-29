@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     imu::{format_tenths, Axis3Tenths},
     imu_events::{ImuEventBridge, IMU_EVENT_CONTROL_COUNT},
@@ -31,54 +27,31 @@ pub fn render_motion(
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let outline = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
-    let motion = state
-        .board
-        .imu
-        .map_or_else(|| "IMU --".into(), |reading| reading.magnitude_label());
-    let availability = if state.board.imu.is_some() {
-        "READY"
-    } else {
-        "NO IMU"
-    };
 
-    draw_header(
-        display,
-        state.display,
-        "MOTION",
-        "ACCELEROMETER AND GYROSCOPE",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: availability,
-            middle: &motion,
-            right: "10S LIVE",
-        },
-    )?;
+    draw_header(display, state, "MOTION")?;
 
-    Text::new("Accelerometer", Point::new(22, 154), heading).draw(display)?;
-    Rectangle::new(Point::new(22, 184), Size::new(436, 144))
+    Text::new("Accelerometer", Point::new(22, 108), heading).draw(display)?;
+    Rectangle::new(Point::new(22, 138), Size::new(436, 144))
         .into_styled(outline)
         .draw(display)?;
     if let Some(reading) = state.board.imu {
-        draw_axis_lines(display, 226, reading.acceleration_mg_tenths, "mg", body)?;
+        draw_axis_lines(display, 180, reading.acceleration_mg_tenths, "mg", body)?;
     } else {
-        Text::new("QMI8658 unavailable", Point::new(42, 252), body).draw(display)?;
+        Text::new("QMI8658 unavailable", Point::new(42, 206), body).draw(display)?;
     }
 
-    Text::new("Gyroscope", Point::new(22, 372), heading).draw(display)?;
-    Rectangle::new(Point::new(22, 402), Size::new(436, 144))
+    Text::new("Gyroscope", Point::new(22, 326), heading).draw(display)?;
+    Rectangle::new(Point::new(22, 356), Size::new(436, 144))
         .into_styled(outline)
         .draw(display)?;
     if let Some(reading) = state.board.imu {
-        draw_axis_lines(display, 444, reading.gyroscope_dps_tenths, "dps", body)?;
+        draw_axis_lines(display, 398, reading.gyroscope_dps_tenths, "dps", body)?;
     } else {
-        Text::new("QMI8658 unavailable", Point::new(42, 470), body).draw(display)?;
+        Text::new("QMI8658 unavailable", Point::new(42, 424), body).draw(display)?;
     }
 
-    draw_action(display, 640, "Motion event bridge", body)?;
-    draw_footer(display, state.display, "SELECT EVENTS  HOLD BOOT BACK")?;
+    draw_action(display, 594, "Motion event bridge", body)?;
+    draw_footer(display, state.display, "SELECT EVENTS  BOOT BACK")?;
     Ok(())
 }
 
@@ -90,35 +63,15 @@ pub fn render_motion_events(
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
-    let availability = if state.board.imu.is_some() {
-        "READY"
-    } else {
-        "NO IMU"
-    };
     let latest = state.imu_events.latest_label();
-    let samples = format!("S {}", state.imu_events.samples);
 
-    draw_header(
-        display,
-        state.display,
-        "MOTION EVENTS",
-        "TILT SHAKE ROTATE LEVEL",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: availability,
-            middle: &latest,
-            right: &samples,
-        },
-    )?;
+    draw_header(display, state, "MOTION EVENTS")?;
 
-    Text::new("Native event diagnostics", Point::new(22, 146), heading).draw(display)?;
-    line(display, 192, "Latest", &latest, body)?;
+    Text::new("Native event diagnostics", Point::new(22, 100), heading).draw(display)?;
+    line(display, 146, "Latest", &latest, body)?;
     line(
         display,
-        230,
+        184,
         "Counts",
         &format!(
             "T{} S{} R{} L{}",
@@ -131,25 +84,25 @@ pub fn render_motion_events(
     )?;
     Text::new(
         "Raw QMI8658 stays behind Rust I2C.",
-        Point::new(22, 270),
+        Point::new(22, 224),
         detail,
     )
     .draw(display)?;
 
-    Text::new("Thresholds and debounce", Point::new(22, 322), heading).draw(display)?;
+    Text::new("Thresholds and debounce", Point::new(22, 276), heading).draw(display)?;
     for index in 0..IMU_EVENT_CONTROL_COUNT {
         draw_control(
             display,
             &state.imu_events,
             index,
-            354 + index as i32 * 42,
+            308 + index as i32 * 42,
             body,
         )?;
     }
     draw_footer(
         display,
         state.display,
-        "UP/DOWN ROW SELECT CHANGE HOLD BOOT BACK",
+        "UP/DOWN ROW SELECT CHANGE BOOT BACK",
     )?;
     Ok(())
 }
@@ -161,29 +114,10 @@ pub fn render_motion_details(
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
-    let availability = if state.board.imu.is_some() {
-        "READY"
-    } else {
-        "NO IMU"
-    };
 
-    draw_header(
-        display,
-        state.display,
-        "MOTION DETAILS",
-        "QMI8658 DIAGNOSTICS",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: availability,
-            middle: "QMI8658",
-            right: "DETAILS",
-        },
-    )?;
+    draw_header(display, state, "MOTION DETAILS")?;
 
-    Text::new("Sensor status", Point::new(22, 164), heading).draw(display)?;
+    Text::new("Sensor status", Point::new(22, 118), heading).draw(display)?;
     if let Some(reading) = state.board.imu {
         let address = state
             .board
@@ -193,31 +127,31 @@ pub fn render_motion_details(
             .board
             .imu_revision
             .map_or_else(|| "--".into(), |value| format!("0x{value:02X}"));
-        line(display, 214, "Magnitude", &reading.magnitude_label(), body)?;
+        line(display, 168, "Magnitude", &reading.magnitude_label(), body)?;
         line(
             display,
-            254,
+            208,
             "Dominant axis",
             reading.dominant_axis.label(),
             body,
         )?;
         line(
             display,
-            294,
+            248,
             "Address / rev",
             &format!("{address} / {revision}"),
             body,
         )?;
         line(
             display,
-            334,
+            288,
             "Die temperature",
             &reading.temperature_label(),
             body,
         )?;
         line(
             display,
-            374,
+            328,
             "STATUS0",
             &format!("0x{:02X}", reading.status0),
             body,
@@ -225,27 +159,27 @@ pub fn render_motion_details(
     } else {
         Text::new(
             "Optional IMU service unavailable.",
-            Point::new(22, 214),
+            Point::new(22, 168),
             body,
         )
         .draw(display)?;
     }
 
-    Text::new("Profile", Point::new(22, 462), heading).draw(display)?;
-    Text::new("+/-8 g and +/-512 dps", Point::new(22, 510), body).draw(display)?;
+    Text::new("Profile", Point::new(22, 416), heading).draw(display)?;
+    Text::new("+/-8 g and +/-512 dps", Point::new(22, 464), body).draw(display)?;
     Text::new(
         "Sample rate: 1000 Hz sensor / 80 ms bridge",
-        Point::new(22, 550),
+        Point::new(22, 504),
         body,
     )
     .draw(display)?;
     Text::new(
         "Technical tokens remain compact.",
-        Point::new(22, 612),
+        Point::new(22, 566),
         detail,
     )
     .draw(display)?;
-    draw_footer(display, state.display, "HOLD BOOT BACK")?;
+    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
 }
 

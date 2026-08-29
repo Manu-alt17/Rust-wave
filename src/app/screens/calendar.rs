@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextRole, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     calendar::{
         compact_text, days_in_month, weekday, CalendarDate, CalendarEvent, CalendarEventKind,
@@ -26,19 +22,19 @@ use crate::{
 };
 
 const GRID_LEFT: i32 = 26;
-const GRID_TOP: i32 = 264;
+const GRID_TOP: i32 = 218;
 const CELL_WIDTH: i32 = 61;
 const CELL_HEIGHT: i32 = 48;
-const AGENDA_SUMMARY_TOP: i32 = 190;
+const AGENDA_SUMMARY_TOP: i32 = 144;
 const AGENDA_SUMMARY_HEIGHT: u32 = 94;
-const AGENDA_STATUS_BASELINE: i32 = 218;
-const AGENDA_NOTICE_BASELINE: i32 = 242;
-const AGENDA_RANGE_BASELINE: i32 = 266;
-const AGENDA_FIRST_ROW_TOP: i32 = 300;
+const AGENDA_STATUS_BASELINE: i32 = 172;
+const AGENDA_NOTICE_BASELINE: i32 = 196;
+const AGENDA_RANGE_BASELINE: i32 = 220;
+const AGENDA_FIRST_ROW_TOP: i32 = 254;
 const AGENDA_ROW_STEP: i32 = 60;
 const AGENDA_ROW_HEIGHT: u32 = 54;
-const AGENDA_FOOTER_HINT: &str = "MOVE  SELECT OPEN  BOOT ADD  HOLD BACK";
-const CALENDAR_EDITOR_FOOTER_HINT: &str = "MOVE  BOOT H/V  SELECT KEY  HOLD BACK";
+const AGENDA_FOOTER_HINT: &str = "MOVE  SELECT OPEN  HOLD ADD  BOOT BACK";
+const CALENDAR_EDITOR_FOOTER_HINT: &str = "MOVE  HOLD H/V  SELECT KEY  BOOT BACK";
 const WEEKDAY_LABELS: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const MONTH_LABELS: [&str; 12] = [
     "January",
@@ -69,37 +65,23 @@ pub fn render_calendar(
         .rtc
         .map(|rtc| CalendarDate::from_rtc(state.regional.localize_rtc(rtc)));
 
-    draw_header(
-        display,
-        state.display,
-        "CALENDAR",
-        "US EVENTS + DAILY AGENDA",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: state.calendar.mode.label(),
-            middle: &month_year,
-            right: "LOCAL RTC",
-        },
-    )?;
+    draw_header(display, state, "CALENDAR")?;
 
     Text::new(
         &month_year,
-        Point::new(24, 172),
+        Point::new(24, 126),
         state.display.heading_style(),
     )
     .draw(display)?;
     Text::new(
         "SELECT changes DAY / MONTH navigation.",
-        Point::new(24, 204),
+        Point::new(24, 158),
         state.display.body_style(),
     )
     .draw(display)?;
     Text::new(
-        "BOOT short opens selected-day agenda.",
-        Point::new(24, 230),
+        "Hold SELECT opens selected-day agenda.",
+        Point::new(24, 184),
         state.display.detail_style(),
     )
     .draw(display)?;
@@ -107,7 +89,7 @@ pub fn render_calendar(
     for (column, label) in WEEKDAY_LABELS.iter().enumerate() {
         Text::new(
             label,
-            Point::new(GRID_LEFT + column as i32 * CELL_WIDTH + 8, 252),
+            Point::new(GRID_LEFT + column as i32 * CELL_WIDTH + 8, 206),
             state.display.detail_style(),
         )
         .draw(display)?;
@@ -115,30 +97,30 @@ pub fn render_calendar(
 
     draw_month_grid(display, state, cursor, today)?;
 
-    Rectangle::new(Point::new(22, 584), Size::new(436, 112))
+    Rectangle::new(Point::new(22, 538), Size::new(436, 112))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
     Text::new(
         "Selected day",
-        Point::new(40, 614),
+        Point::new(40, 568),
         state.display.body_style(),
     )
     .draw(display)?;
     Text::new(
         &selected,
-        Point::new(40, 648),
+        Point::new(40, 602),
         state.display.heading_style(),
     )
     .draw(display)?;
     Text::new(
         &state.calendar.selected_day_summary(),
-        Point::new(40, 680),
+        Point::new(40, 634),
         state.display.body_style(),
     )
     .draw(display)?;
     Text::new(
         &state.calendar.catalog.status_label(),
-        Point::new(24, 716),
+        Point::new(24, 670),
         state.display.detail_style(),
     )
     .draw(display)?;
@@ -146,7 +128,7 @@ pub fn render_calendar(
     draw_footer(
         display,
         state.display,
-        "UP/DOWN MOVE  SELECT MODE  BOOT AGENDA  HOLD BOOT BACK",
+        "UP/DOWN MOVE  SELECT MODE  HOLD AGENDA  BOOT BACK",
     )?;
     Ok(())
 }
@@ -158,18 +140,8 @@ pub fn render_calendar_agenda(
 ) -> Result<(), Infallible> {
     let date = selected_date_label(state.calendar.cursor);
     let events = state.calendar.selected_day_events();
-    let count = agenda_event_count_label(events.len());
-    draw_header(display, state.display, "CALENDAR", "DAILY AGENDA")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "AGENDA",
-            middle: &count,
-            right: "US + PERS",
-        },
-    )?;
-    Text::new(&date, Point::new(22, 172), state.display.heading_style()).draw(display)?;
+    draw_header(display, state, "CALENDAR")?;
+    Text::new(&date, Point::new(22, 126), state.display.heading_style()).draw(display)?;
     Rectangle::new(
         Point::new(22, AGENDA_SUMMARY_TOP),
         Size::new(436, AGENDA_SUMMARY_HEIGHT),
@@ -230,73 +202,46 @@ pub fn render_calendar_event_details(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let Some(event) = state.calendar.selected_agenda_event() else {
-        draw_header(display, state.display, "CALENDAR EVENT", "SAFE DETAILS")?;
-        draw_status_row(
-            display,
-            state.display,
-            StatusRow {
-                left: "AGENDA",
-                middle: "NO EVENT",
-                right: "SAFE",
-            },
-        )?;
+        draw_header(display, state, "CALENDAR EVENT")?;
         Text::new(
             "No event is selected.",
-            Point::new(22, 230),
+            Point::new(22, 184),
             state.display.body_style(),
         )
         .draw(display)?;
-        draw_footer(display, state.display, "HOLD BOOT BACK")?;
+        draw_footer(display, state.display, "BOOT BACK")?;
         return Ok(());
     };
 
     let personal = event.kind == CalendarEventKind::Personal;
-    draw_header(
-        display,
-        state.display,
-        "CALENDAR EVENT",
-        if personal {
-            "PERSONAL EVENT"
-        } else {
-            "READ-ONLY US HOLIDAY"
-        },
-    )?;
+    draw_header(display, state, "CALENDAR EVENT")?;
     let date = selected_date_label(event.date);
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: event.kind.label(),
-            middle: &date,
-            right: if personal { "EDITABLE" } else { "READ ONLY" },
-        },
-    )?;
     Text::new(
         &compact_text(&event.title, 34),
-        Point::new(22, 176),
+        Point::new(22, 130),
         state.display.heading_style(),
     )
     .draw(display)?;
     detail_line(
         display,
-        230,
+        184,
         "Source",
         event.kind.source_file(),
         state.display.body_style(),
     )?;
     detail_line(
         display,
-        274,
+        228,
         "Category",
         event.kind.label(),
         state.display.body_style(),
     )?;
-    detail_line(display, 318, "Date", &date, state.display.body_style())?;
-    Rectangle::new(Point::new(22, 350), Size::new(436, 148))
+    detail_line(display, 272, "Date", &date, state.display.body_style())?;
+    Rectangle::new(Point::new(22, 304), Size::new(436, 148))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
-    Text::new("Detail", Point::new(40, 386), state.display.body_style()).draw(display)?;
-    draw_wrapped_detail(display, state, &event.detail, 40, 424)?;
+    Text::new("Detail", Point::new(40, 340), state.display.body_style()).draw(display)?;
+    draw_wrapped_detail(display, state, &event.detail, 40, 378)?;
 
     if personal {
         for (index, label) in [
@@ -310,30 +255,30 @@ pub fn render_calendar_event_details(
             draw_action_row(
                 display,
                 state,
-                526 + index as i32 * 54,
+                480 + index as i32 * 54,
                 label,
                 index == state.calendar.details_action_selected,
             )?;
         }
         Text::new(
             "Only personal EVENTS.TXT rows can change.",
-            Point::new(22, 714),
+            Point::new(22, 668),
             state.display.detail_style(),
         )
         .draw(display)?;
         draw_footer(
             display,
             state.display,
-            "UP/DOWN MOVE  SELECT ACTION  HOLD BOOT BACK",
+            "UP/DOWN MOVE  SELECT ACTION  BOOT BACK",
         )?;
     } else {
         Text::new(
             "U.S. pack entries remain read-only.",
-            Point::new(22, 572),
+            Point::new(22, 526),
             state.display.body_style(),
         )
         .draw(display)?;
-        draw_footer(display, state.display, "HOLD BOOT BACK")?;
+        draw_footer(display, state.display, "BOOT BACK")?;
     }
     Ok(())
 }
@@ -344,55 +289,40 @@ pub fn render_calendar_event_editor(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let Some(editor) = state.calendar.editor.as_ref() else {
-        draw_header(display, state.display, "CALENDAR EDITOR", "SAFE FALLBACK")?;
+        draw_header(display, state, "CALENDAR EDITOR")?;
         Text::new(
             "No personal event editor is active.",
-            Point::new(22, 220),
+            Point::new(22, 174),
             state.display.body_style(),
         )
         .draw(display)?;
-        draw_footer(display, state.display, "HOLD BOOT BACK")?;
+        draw_footer(display, state.display, "BOOT BACK")?;
         return Ok(());
     };
-    let date = calendar_editor_status_date_label(editor.date);
-    draw_header(
-        display,
-        state.display,
-        "CALENDAR EDITOR",
-        editor.mode.label(),
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: editor.active_field.label(),
-            middle: &date,
-            right: editor.navigation_mode_label(),
-        },
-    )?;
-    Text::new("Title", Point::new(22, 170), state.display.body_style()).draw(display)?;
-    Rectangle::new(Point::new(22, 184), Size::new(436, 46))
+    draw_header(display, state, "CALENDAR EDITOR")?;
+    Text::new("Title", Point::new(22, 124), state.display.body_style()).draw(display)?;
+    Rectangle::new(Point::new(22, 138), Size::new(436, 46))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
     Text::new(
         &truncate_or_placeholder(&editor.title, "_", 44),
-        Point::new(34, 214),
+        Point::new(34, 168),
         state.display.body_style(),
     )
     .draw(display)?;
-    Text::new("Detail", Point::new(22, 260), state.display.body_style()).draw(display)?;
-    Rectangle::new(Point::new(22, 274), Size::new(436, 58))
+    Text::new("Detail", Point::new(22, 214), state.display.body_style()).draw(display)?;
+    Rectangle::new(Point::new(22, 228), Size::new(436, 58))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
     Text::new(
         &truncate_or_placeholder(&editor.detail, "_", 50),
-        Point::new(34, 310),
+        Point::new(34, 264),
         state.display.detail_style(),
     )
     .draw(display)?;
     Text::new(
         &compact_text(&editor.message, 56),
-        Point::new(22, 360),
+        Point::new(22, 314),
         state.display.detail_style(),
     )
     .draw(display)?;
@@ -406,34 +336,20 @@ pub fn render_calendar_delete_confirmation(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    draw_header(
-        display,
-        state.display,
-        "DELETE CALENDAR EVENT?",
-        "PERSONAL EVENTS.TXT ROW",
-    )?;
+    draw_header(display, state, "DELETE CALENDAR EVENT?")?;
     let title = state
         .calendar
         .selected_agenda_event()
         .map_or("No event selected", |event| event.title.as_str());
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "CONFIRM",
-            middle: "PERSONAL ONLY",
-            right: "ATOMIC WRITE",
-        },
-    )?;
     Text::new(
         &compact_text(title, 36),
-        Point::new(22, 206),
+        Point::new(22, 160),
         state.display.heading_style(),
     )
     .draw(display)?;
     Text::new(
         "The U.S. holiday pack is never modified.",
-        Point::new(22, 254),
+        Point::new(22, 208),
         state.display.body_style(),
     )
     .draw(display)?;
@@ -441,16 +357,12 @@ pub fn render_calendar_delete_confirmation(
         draw_action_row(
             display,
             state,
-            332 + index as i32 * 64,
+            286 + index as i32 * 64,
             label,
             index == state.calendar.delete_confirmation_selected,
         )?;
     }
-    draw_footer(
-        display,
-        state.display,
-        "UP/DOWN MOVE  SELECT  HOLD BOOT BACK",
-    )?;
+    draw_footer(display, state.display, "UP/DOWN MOVE  SELECT  BOOT BACK")?;
     Ok(())
 }
 
@@ -548,14 +460,6 @@ fn draw_agenda_row(
     )
     .draw(display)?;
     Ok(())
-}
-
-fn agenda_event_count_label(event_count: usize) -> String {
-    if event_count == 1 {
-        "1 EVENT".into()
-    } else {
-        format!("{event_count} EVENTS")
-    }
 }
 
 fn agenda_visible_range_label(event_count: usize, visible: &core::ops::Range<usize>) -> String {
@@ -673,7 +577,7 @@ fn draw_editor_keyboard(
         for (column_index, label) in row.iter().enumerate() {
             let index = row_index * 7 + column_index;
             let left = 22 + column_index as i32 * 62;
-            let top = 390 + row_index as i32 * 54;
+            let top = 344 + row_index as i32 * 54;
             let selected = editor.selected_key_index() == index;
             Rectangle::new(Point::new(left, top), Size::new(58, 46))
                 .into_styled(PrimitiveStyle::with_stroke(
@@ -708,10 +612,6 @@ fn month_label(month: u8) -> &'static str {
         .unwrap_or("Unknown")
 }
 
-fn calendar_editor_status_date_label(date: CalendarDate) -> String {
-    format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
-}
-
 fn selected_date_label(date: CalendarDate) -> String {
     const WEEKDAYS: [&str; 7] = [
         "Sunday",
@@ -737,9 +637,9 @@ fn selected_date_label(date: CalendarDate) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        agenda_event_count_label, agenda_visible_range_label, calendar_editor_status_date_label,
-        month_label, selected_date_label, AGENDA_FIRST_ROW_TOP, AGENDA_FOOTER_HINT,
-        AGENDA_RANGE_BASELINE, AGENDA_ROW_HEIGHT, AGENDA_ROW_STEP, CALENDAR_EDITOR_FOOTER_HINT,
+        agenda_visible_range_label, month_label, selected_date_label, AGENDA_FIRST_ROW_TOP,
+        AGENDA_FOOTER_HINT, AGENDA_RANGE_BASELINE, AGENDA_ROW_HEIGHT, AGENDA_ROW_STEP,
+        CALENDAR_EDITOR_FOOTER_HINT,
     };
     use crate::{
         app::AppState,
@@ -766,22 +666,16 @@ mod tests {
     }
 
     #[test]
-    fn editor_status_date_and_footer_fit_the_shared_status_strip() {
-        let date = CalendarDate::new(2026, 6, 6).unwrap();
-        assert_eq!(calendar_editor_status_date_label(date), "2026-06-06");
-        assert!(calendar_editor_status_date_label(date).chars().count() <= 10);
+    fn editor_footer_fits_the_e_paper_width() {
         assert_eq!(
             CALENDAR_EDITOR_FOOTER_HINT,
-            "MOVE  BOOT H/V  SELECT KEY  HOLD BACK"
+            "MOVE  HOLD H/V  SELECT KEY  BOOT BACK"
         );
         assert!(CALENDAR_EDITOR_FOOTER_HINT.chars().count() <= 40);
     }
 
     #[test]
-    fn agenda_labels_use_singular_plural_and_safe_vertical_bounds() {
-        assert_eq!(agenda_event_count_label(0), "0 EVENTS");
-        assert_eq!(agenda_event_count_label(1), "1 EVENT");
-        assert_eq!(agenda_event_count_label(2), "2 EVENTS");
+    fn agenda_range_labels_use_safe_vertical_bounds() {
         assert_eq!(agenda_visible_range_label(0, &(0..0)), "Showing 0 of 0");
         assert_eq!(agenda_visible_range_label(1, &(0..1)), "Showing 1-1 of 1");
         assert!(AGENDA_RANGE_BASELINE < AGENDA_FIRST_ROW_TOP);
@@ -793,7 +687,7 @@ mod tests {
 
     #[test]
     fn agenda_footer_hint_is_compact_for_the_e_paper_width() {
-        assert_eq!(AGENDA_FOOTER_HINT, "MOVE  SELECT OPEN  BOOT ADD  HOLD BACK");
+        assert_eq!(AGENDA_FOOTER_HINT, "MOVE  SELECT OPEN  HOLD ADD  BOOT BACK");
         assert!(AGENDA_FOOTER_HINT.chars().count() <= 40);
     }
 }

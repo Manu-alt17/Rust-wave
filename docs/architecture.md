@@ -58,13 +58,41 @@ cargo +esp build --release --target xtensa-esp32s3-espidf
 
 Enabled behavior:
 
-- Wi-Fi config
+- Wi-Fi config (multiple saved networks, tried in order at boot)
+- Phone Wi-Fi provisioning portal (device hotspot + single QR-code join, captive-portal auto-open)
 - Wi-Fi transfer
 - weather/network fetch
 - NTP/time sync
 - normal reader/apps/settings behavior
 
 BLE Remote is not enabled in this build.
+
+### Phone Wi-Fi provisioning
+
+Settings > Network > Configure via phone switches the Wi-Fi driver from
+station-only into `Configuration::Mixed` (AP + STA): the device broadcasts a
+freshly generated hotspot while still able to scan nearby networks on the
+STA side. A small `EspHttpServer` portal, reached at the AP's fixed gateway
+address, serves a page listing those nearby networks plus the networks
+already saved to `WIFI.TXT`. Submitting a network from the phone drives a
+real STA connection attempt (validate-before-save) before it is persisted,
+mirroring the same immediate-connect-and-confirm UX the on-device credential
+editor it replaces used to have.
+
+A single QR code on the e-paper display carries a phone straight through the
+flow: it auto-joins the hotspot (the de-facto `WIFI:` QR payload). A second
+QR code to open the portal URL is not needed because the device also runs a
+wildcard DNS responder (`src/dns_captive_portal.rs`, answering every query on
+the hotspot with the AP's own address) alongside a catch-all HTTP redirect on
+the portal server (`uri_match_wildcard` + a `"*"` handler in
+`src/network_provision.rs`). Together these make the phone's OS-level
+captive-portal probe (Android `/generate_204`, Apple `/hotspot-detect.html`,
+Windows `/connecttest.txt` and `/redirect`, ...) land on the portal and fail
+its "internet already works" check, so the OS opens the portal itself (as a
+"Sign in to network" prompt or an automatically launched mini-browser,
+depending on the platform). This replaces on-device rotary-keyboard
+SSID/password entry; the on-device Saved networks screen remains for viewing
+and forgetting entries.
 
 ### BLE Remote build
 

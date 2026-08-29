@@ -31,14 +31,8 @@ pub fn draw_menu_row(
     Rectangle::new(Point::new(22, top), Size::new(436, 76))
         .into_styled(border)
         .draw(display)?;
-    Text::new(
-        if selected { ">" } else { " " },
-        Point::new(34, top + 35),
-        body,
-    )
-    .draw(display)?;
-    Text::new(entry.label, Point::new(56, top + 31), heading).draw(display)?;
-    Text::new(entry.subtitle, Point::new(56, top + 62), body).draw(display)?;
+    Text::new(entry.label, Point::new(34, top + 31), heading).draw(display)?;
+    Text::new(entry.subtitle, Point::new(34, top + 62), body).draw(display)?;
     Text::new(entry.badge, Point::new(398, top + 62), body).draw(display)?;
     Ok(())
 }

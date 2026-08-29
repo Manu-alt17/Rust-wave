@@ -5,7 +5,7 @@
 
 use super::router::ScreenRoute;
 
-pub const MAIN_CATEGORY_COUNT: usize = 5;
+pub const MAIN_CATEGORY_COUNT: usize = 6;
 pub const CATEGORY_COUNT: usize = 5;
 pub const CATEGORY_PAGE_SIZE: usize = 6;
 
@@ -37,6 +37,12 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         route: ScreenRoute::Games,
     },
     MenuEntry {
+        label: "Upload",
+        subtitle: "Wi-Fi transfer to and from this device",
+        badge: "",
+        route: ScreenRoute::WifiTransfer,
+    },
+    MenuEntry {
         label: "Tools",
         subtitle: "Files, dictionary and conversion",
         badge: "3",
@@ -54,19 +60,19 @@ const READER_ENTRIES: [MenuEntry; 3] = [
     MenuEntry {
         label: "Continue Reading",
         subtitle: "Resume the last saved book",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::ContinueReading,
     },
     MenuEntry {
         label: "Library",
         subtitle: "TXT and EPUB book library",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Library,
     },
     MenuEntry {
         label: "Bookmarks",
         subtitle: "Saved reading positions",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Bookmarks,
     },
 ];
@@ -75,41 +81,49 @@ const PRODUCTIVITY_ENTRIES: [MenuEntry; 2] = [
     MenuEntry {
         label: "Calendar",
         subtitle: "US agenda and personal editor",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Calendar,
     },
     MenuEntry {
         label: "Voice Notes",
         subtitle: "Record PCM WAV notes to SD",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::VoiceNotes,
     },
 ];
 
-const GAMES_ENTRIES: [MenuEntry; 1] = [MenuEntry {
-    label: "SD Lua Apps",
-    subtitle: "SD-loaded apps with native canvas",
-    badge: "READY",
-    route: ScreenRoute::LuaApps,
-}];
+const GAMES_ENTRIES: [MenuEntry; 2] = [
+    MenuEntry {
+        label: "SD Lua Apps",
+        subtitle: "SD-loaded apps with native canvas",
+        badge: "",
+        route: ScreenRoute::LuaApps,
+    },
+    MenuEntry {
+        label: "Magic Tokens",
+        subtitle: "MTG token art curated from your phone",
+        badge: "",
+        route: ScreenRoute::Magic,
+    },
+];
 
 const TOOLS_ENTRIES: [MenuEntry; 3] = [
     MenuEntry {
         label: "File Browser",
         subtitle: "Read-only SDMMC browser",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Files,
     },
     MenuEntry {
         label: "Dictionary",
         subtitle: "Offline prefix lookup",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Dictionary,
     },
     MenuEntry {
         label: "Unit Converter",
         subtitle: "Offline fixed-point conversions",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::UnitConverter,
     },
 ];
@@ -118,19 +132,19 @@ const SETTINGS_ENTRIES: [MenuEntry; 9] = [
     MenuEntry {
         label: "Alarms",
         subtitle: "RTC schedules, snooze and dismiss",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Alarms,
     },
     MenuEntry {
         label: "Audio",
         subtitle: "ES8311 playback and alarm chime",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Audio,
     },
     MenuEntry {
         label: "Clock",
         subtitle: "RTC, power and localized time",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Clock,
     },
     MenuEntry {
@@ -142,31 +156,31 @@ const SETTINGS_ENTRIES: [MenuEntry; 9] = [
     MenuEntry {
         label: "Device Info",
         subtitle: "Firmware and board ownership",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::DeviceInfo,
     },
     MenuEntry {
         label: "Environment",
         subtitle: "SHTC3 temperature and humidity",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Environment,
     },
     MenuEntry {
         label: "Motion",
         subtitle: "QMI8658 accelerometer and gyroscope",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Motion,
     },
     MenuEntry {
         label: "Network",
         subtitle: "SD config, Wi-Fi and SNTP status",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Network,
     },
     MenuEntry {
         label: "Weather",
         subtitle: "Open-Meteo conditions and forecast",
-        badge: "READY",
+        badge: "",
         route: ScreenRoute::Weather,
     },
 ];
@@ -210,7 +224,7 @@ mod tests {
         assert_eq!(home_entries().len(), MAIN_CATEGORY_COUNT);
         assert_eq!(category_entries(ScreenRoute::Reader).len(), 3);
         assert_eq!(category_entries(ScreenRoute::Productivity).len(), 2);
-        assert_eq!(category_entries(ScreenRoute::Games).len(), 1);
+        assert_eq!(category_entries(ScreenRoute::Games).len(), 2);
         assert_eq!(category_entries(ScreenRoute::Tools).len(), 3);
         assert_eq!(category_entries(ScreenRoute::Settings).len(), 9);
         for route in [
@@ -224,52 +238,6 @@ mod tests {
                 .iter()
                 .all(|entry| entry.route != ScreenRoute::Home));
         }
-    }
-
-    #[test]
-    fn reader_contains_ready_txt_library() {
-        let reader = category_entries(ScreenRoute::Reader);
-        for route in [
-            ScreenRoute::ContinueReading,
-            ScreenRoute::Library,
-            ScreenRoute::Bookmarks,
-        ] {
-            let entry = reader
-                .iter()
-                .find(|entry| entry.route == route)
-                .expect("Reader entry");
-            assert_eq!(entry.badge, "READY");
-        }
-    }
-
-    #[test]
-    fn tools_contains_ready_dictionary() {
-        let tools = category_entries(ScreenRoute::Tools);
-        let dictionary = tools
-            .iter()
-            .find(|entry| entry.route == ScreenRoute::Dictionary)
-            .expect("Dictionary entry");
-        assert_eq!(dictionary.badge, "READY");
-    }
-
-    #[test]
-    fn tools_contains_ready_unit_converter() {
-        let tools = category_entries(ScreenRoute::Tools);
-        let converter = tools
-            .iter()
-            .find(|entry| entry.route == ScreenRoute::UnitConverter)
-            .expect("Unit Converter entry");
-        assert_eq!(converter.badge, "READY");
-    }
-
-    #[test]
-    fn games_contains_ready_sd_lua_catalog() {
-        let games = category_entries(ScreenRoute::Games);
-        let catalog = games
-            .iter()
-            .find(|entry| entry.route == ScreenRoute::LuaApps)
-            .expect("SD Lua Apps entry");
-        assert_eq!(catalog.badge, "READY");
     }
 
     #[test]

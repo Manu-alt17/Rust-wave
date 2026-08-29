@@ -1,4 +1,6 @@
-//! Read-only sleep-image discovery and strict native-panel BMP decoding.
+//! Sleep-image discovery and strict native-panel BMP decoding, plus a tiny
+//! wake marker file (the only write this module does) recording which image
+//! was last shown.
 //!
 //! Sleep assets live below `/sdcard/RUSTMIX/SLEEP`. They are deliberately
 //! decoded into the panel's native 800 × 480, 1-bpp framebuffer rather than
@@ -16,6 +18,12 @@ use crate::framebuffer::{FrameBuffer, FRAMEBUFFER_SIZE, HEIGHT, ROW_BYTES, WIDTH
 
 /// Runtime directory containing removable-SD sleep images.
 pub const SLEEP_IMAGE_DIRECTORY: &str = "/sdcard/RUSTMIX/SLEEP";
+/// Marker file recording the file name of the last sleep image shown. Real
+/// hardware deep sleep is a full MCU reboot, so nothing in RAM survives a
+/// SELECT-key wake; this tiny file lets the fresh boot reload the exact same
+/// frame and draw the wake-in-progress overlay on top of it before the rest
+/// of boot has run. Ignored by the BMP-only directory scan above.
+pub const WAKE_MARKER_FILE: &str = "LASTWAKE.TXT";
 /// Bounded number of files examined on each entry to sleep mode.
 pub const MAX_SLEEP_IMAGE_CANDIDATES: usize = 32;
 const BMP_FILE_HEADER_BYTES: usize = 14;
@@ -133,6 +141,34 @@ impl SleepImageCatalog {
                 Some(format!("directory scan failed: {error}")),
             ),
         }
+    }
+
+    /// Persist the file name of the image just shown so a real hardware
+    /// deep-sleep wake can reload it. Best-effort: the caller logs failures
+    /// and keeps going either way, the same as the other sleep-entry
+    /// teardown steps around it.
+    pub fn record_wake_marker(&self, file_name: &str) -> io::Result<()> {
+        fs::write(self.directory.join(WAKE_MARKER_FILE), file_name)
+    }
+
+    /// Reload the frame recorded by [`Self::record_wake_marker`] for drawing
+    /// behind the wake overlay right after a real hardware deep-sleep
+    /// reboot. Falls back to the built-in frame when there is no marker, or
+    /// the recorded file is missing, invalid, or no longer decodes cleanly.
+    #[must_use]
+    pub fn load_wake_marker_frame(&self) -> FrameBuffer {
+        self.read_wake_marker()
+            .and_then(|file_name| decode_sleep_bmp_file(&self.directory.join(file_name)).ok())
+            .unwrap_or_else(built_in_sleep_frame)
+    }
+
+    fn read_wake_marker(&self) -> Option<String> {
+        let raw = fs::read_to_string(self.directory.join(WAKE_MARKER_FILE)).ok()?;
+        let file_name = raw.trim();
+        if file_name.is_empty() || file_name.contains(['/', '\\']) {
+            return None;
+        }
+        has_bmp_extension(Path::new(file_name)).then(|| file_name.to_string())
     }
 
     fn scan_valid_images(&self) -> io::Result<(Vec<PathBuf>, SleepImageScanStats)> {
@@ -401,7 +437,9 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{decode_sleep_bmp, SleepImageCatalog};
+    use super::{
+        decode_sleep_bmp, SleepImageCatalog, BMP_INFO_HEADER_BYTES, BMP_MIN_PIXEL_OFFSET,
+    };
     use crate::framebuffer::{FRAMEBUFFER_SIZE, HEIGHT, ROW_BYTES, WIDTH};
 
     fn fixture() -> Vec<u8> {
@@ -514,11 +552,101 @@ mod tests {
         );
     }
 
+    #[test]
+    fn wake_marker_round_trips_the_exact_recorded_frame() {
+        let root = unique_temp_dir("wake-marker-roundtrip");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("SLEEP.BMP"), fixture()).unwrap();
+        let catalog = SleepImageCatalog::new(&root);
+        catalog.record_wake_marker("SLEEP.BMP").unwrap();
+        let frame = catalog.load_wake_marker_frame();
+        assert_eq!(frame, decode_sleep_bmp(&fixture()).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wake_marker_falls_back_to_built_in_frame_without_a_marker() {
+        let root = unique_temp_dir("wake-marker-missing");
+        fs::create_dir_all(&root).unwrap();
+        let catalog = SleepImageCatalog::new(&root);
+        let frame = catalog.load_wake_marker_frame();
+        assert_eq!(
+            frame.as_bytes().len(),
+            (WIDTH as usize / 8) * HEIGHT as usize
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wake_marker_rejects_path_traversal_and_missing_extension() {
+        let root = unique_temp_dir("wake-marker-hostile");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("SLEEP.BMP"), fixture()).unwrap();
+        let catalog = SleepImageCatalog::new(&root);
+
+        fs::write(root.join(super::WAKE_MARKER_FILE), "../SLEEP.BMP").unwrap();
+        assert!(catalog.read_wake_marker().is_none());
+
+        fs::write(root.join(super::WAKE_MARKER_FILE), "SLEEP.TXT").unwrap();
+        assert!(catalog.read_wake_marker().is_none());
+
+        fs::write(root.join(super::WAKE_MARKER_FILE), "SLEEP.BMP\n").unwrap();
+        assert_eq!(catalog.read_wake_marker().as_deref(), Some("SLEEP.BMP"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn unique_temp_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("rustmix-wave-sleep-images-{label}-{nanos}"))
+    }
+
+    /// Mirrors the byte-for-byte layout the Wi-Fi portal's browser-side
+    /// `buildSleepBmp` encodes (see `wifi_transfer.rs`): 62-byte header,
+    /// 2-entry grayscale palette, bottom-up rows, MSB-first bit packing with
+    /// `is_white(x, y)` selecting the pixel at display coordinates.
+    fn encode_browser_style_bmp(is_white: impl Fn(u32, u32) -> bool) -> Vec<u8> {
+        let mut bytes = vec![0_u8; BMP_MIN_PIXEL_OFFSET + FRAMEBUFFER_SIZE];
+        bytes[0] = b'B';
+        bytes[1] = b'M';
+        let total_len = bytes.len() as u32;
+        bytes[2..6].copy_from_slice(&total_len.to_le_bytes());
+        bytes[10..14].copy_from_slice(&(BMP_MIN_PIXEL_OFFSET as u32).to_le_bytes());
+        bytes[14..18].copy_from_slice(&(BMP_INFO_HEADER_BYTES as u32).to_le_bytes());
+        bytes[18..22].copy_from_slice(&(WIDTH as i32).to_le_bytes());
+        bytes[22..26].copy_from_slice(&(HEIGHT as i32).to_le_bytes());
+        bytes[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[28..30].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[34..38].copy_from_slice(&(FRAMEBUFFER_SIZE as u32).to_le_bytes());
+        bytes[46..50].copy_from_slice(&2_u32.to_le_bytes());
+        bytes[54..58].copy_from_slice(&[0, 0, 0, 0]);
+        bytes[58..62].copy_from_slice(&[255, 255, 255, 0]);
+        let mut offset = BMP_MIN_PIXEL_OFFSET;
+        for canvas_row in (0..HEIGHT).rev() {
+            for byte_index in 0..ROW_BYTES as u32 {
+                let mut byte = 0_u8;
+                for bit in 0..8 {
+                    let x = byte_index * 8 + bit;
+                    if is_white(x, canvas_row) {
+                        byte |= 1 << (7 - bit);
+                    }
+                }
+                bytes[offset] = byte;
+                offset += 1;
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn browser_encoded_bmp_decodes_and_preserves_pixel_positions() {
+        let bytes = encode_browser_style_bmp(|x, y| !(x == 0 && y == 0));
+        let frame = decode_sleep_bmp(&bytes).unwrap();
+        assert_eq!(frame.as_bytes().len(), FRAMEBUFFER_SIZE);
+        assert_eq!(frame.as_bytes()[0], 0x7F);
+        assert!(frame.as_bytes()[1..].iter().all(|byte| *byte == 0xFF));
     }
 }

@@ -20,16 +20,47 @@ const ADC_CHANNEL_CTRL: u8 = 0x30;
 const ADC_BAT_VOLTAGE_HIGH: u8 = 0x34;
 const ADC_BAT_VOLTAGE_LOW: u8 = 0x35;
 const BAT_DET_CTRL: u8 = 0x68;
+const DC_ONOFF_DVM_CTRL: u8 = 0x80;
 const LDO_ONOFF_CTRL0: u8 = 0x90;
+const LDO_ONOFF_CTRL1: u8 = 0x91;
 const LDO_VOL2_CTRL: u8 = 0x94;
+const ALDO2_VOL_CTRL: u8 = 0x93;
 const BAT_PERCENT_DATA: u8 = 0xA4;
 const INTEN2: u8 = 0x41;
 const INTSTS2: u8 = 0x49;
+const ALDO1_ENABLE_BIT: u8 = 1 << 0;
+const ALDO2_ENABLE_BIT: u8 = 1 << 1;
 const ALDO3_ENABLE_BIT: u8 = 1 << 2;
 const ALDO3_MIN_MV: u16 = 500;
 const ALDO3_MAX_MV: u16 = 3500;
 const ALDO3_STEP_MV: u16 = 100;
 const EPAPER_RAIL_MV: u16 = 3300;
+/// ES8311 AVDD and the onboard digital microphone share this AXP2101 output.
+const AUDIO_RAIL_MV: u16 = 3300;
+
+// Schematic trace confirmed these AXP2101 outputs are unpopulated on this
+// board revision: ALDO1 dead-ends on unmounted R74, ALDO4/BLDO1/BLDO2/
+// CPUSLDO/DLDO1/DLDO2 have no net at all, and DCDC2-4 are switching channels
+// with no inductor populated on LX. Register/bit values verified against
+// XPowersLib's AXP2101Constants.h. DCDC1 (system VCC3V3, bit0 of
+// `DC_ONOFF_DVM_CTRL`) and DCDC5 (bit4) are deliberately excluded from the
+// mask below and are never touched.
+const ALDO4_ENABLE_BIT: u8 = 1 << 3;
+const BLDO1_ENABLE_BIT: u8 = 1 << 4;
+const BLDO2_ENABLE_BIT: u8 = 1 << 5;
+const CPUSLDO_ENABLE_BIT: u8 = 1 << 6;
+const DLDO1_ENABLE_BIT: u8 = 1 << 7;
+const UNUSED_LDO_ONOFF_CTRL0_BITS: u8 = ALDO1_ENABLE_BIT
+    | ALDO4_ENABLE_BIT
+    | BLDO1_ENABLE_BIT
+    | BLDO2_ENABLE_BIT
+    | CPUSLDO_ENABLE_BIT
+    | DLDO1_ENABLE_BIT;
+const DLDO2_ENABLE_BIT: u8 = 1 << 0;
+const DCDC2_ENABLE_BIT: u8 = 1 << 1;
+const DCDC3_ENABLE_BIT: u8 = 1 << 2;
+const DCDC4_ENABLE_BIT: u8 = 1 << 3;
+const UNUSED_DC_ONOFF_DVM_CTRL_BITS: u8 = DCDC2_ENABLE_BIT | DCDC3_ENABLE_BIT | DCDC4_ENABLE_BIT;
 
 /// Read-only AXP2101 status consumed by the sample-app UI shell.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -103,6 +134,40 @@ where
         let current = self.read_register(LDO_VOL2_CTRL)?;
         let encoded = encode_aldo3_voltage_mv(millivolts)?;
         self.write_register(LDO_VOL2_CTRL, (current & 0xE0) | encoded)
+    }
+
+    /// ALDO2 uses the same 500-3500 mV / 100 mV-step encoding as ALDO3.
+    fn set_aldo2_voltage_mv(&mut self, millivolts: u16) -> Result<()> {
+        let current = self.read_register(ALDO2_VOL_CTRL)?;
+        let encoded = encode_aldo3_voltage_mv(millivolts)?;
+        self.write_register(ALDO2_VOL_CTRL, (current & 0xE0) | encoded)
+    }
+
+    /// Disable every AXP2101 output the schematic trace confirmed is
+    /// unpopulated on this board revision (ALDO1, ALDO4, BLDO1, BLDO2,
+    /// CPUSLDO, DLDO1, DLDO2, DCDC2-4) once at boot, regardless of whatever
+    /// the PMIC's power-on default leaves enabled. DCDC1 (system VCC3V3) and
+    /// DCDC5 are excluded by construction: the masks only ever clear the bits
+    /// listed above, so any other channel's enable state is left untouched.
+    pub fn disable_unused_pmic_rails(&mut self) -> Result<()> {
+        self.verify_present()?;
+        self.update_bits(LDO_ONOFF_CTRL0, UNUSED_LDO_ONOFF_CTRL0_BITS, false)?;
+        self.update_bits(LDO_ONOFF_CTRL1, DLDO2_ENABLE_BIT, false)?;
+        self.update_bits(DC_ONOFF_DVM_CTRL, UNUSED_DC_ONOFF_DVM_CTRL_BITS, false)
+    }
+
+    /// Enable ALDO2 (Audio_VCC), which feeds the ES8311 codec AVDD pin and the
+    /// onboard digital microphone, before the audio subsystem initializes.
+    pub fn enable_audio_rail(&mut self) -> Result<()> {
+        self.verify_present()?;
+        self.set_aldo2_voltage_mv(AUDIO_RAIL_MV)?;
+        self.update_bits(LDO_ONOFF_CTRL0, ALDO2_ENABLE_BIT, true)
+    }
+
+    /// Disable ALDO2 before MCU deep sleep, mirroring [`PanelPower::disable_panel_rail`].
+    /// PVDD/DVDD stay powered from the always-on VCC3V3 rail regardless.
+    pub fn disable_audio_rail(&mut self) -> Result<()> {
+        self.update_bits(LDO_ONOFF_CTRL0, ALDO2_ENABLE_BIT, false)
     }
 
     /// Enable only the PMIC measurement channels needed by the sample-app
@@ -200,11 +265,61 @@ fn encode_aldo3_voltage_mv(millivolts: u16) -> Result<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_battery_voltage_mv, encode_aldo3_voltage_mv};
+    use super::{
+        decode_battery_voltage_mv, encode_aldo3_voltage_mv, ALDO1_ENABLE_BIT, ALDO2_ENABLE_BIT,
+        ALDO3_ENABLE_BIT, ALDO4_ENABLE_BIT, BLDO1_ENABLE_BIT, BLDO2_ENABLE_BIT, CPUSLDO_ENABLE_BIT,
+        DCDC2_ENABLE_BIT, DCDC3_ENABLE_BIT, DCDC4_ENABLE_BIT, DLDO1_ENABLE_BIT, DLDO2_ENABLE_BIT,
+        UNUSED_DC_ONOFF_DVM_CTRL_BITS, UNUSED_LDO_ONOFF_CTRL0_BITS,
+    };
 
     #[test]
     fn decodes_reference_battery_voltage_registers() {
         assert_eq!(decode_battery_voltage_mv(0x0F, 0x8C), 3_980);
+    }
+
+    #[test]
+    fn aldo_enable_bits_are_distinct_and_match_the_xpowers_register_layout() {
+        assert_eq!(ALDO1_ENABLE_BIT, 1 << 0);
+        assert_eq!(ALDO2_ENABLE_BIT, 1 << 1);
+        assert_eq!(ALDO3_ENABLE_BIT, 1 << 2);
+        assert_eq!(ALDO4_ENABLE_BIT, 1 << 3);
+        assert_eq!(BLDO1_ENABLE_BIT, 1 << 4);
+        assert_eq!(BLDO2_ENABLE_BIT, 1 << 5);
+        assert_eq!(CPUSLDO_ENABLE_BIT, 1 << 6);
+        assert_eq!(DLDO1_ENABLE_BIT, 1 << 7);
+        assert_eq!(DLDO2_ENABLE_BIT, 1 << 0);
+    }
+
+    #[test]
+    fn unused_rail_masks_never_include_dcdc1_or_dcdc5() {
+        assert_eq!(DCDC2_ENABLE_BIT, 1 << 1);
+        assert_eq!(DCDC3_ENABLE_BIT, 1 << 2);
+        assert_eq!(DCDC4_ENABLE_BIT, 1 << 3);
+        assert_eq!(
+            UNUSED_DC_ONOFF_DVM_CTRL_BITS & 1,
+            0,
+            "DCDC1 bit must stay untouched"
+        );
+        assert_eq!(
+            UNUSED_DC_ONOFF_DVM_CTRL_BITS & (1 << 4),
+            0,
+            "DCDC5 bit must stay untouched"
+        );
+    }
+
+    #[test]
+    fn unused_ldo_ctrl0_mask_excludes_aldo2_and_aldo3() {
+        assert_eq!(
+            UNUSED_LDO_ONOFF_CTRL0_BITS,
+            ALDO1_ENABLE_BIT
+                | ALDO4_ENABLE_BIT
+                | BLDO1_ENABLE_BIT
+                | BLDO2_ENABLE_BIT
+                | CPUSLDO_ENABLE_BIT
+                | DLDO1_ENABLE_BIT
+        );
+        assert_eq!(UNUSED_LDO_ONOFF_CTRL0_BITS & ALDO2_ENABLE_BIT, 0);
+        assert_eq!(UNUSED_LDO_ONOFF_CTRL0_BITS & ALDO3_ENABLE_BIT, 0);
     }
 
     #[test]

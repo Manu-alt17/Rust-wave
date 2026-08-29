@@ -13,9 +13,10 @@ This repository is the cleaned source tree. Historical patch overlays, temporary
 - Physical **Power long press** enters the accepted random sleep-image mode with network suspension and route restoration after wake.
 - Reader supports TXT and bounded reflowable EPUB files, TOC navigation, bookmarks, per-book resume, typography preferences, paragraph alignment, and FAT 8.3-safe persistence.
 - Voice Notes records PCM16 mono 16 kHz WAV files to SD, supports microphone gain, pause/resume, saved-note playback, titles, timestamps, delete confirmation, storage telemetry, and LAN export.
-- Native Dictionary reuses the Rustmix X4 prefix-shard SD pack and uses BOOT-short `NAV H` / `NAV V` keyboard-axis switching.
+- Native Dictionary reuses the Rustmix X4 prefix-shard SD pack and uses held-SELECT `NAV H` / `NAV V` keyboard-axis switching.
 - Native Calendar loads personal events and the U.S.-only 2026 pack, renders a daily agenda, and supports recovery-safe personal-event creation, editing, and deletion.
 - Wi-Fi transfer portal provides explicit LAN-only SD access with protected configuration paths and atomic file replacement.
+- Phone Wi-Fi provisioning: the device opens its own hotspot and a small web portal, joined via a single on-screen QR code and opened automatically through captive-portal detection, so Wi-Fi networks are added and passwords changed from a phone keyboard instead of the on-device rotary controls; up to 8 networks are saved and tried in order at boot.
 - RTC alarms, weather, unit conversion, file browsing, audio diagnostics, sensors, Lua apps, and native motion games remain available.
 
 ## Hardware target
@@ -88,6 +89,7 @@ The ESP-IDF main task remains the narrow hardware-orchestration owner. It owns d
 | Weather HTTPS fetch | Short-lived `weather-fetch` worker with a 64 KiB stack and bounded response payload |
 | Lua app open | Short-lived `lua-loader` worker with a 32 KiB stack |
 | Wi-Fi transfer portal | Explicitly started ESP-IDF HTTP server task with a 24 KiB stack and 4 KiB stream chunks |
+| Phone Wi-Fi provisioning portal | Explicitly started ESP-IDF HTTP server task with a 24 KiB stack, alongside `Configuration::Mixed` AP+STA Wi-Fi |
 | Voice Notes capture and playback | Cooperative bounded I2S chunks while native `AudioRuntime` retains codec ownership |
 
 `AppState` is heap-boxed, runtime memory snapshots report main-stack high-water margin and internal/PSRAM heap state, and workers return compact results before terminating. Lua apps never receive panel SPI, raw I2C, networking, or long-lived hardware handles.
@@ -216,13 +218,13 @@ See [`docs/SD_CARD_SETUP.md`](docs/SD_CARD_SETUP.md) for the complete storage co
 ```text
 ROTARY               Move the current selection
 SELECT               Activate the current selection
-BOOT short           Contextual action; keyboard/grid screens toggle NAV H / NAV V
-BOOT long             Hierarchical Back
+Hold SELECT          Contextual action; keyboard/grid screens toggle NAV H / NAV V
+BOOT                 Hierarchical Back
 Power short          Open display-maintenance menu
 Power long           Enter sleep-image mode
 ```
 
-All new keyboard or grid-style text-entry screens should compose the shared `KeyboardGridNavigation` helper so BOOT-short H/V axis switching is consistent across apps.
+All new keyboard or grid-style text-entry screens should compose the shared `KeyboardGridNavigation` helper so held-SELECT H/V axis switching is consistent across apps.
 
 ## Durable documentation
 

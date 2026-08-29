@@ -203,7 +203,7 @@ impl TiltMazeGame {
         let (row_delta, column_delta) = direction.delta();
         let old = self.player;
         let reason = if self.outcome.completed() {
-            self.status = "Goal reached  SELECT reset  Hold BOOT back".into();
+            self.status = "Goal reached  SELECT reset  BOOT back".into();
             "game-finished"
         } else if let Some(next) = shifted_cell(self.player, row_delta, column_delta) {
             if self.walls[next] {
@@ -351,7 +351,7 @@ impl TiltMazeGame {
         canvas.text(
             24,
             734,
-            "TILT move  SELECT reset  Hold BOOT back".into(),
+            "TILT move  SELECT reset  BOOT back".into(),
             CanvasTextStyle::Body,
         )?;
         Ok(())

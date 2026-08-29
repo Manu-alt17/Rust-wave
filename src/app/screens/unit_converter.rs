@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
     unit_converter::{format_milli, ConversionResult, ConverterField},
@@ -34,26 +30,12 @@ pub fn render_unit_converter(
     let value = format_milli(converter.value_milli);
     let step = format_milli(converter.step_milli());
 
-    draw_header(
-        display,
-        state.display,
-        "UNIT CONVERTER",
-        "OFFLINE FIXED-POINT",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: converter.category.label(),
-            middle: converter.active_field.label(),
-            right: "OFFLINE",
-        },
-    )?;
+    draw_header(display, state, "UNIT CONVERTER")?;
 
-    Text::new("Conversion", Point::new(22, 158), heading).draw(display)?;
+    Text::new("Conversion", Point::new(22, 112), heading).draw(display)?;
     draw_field(
         display,
-        184,
+        138,
         "Category",
         converter.category.label(),
         converter.active_field == ConverterField::Category,
@@ -61,7 +43,7 @@ pub fn render_unit_converter(
     )?;
     draw_field(
         display,
-        246,
+        200,
         "From",
         converter.from_unit().label(),
         converter.active_field == ConverterField::FromUnit,
@@ -69,7 +51,7 @@ pub fn render_unit_converter(
     )?;
     draw_field(
         display,
-        308,
+        262,
         "Value",
         &value,
         converter.active_field == ConverterField::Value,
@@ -77,7 +59,7 @@ pub fn render_unit_converter(
     )?;
     draw_field(
         display,
-        370,
+        324,
         "To",
         converter.to_unit().label(),
         converter.active_field == ConverterField::ToUnit,
@@ -85,24 +67,20 @@ pub fn render_unit_converter(
     )?;
     draw_field(
         display,
-        432,
+        386,
         "Step",
         &step,
         converter.active_field == ConverterField::StepSize,
         body,
     )?;
 
-    Rectangle::new(Point::new(22, 520), Size::new(436, 152))
+    Rectangle::new(Point::new(22, 474), Size::new(436, 152))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
-    Text::new("RESULT", Point::new(42, 560), body).draw(display)?;
-    Text::new(&result, Point::new(42, 624), state.display.large_style()).draw(display)?;
+    Text::new("RESULT", Point::new(42, 514), body).draw(display)?;
+    Text::new(&result, Point::new(42, 578), state.display.large_style()).draw(display)?;
 
-    draw_footer(
-        display,
-        state.display,
-        "UP/DOWN  SELECT NEXT  HOLD BOOT BACK",
-    )?;
+    draw_footer(display, state.display, "UP/DOWN  SELECT NEXT  BOOT BACK")?;
     Ok(())
 }
 

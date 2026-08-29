@@ -170,6 +170,28 @@ where
         })
     }
 
+    /// Disable the accelerometer and gyroscope to cut QMI8658 current draw.
+    ///
+    /// The QMI8658 sits on the board's always-on VCC3V3 rail (it is not
+    /// switched by an AXP2101 ALDO/BLDO channel like the e-paper panel), so
+    /// this CTRL7 write is the only lever available to reduce its power use
+    /// while the rest of the board is in MCU deep sleep.
+    pub fn sleep(&mut self) -> Result<()> {
+        let address = self
+            .address
+            .ok_or_else(|| anyhow!("QMI8658 sleep requested before initialization"))?;
+        self.write_register(address, CTRL7, 0x00)
+    }
+
+    /// Re-enable the accelerometer/gyroscope profile applied by
+    /// [`Self::initialize`] after [`Self::sleep`].
+    pub fn wake(&mut self) -> Result<()> {
+        let address = self
+            .address
+            .ok_or_else(|| anyhow!("QMI8658 wake requested before initialization"))?;
+        self.write_register(address, CTRL7, SAMPLE_CTRL7_ACC_GYR_ENABLE)
+    }
+
     /// Read STATUS0 and one contiguous temperature + accelerometer +
     /// gyroscope frame. The contiguous read keeps shared-I2C ownership small.
     pub fn read_motion(&mut self) -> Result<ImuReading> {

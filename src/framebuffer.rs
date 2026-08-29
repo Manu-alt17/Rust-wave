@@ -80,6 +80,13 @@ impl FrameBuffer {
             self.bytes[byte_index] |= mask;
         }
     }
+
+    /// Direct mutable access to the packed bytes. Only for fast blit paths
+    /// (see [`crate::orientation::OrientedFrameBuffer::blit_packed_bitmap_portrait`])
+    /// that bypass the per-pixel `set_native_black` path for throughput.
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes
+    }
 }
 
 impl OriginDimensions for FrameBuffer {

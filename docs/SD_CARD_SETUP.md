@@ -5,6 +5,7 @@ Use a FAT-formatted SD card. Rustmix Wave mounts it at `/sdcard` and expects the
 ```text
 /RUSTMIX/
   WIFI.TXT
+  CLOCK.TXT
   WEATHER.TXT
   ALARMS.TXT
   DISPLAY.TXT
@@ -14,6 +15,11 @@ Use a FAT-formatted SD card. Rustmix Wave mounts it at `/sdcard` and expects the
   VOICE/
   SLEEP/
     *.BMP
+  MAGIC/
+    INDEX.TXT
+    ACTIVE.TXT
+    *_F.TOK
+    *_H.TOK
   APPS/
     HGRID/
     SUDOKU/
@@ -45,14 +51,24 @@ The generic installer preserves an existing Dictionary and Calendar tree. Use th
 
 ## Wi-Fi
 
-Copy or edit `/RUSTMIX/WIFI.TXT`:
+The normal way to add and manage Wi-Fi networks is on-device: Settings ▸ Network ▸ Configure via phone opens the device's own hotspot and a small web page, reached by scanning a single on-screen QR code to join the hotspot — the page then opens on its own via captive-portal detection. From there, pick a network the device found nearby (or type one in) and enter its password with your phone's keyboard — no typing on the device itself. Up to 8 networks can be saved; Settings ▸ Network ▸ Saved networks lists them and can forget one. See `docs/USER_GUIDE.md` for the full walkthrough.
+
+Editing `/RUSTMIX/WIFI.TXT` by hand remains a supported fallback for headless or bulk provisioning:
 
 ```text
-ssid=YOUR_NETWORK
-password=YOUR_PASSWORD
+ssid1=YOUR_NETWORK
+password1=YOUR_PASSWORD
+ssid2=ANOTHER_NETWORK
+password2=ANOTHER_PASSWORD
 timezone=America/New_York
 ntp_server=pool.ntp.org
 ```
+
+Networks are numbered `ssid1=`/`password1=`, `ssid2=`/`password2=`, and so on (up to 8), and are tried in order at boot until one connects. A single unnumbered `ssid=`/`password=` pair is equivalent to `ssid1=`/`password1=`, so an existing single-network file keeps working unchanged.
+
+Supported `timezone` values: `America/New_York`, `Europe/Rome`, `UTC`. All three apply automatic DST transitions except UTC.
+
+The timezone can also be changed on-device from Settings ▸ Clock ▸ Set date & time (first field, cycled with Up/Down). Saving there updates the clock immediately and writes the choice to its own `/RUSTMIX/CLOCK.TXT` file (`timezone=Europe/Rome`), independent of Wi-Fi provisioning, so it survives a reboot — including a real deep-sleep wake, which is a full reboot — even when `WIFI.TXT` does not exist yet. When `WIFI.TXT` is already present, its `timezone=` line is kept in sync too, but `CLOCK.TXT` is the source of truth read at boot.
 
 Do not commit real credentials.
 

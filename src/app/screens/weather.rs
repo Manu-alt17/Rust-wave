@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
     weather::DailyForecast,
@@ -30,7 +26,6 @@ pub fn render_weather(
     let body = state.display.body_style();
     let weather = &state.weather;
     let current = weather.current.as_ref();
-    let temperature = current.map_or_else(|| "--.- F".into(), |value| value.temperature_label());
     let apparent = current.map_or_else(
         || "--.- F".into(),
         |value| value.apparent_temperature_label(),
@@ -42,24 +37,15 @@ pub fn render_weather(
     let wind = current.map_or_else(|| "--.- mph".into(), |value| value.wind_label());
     let condition = current.map_or("Weather unavailable", |value| value.condition_label());
 
-    draw_header(display, state.display, "WEATHER", "OPEN-METEO FORECAST")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: weather.state.label(),
-            middle: &temperature,
-            right: weather.home_badge(),
-        },
-    )?;
+    draw_header(display, state, "WEATHER")?;
 
-    Text::new(&weather.location, Point::new(22, 154), heading).draw(display)?;
-    Text::new(condition, Point::new(22, 184), body).draw(display)?;
-    line(display, 226, "Feels like", &apparent, body)?;
-    line(display, 258, "Humidity", &humidity, body)?;
-    line(display, 290, "Wind", &wind, body)?;
+    Text::new(&weather.location, Point::new(22, 108), heading).draw(display)?;
+    Text::new(condition, Point::new(22, 138), body).draw(display)?;
+    line(display, 180, "Feels like", &apparent, body)?;
+    line(display, 212, "Humidity", &humidity, body)?;
+    line(display, 244, "Wind", &wind, body)?;
 
-    Text::new("Four-day forecast", Point::new(22, 340), heading).draw(display)?;
+    Text::new("Four-day forecast", Point::new(22, 294), heading).draw(display)?;
     if weather.forecast.is_empty() {
         Text::new(
             if weather.state == crate::weather::WeatherFetchState::Retrying {
@@ -67,35 +53,31 @@ pub fn render_weather(
             } else {
                 "No cached forecast. Choose Refresh."
             },
-            Point::new(22, 382),
+            Point::new(22, 336),
             body,
         )
         .draw(display)?;
     } else {
         for (index, row) in weather.forecast.iter().take(4).enumerate() {
-            draw_forecast_row(display, 374 + index as i32 * 52, row, body)?;
+            draw_forecast_row(display, 328 + index as i32 * 52, row, body)?;
         }
     }
 
     draw_action(
         display,
-        604,
+        558,
         "Refresh weather",
         state.weather_action_selected == 0,
         body,
     )?;
     draw_action(
         display,
-        658,
+        612,
         "Weather details",
         state.weather_action_selected == 1,
         body,
     )?;
-    draw_footer(
-        display,
-        state.display,
-        "UP/DOWN  SELECT RUN  HOLD BOOT BACK",
-    )?;
+    draw_footer(display, state.display, "UP/DOWN  SELECT RUN  BOOT BACK")?;
     Ok(())
 }
 
@@ -113,46 +95,37 @@ pub fn render_weather_details(
         .map_or("not fetched", |value| value.observed_at.as_str());
     let error = weather.error.as_deref().unwrap_or("none");
 
-    draw_header(
-        display,
-        state.display,
-        "WEATHER DETAILS",
-        "CACHE AND CONFIGURATION",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: weather.state.label(),
-            middle: weather.home_badge(),
-            right: "DETAILS",
-        },
-    )?;
+    draw_header(display, state, "WEATHER DETAILS")?;
 
-    Text::new("Cached forecast", Point::new(22, 160), heading).draw(display)?;
-    line(display, 204, "Provider", &weather.provider, body)?;
-    line(display, 238, "Timezone", &weather.provider_timezone, body)?;
-    line(display, 272, "Observed", observed, body)?;
+    Text::new("Cached forecast", Point::new(22, 114), heading).draw(display)?;
+    line(display, 158, "Provider", &weather.provider, body)?;
+    line(display, 192, "Timezone", &weather.provider_timezone, body)?;
+    line(display, 226, "Observed", observed, body)?;
     line(
         display,
-        306,
+        260,
         "Last success",
         weather.last_success_label(),
         body,
     )?;
 
-    Text::new("Configuration", Point::new(22, 374), heading).draw(display)?;
+    Text::new("Configuration", Point::new(22, 328), heading).draw(display)?;
     Text::new(
         crate::weather::WeatherSnapshot::config_path(),
-        Point::new(22, 416),
+        Point::new(22, 370),
         body,
     )
     .draw(display)?;
 
-    Text::new("Last error", Point::new(22, 488), heading).draw(display)?;
-    Text::new(error, Point::new(22, 530), detail).draw(display)?;
-    Text::new("Hold BOOT to return to Weather.", Point::new(22, 666), body).draw(display)?;
-    draw_footer(display, state.display, "HOLD BOOT BACK")?;
+    Text::new("Last error", Point::new(22, 442), heading).draw(display)?;
+    Text::new(error, Point::new(22, 484), detail).draw(display)?;
+    Text::new(
+        "Press BOOT to return to Weather.",
+        Point::new(22, 620),
+        body,
+    )
+    .draw(display)?;
+    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
 }
 

@@ -825,6 +825,7 @@ const INTER_COMPACT_DETAIL_BITMAP: [u8; 783] = [
 pub static INTER_COMPACT_DETAIL: BitmapFont = BitmapFont {
     glyphs: &INTER_COMPACT_DETAIL_GLYPHS,
     bitmap: &INTER_COMPACT_DETAIL_BITMAP,
+    extra: &[],
     line_height: 16,
 };
 
@@ -1670,6 +1671,7 @@ const INTER_COMPACT_BODY_BITMAP: [u8; 1184] = [
 pub static INTER_COMPACT_BODY: BitmapFont = BitmapFont {
     glyphs: &INTER_COMPACT_BODY_GLYPHS,
     bitmap: &INTER_COMPACT_BODY_BITMAP,
+    extra: &[],
     line_height: 18,
 };
 
@@ -2578,6 +2580,7 @@ const INTER_COMPACT_HEADING_BITMAP: [u8; 2185] = [
 pub static INTER_COMPACT_HEADING: BitmapFont = BitmapFont {
     glyphs: &INTER_COMPACT_HEADING_GLYPHS,
     bitmap: &INTER_COMPACT_HEADING_BITMAP,
+    extra: &[],
     line_height: 24,
 };
 
@@ -3520,6 +3523,7 @@ const INTER_COMPACT_LARGE_BITMAP: [u8; 2724] = [
 pub static INTER_COMPACT_LARGE: BitmapFont = BitmapFont {
     glyphs: &INTER_COMPACT_LARGE_GLYPHS,
     bitmap: &INTER_COMPACT_LARGE_BITMAP,
+    extra: &[],
     line_height: 29,
 };
 
@@ -4353,6 +4357,7 @@ const INTER_STANDARD_DETAIL_BITMAP: [u8; 989] = [
 pub static INTER_STANDARD_DETAIL: BitmapFont = BitmapFont {
     glyphs: &INTER_STANDARD_DETAIL_GLYPHS,
     bitmap: &INTER_STANDARD_DETAIL_BITMAP,
+    extra: &[],
     line_height: 17,
 };
 
@@ -5228,6 +5233,7 @@ const INTER_STANDARD_BODY_BITMAP: [u8; 1657] = [
 pub static INTER_STANDARD_BODY: BitmapFont = BitmapFont {
     glyphs: &INTER_STANDARD_BODY_GLYPHS,
     bitmap: &INTER_STANDARD_BODY_BITMAP,
+    extra: &[],
     line_height: 20,
 };
 
@@ -6152,6 +6158,7 @@ const INTER_STANDARD_HEADING_BITMAP: [u8; 2437] = [
 pub static INTER_STANDARD_HEADING: BitmapFont = BitmapFont {
     glyphs: &INTER_STANDARD_HEADING_GLYPHS,
     bitmap: &INTER_STANDARD_HEADING_BITMAP,
+    extra: &[],
     line_height: 26,
 };
 
@@ -7135,6 +7142,7 @@ const INTER_STANDARD_LARGE_BITMAP: [u8; 3382] = [
 pub static INTER_STANDARD_LARGE: BitmapFont = BitmapFont {
     glyphs: &INTER_STANDARD_LARGE_GLYPHS,
     bitmap: &INTER_STANDARD_LARGE_BITMAP,
+    extra: &[],
     line_height: 31,
 };
 
@@ -7980,6 +7988,7 @@ const INTER_LARGE_DETAIL_BITMAP: [u8; 1184] = [
 pub static INTER_LARGE_DETAIL: BitmapFont = BitmapFont {
     glyphs: &INTER_LARGE_DETAIL_GLYPHS,
     bitmap: &INTER_LARGE_DETAIL_BITMAP,
+    extra: &[],
     line_height: 18,
 };
 
@@ -8878,6 +8887,7 @@ const INTER_LARGE_BODY_BITMAP: [u8; 2029] = [
 pub static INTER_LARGE_BODY: BitmapFont = BitmapFont {
     glyphs: &INTER_LARGE_BODY_GLYPHS,
     bitmap: &INTER_LARGE_BODY_BITMAP,
+    extra: &[],
     line_height: 23,
 };
 
@@ -9820,6 +9830,7 @@ const INTER_LARGE_HEADING_BITMAP: [u8; 2724] = [
 pub static INTER_LARGE_HEADING: BitmapFont = BitmapFont {
     glyphs: &INTER_LARGE_HEADING_GLYPHS,
     bitmap: &INTER_LARGE_HEADING_BITMAP,
+    extra: &[],
     line_height: 29,
 };
 
@@ -10848,6 +10859,7 @@ const INTER_LARGE_LARGE_BITMAP: [u8; 4111] = [
 pub static INTER_LARGE_LARGE: BitmapFont = BitmapFont {
     glyphs: &INTER_LARGE_LARGE_GLYPHS,
     bitmap: &INTER_LARGE_LARGE_BITMAP,
+    extra: &[],
     line_height: 34,
 };
 
@@ -11667,6 +11679,7 @@ const ATKINSON_COMPACT_DETAIL_BITMAP: [u8; 756] = [
 pub static ATKINSON_COMPACT_DETAIL: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_COMPACT_DETAIL_GLYPHS,
     bitmap: &ATKINSON_COMPACT_DETAIL_BITMAP,
+    extra: &[],
     line_height: 13,
 };
 
@@ -12499,6 +12512,7 @@ const ATKINSON_COMPACT_BODY_BITMAP: [u8; 963] = [
 pub static ATKINSON_COMPACT_BODY: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_COMPACT_BODY_GLYPHS,
     bitmap: &ATKINSON_COMPACT_BODY_BITMAP,
+    extra: &[],
     line_height: 15,
 };
 
@@ -13385,6 +13399,7 @@ const ATKINSON_COMPACT_HEADING_BITMAP: [u8; 1836] = [
 pub static ATKINSON_COMPACT_HEADING: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_COMPACT_HEADING_GLYPHS,
     bitmap: &ATKINSON_COMPACT_HEADING_BITMAP,
+    extra: &[],
     line_height: 20,
 };
 
@@ -14312,6 +14327,7 @@ const ATKINSON_COMPACT_LARGE_BITMAP: [u8; 2481] = [
 pub static ATKINSON_COMPACT_LARGE: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_COMPACT_LARGE_GLYPHS,
     bitmap: &ATKINSON_COMPACT_LARGE_BITMAP,
+    extra: &[],
     line_height: 24,
 };
 
@@ -15132,6 +15148,7 @@ const ATKINSON_STANDARD_DETAIL_BITMAP: [u8; 783] = [
 pub static ATKINSON_STANDARD_DETAIL: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_STANDARD_DETAIL_GLYPHS,
     bitmap: &ATKINSON_STANDARD_DETAIL_BITMAP,
+    extra: &[],
     line_height: 13,
 };
 
@@ -15984,6 +16001,7 @@ const ATKINSON_STANDARD_BODY_BITMAP: [u8; 1292] = [
 pub static ATKINSON_STANDARD_BODY: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_STANDARD_BODY_GLYPHS,
     bitmap: &ATKINSON_STANDARD_BODY_BITMAP,
+    extra: &[],
     line_height: 17,
 };
 
@@ -16894,6 +16912,7 @@ const ATKINSON_STANDARD_HEADING_BITMAP: [u8; 2219] = [
 pub static ATKINSON_STANDARD_HEADING: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_STANDARD_HEADING_GLYPHS,
     bitmap: &ATKINSON_STANDARD_HEADING_BITMAP,
+    extra: &[],
     line_height: 22,
 };
 
@@ -17847,6 +17866,7 @@ const ATKINSON_STANDARD_LARGE_BITMAP: [u8; 2911] = [
 pub static ATKINSON_STANDARD_LARGE: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_STANDARD_LARGE_GLYPHS,
     bitmap: &ATKINSON_STANDARD_LARGE_BITMAP,
+    extra: &[],
     line_height: 26,
 };
 
@@ -18679,6 +18699,7 @@ const ATKINSON_LARGE_DETAIL_BITMAP: [u8; 963] = [
 pub static ATKINSON_LARGE_DETAIL: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_LARGE_DETAIL_GLYPHS,
     bitmap: &ATKINSON_LARGE_DETAIL_BITMAP,
+    extra: &[],
     line_height: 15,
 };
 
@@ -19561,6 +19582,7 @@ const ATKINSON_LARGE_BODY_BITMAP: [u8; 1761] = [
 pub static ATKINSON_LARGE_BODY: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_LARGE_BODY_GLYPHS,
     bitmap: &ATKINSON_LARGE_BODY_BITMAP,
+    extra: &[],
     line_height: 20,
 };
 
@@ -20488,6 +20510,7 @@ const ATKINSON_LARGE_HEADING_BITMAP: [u8; 2481] = [
 pub static ATKINSON_LARGE_HEADING: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_LARGE_HEADING_GLYPHS,
     bitmap: &ATKINSON_LARGE_HEADING_BITMAP,
+    extra: &[],
     line_height: 24,
 };
 
@@ -21478,5 +21501,6 @@ const ATKINSON_LARGE_LARGE_BITMAP: [u8; 3496] = [
 pub static ATKINSON_LARGE_LARGE: BitmapFont = BitmapFont {
     glyphs: &ATKINSON_LARGE_LARGE_GLYPHS,
     bitmap: &ATKINSON_LARGE_LARGE_BITMAP,
+    extra: &[],
     line_height: 28,
 };

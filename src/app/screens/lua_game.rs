@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     games::canvas::{CanvasTextStyle, DrawCommand},
     lua_runtime::LUA_CATALOG_PAGE_SIZE,
@@ -30,33 +26,22 @@ pub fn render_lua_apps(
     let catalog = &state.lua_runtime.catalog;
     let selected = state.lua_runtime.selected;
     let page_start = (selected / LUA_CATALOG_PAGE_SIZE) * LUA_CATALOG_PAGE_SIZE;
-    let pages = catalog.entries.len().max(1).div_ceil(LUA_CATALOG_PAGE_SIZE);
-    let page = format!("{}/{}", (page_start / LUA_CATALOG_PAGE_SIZE) + 1, pages);
     let heading = state.display.heading_style();
     let body = state.display.body_style();
 
-    draw_header(display, state.display, "SD LUA APPS", "RUST-OWNED CANVAS")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "CATALOG",
-            middle: &format!("{} apps", catalog.entries.len()),
-            right: &page,
-        },
-    )?;
-    Text::new("Select an SD-loaded app", Point::new(22, 158), heading).draw(display)?;
-    Text::new("Hold BOOT to go back.", Point::new(22, 188), body).draw(display)?;
+    draw_header(display, state, "SD LUA APPS")?;
+    Text::new("Select an SD-loaded app", Point::new(22, 112), heading).draw(display)?;
+    Text::new("Press BOOT to go back.", Point::new(22, 142), body).draw(display)?;
 
     if catalog.entries.is_empty() {
-        Rectangle::new(Point::new(22, 232), Size::new(436, 228))
+        Rectangle::new(Point::new(22, 186), Size::new(436, 228))
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)?;
-        Text::new("No Lua apps found.", Point::new(44, 300), heading).draw(display)?;
-        Text::new("Install /RUSTMIX/APPS/HGRID", Point::new(44, 350), body).draw(display)?;
+        Text::new("No Lua apps found.", Point::new(44, 254), heading).draw(display)?;
+        Text::new("Install /RUSTMIX/APPS/HGRID", Point::new(44, 304), body).draw(display)?;
         Text::new(
             catalog.warning.as_deref().unwrap_or("Catalog is empty"),
-            Point::new(44, 400),
+            Point::new(44, 354),
             state.display.detail_style(),
         )
         .draw(display)?;
@@ -68,7 +53,7 @@ pub fn render_lua_apps(
             .take(LUA_CATALOG_PAGE_SIZE)
             .enumerate()
         {
-            let top = 214 + visible_index as i32 * 86;
+            let top = 168 + visible_index as i32 * 86;
             let is_selected = page_start + visible_index == selected;
             let border = if is_selected {
                 PrimitiveStyle::with_stroke(BinaryColor::On, 4)
@@ -108,7 +93,7 @@ pub fn render_lua_apps(
     draw_footer(
         display,
         state.display,
-        "UP/DOWN MOVE  SELECT OPEN  HOLD BOOT BACK",
+        "UP/DOWN MOVE  SELECT OPEN  BOOT BACK",
     )?;
     Ok(())
 }
@@ -132,32 +117,23 @@ pub fn render_lua_error(
 ) -> Result<(), Infallible> {
     let heading = state.display.heading_style();
     let body = state.display.body_style();
-    draw_header(display, state.display, "LUA APP ERROR", "NATIVE FALLBACK")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "SCRIPT",
-            middle: "ERROR",
-            right: "SAFE",
-        },
-    )?;
-    Rectangle::new(Point::new(22, 210), Size::new(436, 270))
+    draw_header(display, state, "LUA APP ERROR")?;
+    Rectangle::new(Point::new(22, 164), Size::new(436, 270))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
-    Text::new("App could not open.", Point::new(44, 280), heading).draw(display)?;
+    Text::new("App could not open.", Point::new(44, 234), heading).draw(display)?;
     Text::new(
         state
             .lua_runtime
             .error
             .as_deref()
             .unwrap_or("No active app session"),
-        Point::new(44, 350),
+        Point::new(44, 304),
         body,
     )
     .draw(display)?;
-    Text::new("Hold BOOT to return.", Point::new(44, 430), body).draw(display)?;
-    draw_footer(display, state.display, "HOLD BOOT BACK")?;
+    Text::new("Press BOOT to return.", Point::new(44, 384), body).draw(display)?;
+    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
 }
 

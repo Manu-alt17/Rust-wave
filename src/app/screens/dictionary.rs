@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::Text,
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     dictionary::{DictionaryUiState, DICTIONARY_KEY_ROWS, DICTIONARY_SHARD_MAX_BYTES},
     orientation::OrientedFrameBuffer,
@@ -37,61 +33,45 @@ pub fn render_dictionary(
     } else {
         dictionary.query.clone()
     };
-    let shard_label = dictionary
-        .current_match()
-        .map_or_else(|| "INDEX.TXT".into(), |item| item.shard.clone());
     let mode = if dictionary.wildcard {
         "PREFIX"
     } else {
         "EXACT"
     };
 
-    draw_header(display, state.display, "DICTIONARY", "X4 PREFIX-SHARD PACK")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: if dictionary.pack_ready {
-                "READY"
-            } else {
-                "SD PACK"
-            },
-            middle: &shard_label,
-            right: dictionary.navigation_mode_label(),
-        },
-    )?;
+    draw_header(display, state, "DICTIONARY")?;
 
-    Text::new("Search", Point::new(22, 158), heading).draw(display)?;
-    Rectangle::new(Point::new(22, 176), Size::new(436, 52))
+    Text::new("Search", Point::new(22, 112), heading).draw(display)?;
+    Rectangle::new(Point::new(22, 130), Size::new(436, 52))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
-    Text::new(&query, Point::new(38, 210), body).draw(display)?;
+    Text::new(&query, Point::new(38, 164), body).draw(display)?;
     Text::new(
         &truncate(&dictionary.message, 48),
-        Point::new(22, 258),
+        Point::new(22, 212),
         body,
     )
     .draw(display)?;
-    Text::new(&format!("LOOKUP {mode}"), Point::new(350, 258), detail).draw(display)?;
+    Text::new(&format!("LOOKUP {mode}"), Point::new(350, 212), detail).draw(display)?;
 
-    Rectangle::new(Point::new(22, 278), Size::new(436, 190))
+    Rectangle::new(Point::new(22, 232), Size::new(436, 190))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
     if let Some(result) = dictionary.current_match() {
-        Text::new(&truncate(&result.word, 34), Point::new(38, 316), heading).draw(display)?;
-        Text::new(&dictionary.match_label(), Point::new(342, 316), body).draw(display)?;
+        Text::new(&truncate(&result.word, 34), Point::new(38, 270), heading).draw(display)?;
+        Text::new(&dictionary.match_label(), Point::new(342, 270), body).draw(display)?;
         for (index, line) in wrap_lines(&result.definition, 51, 5).iter().enumerate() {
-            Text::new(line, Point::new(38, 352 + index as i32 * 24), detail).draw(display)?;
+            Text::new(line, Point::new(38, 306 + index as i32 * 24), detail).draw(display)?;
         }
     } else {
-        Text::new("Offline native lookup", Point::new(38, 322), heading).draw(display)?;
-        Text::new("Reuses /RUSTMIX/APPS/DICT", Point::new(38, 362), body).draw(display)?;
+        Text::new("Offline native lookup", Point::new(38, 276), heading).draw(display)?;
+        Text::new("Reuses /RUSTMIX/APPS/DICT", Point::new(38, 316), body).draw(display)?;
         Text::new(
             &format!(
                 "Bounded shard read: {} KiB",
                 DICTIONARY_SHARD_MAX_BYTES / 1024
             ),
-            Point::new(38, 402),
+            Point::new(38, 356),
             body,
         )
         .draw(display)?;
@@ -101,7 +81,7 @@ pub fn render_dictionary(
     draw_footer(
         display,
         state.display,
-        "UP/DOWN MOVE  BOOT H/V  SELECT  HOLD BOOT BACK",
+        "UP/DOWN MOVE  HOLD H/V  SELECT  BOOT BACK",
     )?;
     Ok(())
 }
@@ -116,7 +96,7 @@ fn draw_keyboard(
         for (column_index, label) in row.iter().enumerate() {
             let index = row_index * 6 + column_index;
             let left = 22 + column_index as i32 * 73;
-            let top = 486 + row_index as i32 * 48;
+            let top = 440 + row_index as i32 * 48;
             let selected = dictionary.selected_key_index() == index;
             Rectangle::new(Point::new(left, top), Size::new(68, 40))
                 .into_styled(PrimitiveStyle::with_stroke(

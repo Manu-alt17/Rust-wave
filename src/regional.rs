@@ -4,9 +4,17 @@
 //! uploaded Waveshare sample uses UTC+08:00 as its RTC basis. Keep that basis
 //! explicit and apply a timezone profile only at the presentation boundary.
 
-use anyhow::{bail, Result};
+use std::{fs, path::Path};
 
-use crate::rtc::RtcDateTime;
+use anyhow::{bail, Context, Result};
+
+use crate::{calendar::days_in_month, rtc::RtcDateTime};
+
+/// On-device timezone selection, persisted independently of Wi-Fi
+/// provisioning so choosing a timezone from the Clock screen's "Set date &
+/// time" editor survives a reboot (including a real deep-sleep wake, which is
+/// a full reboot) even when the device has no `WIFI.TXT` on the SD card.
+pub const CLOCK_CONFIG_PATH: &str = "/sdcard/RUSTMIX/CLOCK.TXT";
 
 /// RTC wall-clock basis inherited from the uploaded sample application.
 pub const SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES: i16 = 8 * 60;
@@ -49,6 +57,7 @@ pub enum TimeZoneProfile {
     #[default]
     AmericaNewYork,
     Utc,
+    EuropeRome,
 }
 
 impl TimeZoneProfile {
@@ -56,6 +65,7 @@ impl TimeZoneProfile {
         match value {
             "America/New_York" => Ok(Self::AmericaNewYork),
             "UTC" => Ok(Self::Utc),
+            "Europe/Rome" => Ok(Self::EuropeRome),
             _ => bail!("unsupported timezone profile {value:?}"),
         }
     }
@@ -65,6 +75,7 @@ impl TimeZoneProfile {
         match self {
             Self::AmericaNewYork => "America/New_York",
             Self::Utc => "UTC",
+            Self::EuropeRome => "Europe/Rome",
         }
     }
 
@@ -74,6 +85,8 @@ impl TimeZoneProfile {
             Self::AmericaNewYork if is_new_york_dst(utc) => -4 * 60,
             Self::AmericaNewYork => -5 * 60,
             Self::Utc => 0,
+            Self::EuropeRome if is_eu_dst(utc) => 2 * 60,
+            Self::EuropeRome => 60,
         }
     }
 
@@ -83,6 +96,47 @@ impl TimeZoneProfile {
             Self::AmericaNewYork if is_new_york_dst(utc) => "EDT",
             Self::AmericaNewYork => "EST",
             Self::Utc => "UTC",
+            Self::EuropeRome if is_eu_dst(utc) => "CEST",
+            Self::EuropeRome => "CET",
+        }
+    }
+
+    /// Convert a UTC instant into this timezone's local wall-clock fields.
+    #[must_use]
+    pub fn localize_utc(self, utc: RtcDateTime) -> RtcDateTime {
+        utc.shift_minutes(i32::from(self.offset_minutes_for_utc(utc)))
+    }
+
+    /// Resolve one local wall-clock reading into UTC under this timezone.
+    /// For the repeated DST fall-back hour, prefer the earlier valid UTC
+    /// candidate so the result stays deterministic without persisting a
+    /// separate DST flag in removable storage.
+    #[must_use]
+    pub fn local_to_utc(self, local: RtcDateTime) -> RtcDateTime {
+        match self {
+            Self::Utc => local,
+            Self::AmericaNewYork => {
+                let daylight = local.shift_minutes(4 * 60);
+                let standard = local.shift_minutes(5 * 60);
+                let daylight_valid = self.offset_minutes_for_utc(daylight) == -4 * 60;
+                let standard_valid = self.offset_minutes_for_utc(standard) == -5 * 60;
+                match (daylight_valid, standard_valid) {
+                    (true, _) => daylight,
+                    (false, true) => standard,
+                    (false, false) => standard,
+                }
+            }
+            Self::EuropeRome => {
+                let daylight = local.shift_minutes(-2 * 60);
+                let standard = local.shift_minutes(-60);
+                let daylight_valid = self.offset_minutes_for_utc(daylight) == 2 * 60;
+                let standard_valid = self.offset_minutes_for_utc(standard) == 60;
+                match (daylight_valid, standard_valid) {
+                    (true, _) => daylight,
+                    (false, true) => standard,
+                    (false, false) => standard,
+                }
+            }
         }
     }
 }
@@ -126,31 +180,25 @@ impl RegionalPreferences {
     /// Convert stored RTC fields into the selected timezone with automatic DST.
     #[must_use]
     pub fn localize_rtc(self, rtc: RtcDateTime) -> RtcDateTime {
-        let utc = self.rtc_to_utc(rtc);
-        utc.shift_minutes(i32::from(self.timezone.offset_minutes_for_utc(utc)))
+        self.timezone.localize_utc(self.rtc_to_utc(rtc))
     }
 
-    /// Convert a local schedule value into the retained RTC storage basis.
-    /// For New York's repeated fall-back hour, prefer the earlier valid UTC
-    /// candidate. Alarm definitions remain deterministic without storing a
-    /// separate DST flag in removable storage.
+    /// Convert a local schedule value into the retained RTC storage basis
+    /// under the currently selected timezone.
     #[must_use]
     pub fn local_to_rtc(self, local: RtcDateTime) -> RtcDateTime {
-        let utc = match self.timezone {
-            TimeZoneProfile::Utc => local,
-            TimeZoneProfile::AmericaNewYork => {
-                let daylight = local.shift_minutes(4 * 60);
-                let standard = local.shift_minutes(5 * 60);
-                let daylight_valid = self.timezone.offset_minutes_for_utc(daylight) == -4 * 60;
-                let standard_valid = self.timezone.offset_minutes_for_utc(standard) == -5 * 60;
-                match (daylight_valid, standard_valid) {
-                    (true, _) => daylight,
-                    (false, true) => standard,
-                    (false, false) => standard,
-                }
-            }
-        };
-        utc.shift_minutes(i32::from(self.rtc_storage_utc_offset_minutes))
+        self.local_to_rtc_for_zone(self.timezone, local)
+    }
+
+    /// Convert a local schedule value into the retained RTC storage basis
+    /// under an explicitly chosen timezone, independent of the currently
+    /// selected one. Used by the Clock screen's "Set date & time" editor so
+    /// picking a new timezone there can be resolved before it is committed
+    /// to `self.timezone`.
+    #[must_use]
+    pub fn local_to_rtc_for_zone(self, zone: TimeZoneProfile, local: RtcDateTime) -> RtcDateTime {
+        zone.local_to_utc(local)
+            .shift_minutes(i32::from(self.rtc_storage_utc_offset_minutes))
     }
 
     /// Render the selected timezone using the RTC date when available.
@@ -171,6 +219,7 @@ impl RegionalPreferences {
                 format_utc_offset(DEFAULT_DISPLAY_UTC_OFFSET_MINUTES)
             ),
             TimeZoneProfile::Utc => "UTC UTC+00:00".into(),
+            TimeZoneProfile::EuropeRome => "CET UTC+01:00".into(),
         }
     }
 
@@ -184,6 +233,36 @@ impl RegionalPreferences {
     pub fn rtc_storage_label(self) -> String {
         format_utc_offset(self.rtc_storage_utc_offset_minutes)
     }
+}
+
+/// Load a timezone selection previously saved by [`save_timezone_name`].
+/// Independent of `WIFI.TXT`/`NetworkConfig`: this is the durable home for a
+/// timezone chosen on-device, regardless of whether Wi-Fi has ever been
+/// configured.
+pub fn load_timezone_name(path: impl AsRef<Path>) -> Result<String> {
+    let path = path.as_ref();
+    let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let value = contents
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("timezone="))
+        .ok_or_else(|| anyhow::anyhow!("missing timezone key in {}", path.display()))?
+        .trim();
+    TimeZoneProfile::parse(value)
+        .with_context(|| format!("invalid timezone in {}", path.display()))?;
+    Ok(value.to_string())
+}
+
+/// Persist a timezone selection to `path`, creating the parent directory if
+/// needed. Called every time the Clock screen's "Set date & time" editor
+/// commits a timezone, so the choice survives the next boot on its own,
+/// without requiring `WIFI.TXT` to already exist.
+pub fn save_timezone_name(path: impl AsRef<Path>, timezone: &str) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    fs::write(path, format!("timezone={timezone}\n"))
+        .with_context(|| format!("write {}", path.display()))
 }
 
 /// Render an offset using the user-facing `UTC+HH:MM` form.
@@ -203,6 +282,26 @@ fn is_new_york_dst(utc: RtcDateTime) -> bool {
         utc.year, utc.month, utc.day, utc.hour, utc.minute, utc.second,
     );
     current >= start && current < end
+}
+
+/// EU-wide clocks change at 01:00 UTC on the last Sunday of March (forward)
+/// and the last Sunday of October (back), the same moment across every EU
+/// member state regardless of local time.
+fn is_eu_dst(utc: RtcDateTime) -> bool {
+    let start_day = last_sunday_of_month(utc.year, 3);
+    let end_day = last_sunday_of_month(utc.year, 10);
+    let start = date_time_key(utc.year, 3, start_day, 1, 0, 0);
+    let end = date_time_key(utc.year, 10, end_day, 1, 0, 0);
+    let current = date_time_key(
+        utc.year, utc.month, utc.day, utc.hour, utc.minute, utc.second,
+    );
+    current >= start && current < end
+}
+
+fn last_sunday_of_month(year: u16, month: u8) -> u8 {
+    let last_day = days_in_month(year, month);
+    let last_weekday = weekday_for_date(year, month, last_day);
+    last_day - last_weekday
 }
 
 fn nth_sunday_of_month(year: u16, month: u8, nth: u8) -> u8 {
@@ -315,6 +414,83 @@ mod tests {
     }
 
     #[test]
+    fn europe_rome_profile_applies_automatic_eu_wide_dst_transitions() {
+        // 2026 EU DST: starts 2026-03-29 01:00 UTC, ends 2026-10-25 01:00 UTC.
+        let before_spring = RtcDateTime {
+            year: 2026,
+            month: 3,
+            day: 29,
+            weekday: 0,
+            hour: 0,
+            minute: 59,
+            second: 0,
+        };
+        let after_spring = RtcDateTime {
+            hour: 1,
+            minute: 0,
+            ..before_spring
+        };
+        let before_fall = RtcDateTime {
+            year: 2026,
+            month: 10,
+            day: 25,
+            weekday: 0,
+            hour: 0,
+            minute: 59,
+            second: 0,
+        };
+        let after_fall = RtcDateTime {
+            hour: 1,
+            minute: 0,
+            ..before_fall
+        };
+        assert_eq!(
+            TimeZoneProfile::EuropeRome.offset_minutes_for_utc(before_spring),
+            60
+        );
+        assert_eq!(
+            TimeZoneProfile::EuropeRome.offset_minutes_for_utc(after_spring),
+            120
+        );
+        assert_eq!(
+            TimeZoneProfile::EuropeRome.offset_minutes_for_utc(before_fall),
+            120
+        );
+        assert_eq!(
+            TimeZoneProfile::EuropeRome.offset_minutes_for_utc(after_fall),
+            60
+        );
+        assert_eq!(
+            TimeZoneProfile::EuropeRome.abbreviation_for_utc(after_spring),
+            "CEST"
+        );
+        assert_eq!(
+            TimeZoneProfile::EuropeRome.abbreviation_for_utc(after_fall),
+            "CET"
+        );
+    }
+
+    #[test]
+    fn localizes_and_round_trips_europe_rome_local_time() {
+        let preferences = RegionalPreferences::default()
+            .with_timezone_name("Europe/Rome")
+            .unwrap();
+        let local = RtcDateTime {
+            year: 2026,
+            month: 8,
+            day: 18,
+            weekday: 2,
+            hour: 15,
+            minute: 0,
+            second: 0,
+        };
+        let stored = preferences.local_to_rtc(local);
+        assert_eq!(preferences.localize_rtc(stored), local);
+        // Mid-August is CEST (UTC+2): 15:00 local is 13:00 UTC.
+        assert_eq!(preferences.rtc_to_utc(stored).hour, 13);
+    }
+
+    #[test]
     fn localizes_sample_storage_clock_into_new_york_daylight_time() {
         let sample_wall_clock = RtcDateTime {
             year: 2026,
@@ -342,5 +518,40 @@ mod tests {
         assert_eq!(format_utc_offset(480), "UTC+08:00");
         assert_eq!(format_utc_offset(-240), "UTC-04:00");
         assert_eq!(format_utc_offset(330), "UTC+05:30");
+    }
+
+    #[test]
+    fn round_trips_timezone_selection_through_its_own_config_file() {
+        use super::{load_timezone_name, save_timezone_name};
+
+        let dir = std::env::temp_dir().join(format!(
+            "rustmix-wave-clock-config-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("CLOCK.TXT");
+
+        save_timezone_name(&path, "Europe/Rome").unwrap();
+        assert_eq!(load_timezone_name(&path).unwrap(), "Europe/Rome");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_unsupported_timezone_in_clock_config_file() {
+        use super::load_timezone_name;
+
+        let dir = std::env::temp_dir().join(format!(
+            "rustmix-wave-clock-config-invalid-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("CLOCK.TXT");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "timezone=Mars/Olympus\n").unwrap();
+
+        assert!(load_timezone_name(&path).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

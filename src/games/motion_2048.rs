@@ -347,7 +347,7 @@ impl Motion2048Game {
         canvas.text(
             24,
             724,
-            "TILT swipe  SELECT reset  Hold BOOT back".into(),
+            "TILT swipe  SELECT reset  BOOT back".into(),
             CanvasTextStyle::Body,
         )?;
         Ok(())

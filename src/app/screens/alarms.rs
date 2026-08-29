@@ -13,11 +13,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
 };
@@ -29,55 +25,37 @@ pub fn render_alarms(
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let alarms = &state.alarms;
-    let current_time = state.board.time_label(state.regional);
     let next = alarms.next_label();
 
-    draw_header(display, state.display, "ALARMS", "RTC SCHEDULES")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: &current_time,
-            middle: alarms.home_badge(),
-            right: if alarms.hardware_programmed {
-                "RTC ARMED"
-            } else {
-                "RTC IDLE"
-            },
-        },
-    )?;
+    draw_header(display, state, "ALARMS")?;
 
     if let Some(active) = alarms.active.as_ref() {
-        Text::new("Alarm active", Point::new(22, 158), heading).draw(display)?;
-        Text::new(&active.label(), Point::new(22, 202), body).draw(display)?;
-        Text::new(state.audio.alarm_label(), Point::new(22, 240), body).draw(display)?;
-        draw_action(display, 318, "Snooze", alarms.selected == 0, body)?;
-        draw_action(display, 386, "Dismiss", alarms.selected == 1, body)?;
+        Text::new("Alarm active", Point::new(22, 112), heading).draw(display)?;
+        Text::new(&active.label(), Point::new(22, 156), body).draw(display)?;
+        Text::new(state.audio.alarm_label(), Point::new(22, 194), body).draw(display)?;
+        draw_action(display, 272, "Snooze", alarms.selected == 0, body)?;
+        draw_action(display, 340, "Dismiss", alarms.selected == 1, body)?;
         Text::new(
             &format!("Snooze interval: {} minutes", alarms.snooze_minutes),
-            Point::new(22, 490),
+            Point::new(22, 444),
             body,
         )
         .draw(display)?;
-        draw_footer(
-            display,
-            state.display,
-            "UP/DOWN  SELECT RUN  HOLD BOOT BACK",
-        )?;
+        draw_footer(display, state.display, "UP/DOWN  SELECT RUN  BOOT BACK")?;
         return Ok(());
     }
 
     if let Some(editor) = alarms.editor.as_ref() {
-        Text::new("Runtime editor", Point::new(22, 154), heading).draw(display)?;
+        Text::new("Runtime editor", Point::new(22, 108), heading).draw(display)?;
         Text::new(
             &format!("Alarm: {}", editor.draft.name),
-            Point::new(22, 194),
+            Point::new(22, 148),
             body,
         )
         .draw(display)?;
         draw_editor_row(
             display,
-            238,
+            192,
             "Hour",
             &format!("{:02}", editor.draft.hour),
             editor.field_index == 0,
@@ -85,7 +63,7 @@ pub fn render_alarms(
         )?;
         draw_editor_row(
             display,
-            294,
+            248,
             "Minute",
             &format!("{:02}", editor.draft.minute),
             editor.field_index == 1,
@@ -93,7 +71,7 @@ pub fn render_alarms(
         )?;
         draw_editor_row(
             display,
-            350,
+            304,
             "Enabled",
             editor.draft.status_label(),
             editor.field_index == 2,
@@ -101,7 +79,7 @@ pub fn render_alarms(
         )?;
         draw_editor_row(
             display,
-            406,
+            360,
             "Mode",
             match editor.draft.schedule {
                 crate::alarm::AlarmScheduleKind::Recurring { .. } => "RECURRING",
@@ -112,7 +90,7 @@ pub fn render_alarms(
         )?;
         draw_editor_row(
             display,
-            462,
+            416,
             "Weekdays / date",
             &editor.draft.schedule.compact_label(),
             editor.field_index == 4,
@@ -120,14 +98,14 @@ pub fn render_alarms(
         )?;
         draw_action(
             display,
-            548,
+            502,
             "Save runtime edit",
             editor.field_index == 5,
             body,
         )?;
         Text::new(
             "Edit ALARMS.TXT for persistent changes.",
-            Point::new(22, 632),
+            Point::new(22, 586),
             body,
         )
         .draw(display)?;
@@ -139,23 +117,23 @@ pub fn render_alarms(
         return Ok(());
     }
 
-    Text::new("Configured schedules", Point::new(22, 154), heading).draw(display)?;
-    Text::new(&format!("Next: {next}"), Point::new(22, 194), body).draw(display)?;
+    Text::new("Configured schedules", Point::new(22, 108), heading).draw(display)?;
+    Text::new(&format!("Next: {next}"), Point::new(22, 148), body).draw(display)?;
     Text::new(
         &format!("Config: {ALARMS_CONFIG_PATH}"),
-        Point::new(22, 230),
+        Point::new(22, 184),
         body,
     )
     .draw(display)?;
 
     if alarms.alarms.is_empty() {
-        Text::new("No alarm schedules were loaded.", Point::new(22, 298), body).draw(display)?;
-        Text::new("Add alarm rows to ALARMS.TXT.", Point::new(22, 338), body).draw(display)?;
+        Text::new("No alarm schedules were loaded.", Point::new(22, 252), body).draw(display)?;
+        Text::new("Add alarm rows to ALARMS.TXT.", Point::new(22, 292), body).draw(display)?;
     } else {
         for (index, alarm) in alarms.alarms.iter().take(6).enumerate() {
             draw_alarm_row(
                 display,
-                264 + index as i32 * 62,
+                218 + index as i32 * 62,
                 alarm,
                 alarms.selected == index,
                 body,
@@ -164,13 +142,9 @@ pub fn render_alarms(
     }
 
     if let Some(error) = alarms.error.as_deref() {
-        Text::new(&format!("Last error: {error}"), Point::new(22, 674), body).draw(display)?;
+        Text::new(&format!("Last error: {error}"), Point::new(22, 628), body).draw(display)?;
     }
-    draw_footer(
-        display,
-        state.display,
-        "UP/DOWN  SELECT EDIT  HOLD BOOT BACK",
-    )?;
+    draw_footer(display, state.display, "UP/DOWN  SELECT EDIT  BOOT BACK")?;
     Ok(())
 }
 

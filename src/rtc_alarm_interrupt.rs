@@ -1,9 +1,12 @@
 //! PCF85063 active-low alarm interrupt readiness boundary.
 //!
 //! The uploaded Waveshare reference routes the PCF85063 interrupt output to
-//! GPIO45.  This milestone deliberately validates the physical line while the
-//! FreeRTOS firmware loop is still running.  MCU deep-sleep entry is deferred
-//! until the board-level active-low route has passed a physical smoke test.
+//! GPIO45. GPIO45 sits outside the ESP32-S3's RTC IO range (GPIO0-21), so it
+//! cannot be armed as an `ext1` wakeup source for real MCU hardware deep
+//! sleep (see [`crate::mcu_deep_sleep`]). This polling monitor only observes
+//! the line while the FreeRTOS firmware loop is still running — while awake,
+//! or during the rare software-only sleep fallback — never while the board
+//! is in real hardware deep sleep.
 
 /// Board-specific PCF85063 alarm interrupt pin from the uploaded Waveshare BSP.
 pub const RTC_ALARM_INTERRUPT_GPIO: u8 = 45;

@@ -201,7 +201,7 @@ impl SudokuGame {
         })
     }
 
-    pub fn apply_boot_short_press_and_render(
+    pub fn apply_select_long_press_and_render(
         &mut self,
         canvas: &mut NativeGameCanvas,
     ) -> Result<SudokuEventResult, String> {
@@ -405,8 +405,8 @@ impl SudokuGame {
         )?;
         canvas.text(24, 690, self.status.clone(), CanvasTextStyle::Detail)?;
         let footer = match self.mode {
-            SudokuMode::Navigate => "BOOT short axis  Hold BOOT back",
-            SudokuMode::Edit => "BOOT short cancel  SELECT save",
+            SudokuMode::Navigate => "Hold SELECT axis  BOOT back",
+            SudokuMode::Edit => "Hold SELECT cancel  SELECT save",
         };
         canvas.text(24, 742, footer.to_string(), CanvasTextStyle::Detail)?;
         canvas.request_refresh();
@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn boot_short_axis_toggle_switches_horizontal_and_vertical_navigation() {
+    fn select_long_axis_toggle_switches_horizontal_and_vertical_navigation() {
         let mut game = SudokuGame::from_puzzle(PUZZLE).unwrap();
         let mut canvas = NativeGameCanvas::default();
         game.render_initial(&mut canvas).unwrap();
@@ -564,7 +564,9 @@ mod tests {
             .apply_button_and_render(ButtonEvent::Down, &mut canvas)
             .unwrap();
         assert_eq!((horizontal.row, horizontal.column), (0, 3));
-        let toggled = game.apply_boot_short_press_and_render(&mut canvas).unwrap();
+        let toggled = game
+            .apply_select_long_press_and_render(&mut canvas)
+            .unwrap();
         assert_eq!(toggled.reason, "axis-toggle");
         assert_eq!(toggled.axis, SudokuMovementAxis::Vertical);
         assert_eq!(toggled.dirty_regions, vec![super::SUDOKU_STATUS_RECT]);
@@ -575,18 +577,21 @@ mod tests {
     }
 
     #[test]
-    fn boot_short_cancels_edit_and_preserves_navigation_axis() {
+    fn select_long_cancels_edit_and_preserves_navigation_axis() {
         let mut game = SudokuGame::from_puzzle(PUZZLE).unwrap();
         let mut canvas = NativeGameCanvas::default();
         game.render_initial(&mut canvas).unwrap();
-        game.apply_boot_short_press_and_render(&mut canvas).unwrap();
+        game.apply_select_long_press_and_render(&mut canvas)
+            .unwrap();
         assert_eq!(game.movement_axis(), SudokuMovementAxis::Vertical);
         game.apply_button_and_render(ButtonEvent::Select, &mut canvas)
             .unwrap();
         assert_eq!(game.mode(), SudokuMode::Edit);
         game.apply_button_and_render(ButtonEvent::Down, &mut canvas)
             .unwrap();
-        let canceled = game.apply_boot_short_press_and_render(&mut canvas).unwrap();
+        let canceled = game
+            .apply_select_long_press_and_render(&mut canvas)
+            .unwrap();
         assert_eq!(canceled.reason, "edit-cancel");
         assert_eq!(canceled.mode, SudokuMode::Navigate);
         assert_eq!(canceled.axis, SudokuMovementAxis::Vertical);

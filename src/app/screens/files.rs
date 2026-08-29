@@ -13,14 +13,10 @@ use crate::app::typography::Text;
 use crate::{
     app::{
         state::AppState,
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
-    storage::{FilePreview, StorageSnapshot},
+    storage::FilePreview,
 };
 
 /// Draw the read-only SDMMC browser or the bounded text-preview panel.
@@ -30,40 +26,29 @@ pub fn render_files(
 ) -> Result<(), Infallible> {
     let storage = &state.storage;
     if let Some(preview) = &storage.preview {
-        return render_preview(display, state, storage, preview);
+        return render_preview(display, state, preview);
     }
 
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
-    let path = truncate_label(&storage.current_path, 18);
-    let page = storage.page_label();
 
-    draw_header(display, state.display, "FILES", "SDMMC READ-ONLY BROWSER")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: storage.status_label(),
-            middle: &path,
-            right: &page,
-        },
-    )?;
+    draw_header(display, state, "FILES")?;
 
-    Text::new("Directory", Point::new(22, 152), heading).draw(display)?;
+    Text::new("Directory", Point::new(22, 106), heading).draw(display)?;
     if let Some(error) = &storage.error {
-        Text::new(&truncate_label(error, 68), Point::new(22, 180), body).draw(display)?;
+        Text::new(&truncate_label(error, 68), Point::new(22, 134), body).draw(display)?;
     } else if storage.scan.retained_entries == 0 {
         Text::new(
             "No files or directories found on this SD card.",
-            Point::new(22, 180),
+            Point::new(22, 134),
             body,
         )
         .draw(display)?;
     } else {
         Text::new(
             "Directories first, then files. No write operations.",
-            Point::new(22, 180),
+            Point::new(22, 134),
             body,
         )
         .draw(display)?;
@@ -71,7 +56,7 @@ pub fn render_files(
 
     let selected_on_page = storage.selected_on_page();
     for (index, entry) in storage.visible_entries().iter().enumerate() {
-        let top = 210 + (index as i32 * 66);
+        let top = 164 + (index as i32 * 66);
         let selected = index == selected_on_page;
         let outline = if selected {
             PrimitiveStyle::with_stroke(BinaryColor::On, 3)
@@ -97,40 +82,23 @@ pub fn render_files(
         Text::new(&entry.size_label(), Point::new(382, top + 32), detail).draw(display)?;
     }
 
-    draw_footer(display, state.display, "MOVE  SELECT OPEN  HOLD BOOT BACK")?;
+    draw_footer(display, state.display, "MOVE  SELECT OPEN  BOOT BACK")?;
     Ok(())
 }
 
 fn render_preview(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
-    storage: &StorageSnapshot,
     preview: &FilePreview,
 ) -> Result<(), Infallible> {
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
-    let path = truncate_label(&storage.current_path, 18);
-    let mode = if preview.binary { "BINARY" } else { "TEXT" };
 
-    draw_header(
-        display,
-        state.display,
-        "FILE PREVIEW",
-        "BOUNDED READ-ONLY VIEW",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: mode,
-            middle: &path,
-            right: if preview.truncated { "TRUNC" } else { "FULL" },
-        },
-    )?;
+    draw_header(display, state, "FILE PREVIEW")?;
     Text::new(
         &truncate_label(&preview.name, 52),
-        Point::new(22, 152),
+        Point::new(22, 106),
         heading,
     )
     .draw(display)?;
@@ -142,19 +110,19 @@ fn render_preview(
         } else {
             "Text preview. File remains unchanged."
         },
-        Point::new(22, 182),
+        Point::new(22, 136),
         body,
     )
     .draw(display)?;
 
-    Rectangle::new(Point::new(22, 210), Size::new(436, 498))
+    Rectangle::new(Point::new(22, 164), Size::new(436, 498))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
     for (index, line) in preview.display_lines(18, 52).iter().enumerate() {
-        Text::new(line, Point::new(34, 238 + (index as i32 * 24)), detail).draw(display)?;
+        Text::new(line, Point::new(34, 192 + (index as i32 * 24)), detail).draw(display)?;
     }
 
-    draw_footer(display, state.display, "SELECT CLOSE  HOLD BOOT BACK")?;
+    draw_footer(display, state.display, "SELECT CLOSE  BOOT BACK")?;
     Ok(())
 }
 

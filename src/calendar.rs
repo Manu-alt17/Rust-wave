@@ -533,7 +533,7 @@ impl Default for CalendarUiState {
             details_action_selected: 0,
             delete_confirmation_selected: 0,
             editor: None,
-            notice: "BOOT short opens agenda. BOOT short again adds personal event.".into(),
+            notice: "Hold SELECT opens agenda. Hold SELECT again adds personal event.".into(),
             request: None,
             initialized: false,
         }

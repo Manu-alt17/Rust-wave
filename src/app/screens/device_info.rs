@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     build_info::{FIRMWARE_VERSION, PRODUCT_NAME},
     orientation::OrientedFrameBuffer,
@@ -29,39 +25,23 @@ pub fn render_device_info(
 ) -> Result<(), Infallible> {
     let heading = state.display.heading_style();
     let body = state.display.body_style();
-    let version = format!("v{FIRMWARE_VERSION}");
-    let orientation = state.orientation.label();
     let partials = format!("{} / 24", state.partial_refreshes);
 
-    draw_header(
-        display,
-        state.display,
-        "DEVICE INFO",
-        "FIRMWARE AND DISPLAY",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "PAGE 1/3",
-            middle: orientation,
-            right: &version,
-        },
-    )?;
+    draw_header(display, state, "DEVICE INFO")?;
 
-    Text::new("Firmware", Point::new(22, 164), heading).draw(display)?;
-    line(display, 212, "Product", PRODUCT_NAME, body)?;
-    line(display, 252, "Version", FIRMWARE_VERSION, body)?;
-    line(display, 292, "Milestone", "Readability repair", body)?;
+    Text::new("Firmware", Point::new(22, 118), heading).draw(display)?;
+    line(display, 166, "Product", PRODUCT_NAME, body)?;
+    line(display, 206, "Version", FIRMWARE_VERSION, body)?;
+    line(display, 246, "Milestone", "Readability repair", body)?;
 
-    Text::new("Display", Point::new(22, 372), heading).draw(display)?;
-    line(display, 420, "Logical UI", "480 x 800 portrait", body)?;
-    line(display, 460, "Native panel", "800 x 480 mono", body)?;
-    line(display, 500, "Framebuffer", "48,000 bytes / 1-bpp", body)?;
-    line(display, 540, "Partial chain", &partials, body)?;
+    Text::new("Display", Point::new(22, 326), heading).draw(display)?;
+    line(display, 374, "Logical UI", "480 x 800 portrait", body)?;
+    line(display, 414, "Native panel", "800 x 480 mono", body)?;
+    line(display, 454, "Framebuffer", "48,000 bytes / 1-bpp", body)?;
+    line(display, 494, "Partial chain", &partials, body)?;
 
-    draw_action(display, 640, "Board services", body)?;
-    draw_footer(display, state.display, "SELECT NEXT  HOLD BOOT BACK")?;
+    draw_action(display, 594, "Board services", body)?;
+    draw_footer(display, state.display, "SELECT NEXT  BOOT BACK")?;
     Ok(())
 }
 
@@ -73,41 +53,22 @@ pub fn render_device_info_board(
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
-    let rtc = availability(state.board.rtc.is_some());
-    let environment = availability(state.board.environment.is_some());
-    let power = availability(state.board.power.is_some());
-    let imu = availability(state.board.imu.is_some());
 
-    draw_header(display, state.display, "DEVICE INFO", "BOARD SERVICES")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "PAGE 2/3",
-            middle: "BOARD",
-            right: "READ ONLY",
-        },
-    )?;
+    draw_header(display, state, "DEVICE INFO")?;
 
-    Text::new("Shared-I2C services", Point::new(22, 164), heading).draw(display)?;
-    line(display, 212, "RTC", rtc, body)?;
-    line(display, 252, "Environment", environment, body)?;
-    line(display, 292, "Power monitor", power, body)?;
-    line(display, 332, "Motion sensor", imu, body)?;
-
-    Text::new("SDMMC storage", Point::new(22, 410), heading).draw(display)?;
-    line(display, 458, "Mount", state.storage.status_label(), body)?;
-    line(display, 498, "Mode", "4-bit FAT / read-only UI", body)?;
-    Text::new("Pins", Point::new(22, 538), body).draw(display)?;
+    Text::new("SDMMC storage", Point::new(22, 118), heading).draw(display)?;
+    line(display, 166, "Mount", state.storage.status_label(), body)?;
+    line(display, 206, "Mode", "4-bit FAT / read-only UI", body)?;
+    Text::new("Pins", Point::new(22, 246), body).draw(display)?;
     Text::new(
         "CLK16 CMD17 D0=15 D1=7 D2=8 D3=18",
-        Point::new(22, 572),
+        Point::new(22, 280),
         detail,
     )
     .draw(display)?;
 
-    draw_action(display, 640, "Runtime services", body)?;
-    draw_footer(display, state.display, "SELECT NEXT  HOLD BOOT BACK")?;
+    draw_action(display, 348, "Runtime services", body)?;
+    draw_footer(display, state.display, "SELECT NEXT  BOOT BACK")?;
     Ok(())
 }
 
@@ -121,51 +82,34 @@ pub fn render_device_info_runtime(
     let detail = state.display.detail_style();
     let timezone = state.regional.timezone_label_for_rtc(state.board.rtc);
 
-    draw_header(display, state.display, "DEVICE INFO", "RUNTIME OWNERSHIP")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "PAGE 3/3",
-            middle: "RUNTIME",
-            right: "STABLE",
-        },
-    )?;
+    draw_header(display, state, "DEVICE INFO")?;
 
-    Text::new("Runtime services", Point::new(22, 164), heading).draw(display)?;
-    line(display, 212, "Network", state.network.home_badge(), body)?;
-    line(display, 252, "Weather", state.weather.home_badge(), body)?;
-    line(display, 292, "RTC alarms", state.alarms.home_badge(), body)?;
-    line(display, 332, "Display zone", &timezone, body)?;
+    Text::new("Runtime services", Point::new(22, 118), heading).draw(display)?;
+    line(display, 166, "Network", state.network.home_badge(), body)?;
+    line(display, 206, "Weather", state.weather.home_badge(), body)?;
+    line(display, 246, "RTC alarms", state.alarms.home_badge(), body)?;
+    line(display, 286, "Display zone", &timezone, body)?;
     line(
         display,
-        372,
+        326,
         "Temperature",
         state.regional.temperature_unit.marker(),
         body,
     )?;
 
-    Text::new("Stable ownership", Point::new(22, 450), heading).draw(display)?;
-    line(display, 498, "EPD busy", "GPIO3 / ALDO3 managed", body)?;
-    line(display, 538, "Buttons", "UP4 SELECT5 DOWN6", body)?;
-    line(display, 578, "Power key", "Short menu / hold sleep", body)?;
-    line(display, 618, "RTC alarm", "GPIO45 active-low", body)?;
+    Text::new("Stable ownership", Point::new(22, 404), heading).draw(display)?;
+    line(display, 452, "EPD busy", "GPIO3 / ALDO3 managed", body)?;
+    line(display, 492, "Buttons", "UP4 SELECT5 DOWN6", body)?;
+    line(display, 532, "Power key", "Short menu / hold sleep", body)?;
+    line(display, 572, "RTC alarm", "GPIO45 active-low", body)?;
     Text::new(
-        "Hold BOOT to return to page 2.",
-        Point::new(22, 680),
+        "Press BOOT to return to page 2.",
+        Point::new(22, 634),
         detail,
     )
     .draw(display)?;
-    draw_footer(display, state.display, "HOLD BOOT BACK")?;
+    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
-}
-
-fn availability(ready: bool) -> &'static str {
-    if ready {
-        "Ready"
-    } else {
-        "Unavailable"
-    }
 }
 
 fn line(

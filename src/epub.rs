@@ -12,7 +12,7 @@
 //! NCX records become a compact table of contents. Images, CSS layout and
 //! interactive links remain deferred.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path, time::Instant};
 
 use miniz_oxide::inflate::decompress_to_vec;
 
@@ -38,6 +38,15 @@ pub const EPUB_PARSER_WORKER_STACK_BYTES: usize = 64 * 1024;
 /// Lightweight OPF-title worker stack budget. Library scans only read bounded
 /// ZIP metadata and must not reserve the full parser stack for each title.
 pub const EPUB_TITLE_WORKER_STACK_BYTES: usize = 32 * 1024;
+/// Cover-extraction worker stack budget. Only ZIP central-directory parsing
+/// and one member's DEFLATE expansion run here — no XHTML flattening — so
+/// this sits between the title and full-parser budgets.
+pub const EPUB_COVER_WORKER_STACK_BYTES: usize = 48 * 1024;
+/// Maximum bytes accepted for one extracted cover image. PNG covers decode
+/// at full resolution (no native scaled decoding, unlike JPEG), so this
+/// bounds the largest buffer the cover-thumbnail pipeline decodes on
+/// PSRAM-limited hardware.
+pub const EPUB_COVER_BYTES_LIMIT: usize = 3 * 1024 * 1024;
 
 /// One reflowable EPUB TOC destination. `text_offset` is an offset into the
 /// flattened UTF-8 text buffer retained by [`EpubDocument`].
@@ -97,7 +106,16 @@ struct ZipEntry {
     local_header_offset: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// ZIP reader backed by one whole-archive read. An earlier revision of this
+/// reader kept only the central directory in RAM and seeked+read each member
+/// from disk individually, to skip loading an EPUB's non-text assets (cover
+/// image, embedded fonts, CSS) that this reader never touches. On real
+/// hardware that traded a smaller total byte count for dozens of small SD
+/// seeks per book (two per extracted member), and per-seek latency on this
+/// SD/FAT stack dominates: a 48-chapter book measured no faster than before.
+/// One large sequential read is the safer default for SD access, so this
+/// reverts to it; only the archive-size check moved ahead of the read (a
+/// `fs::metadata` call, so an oversized file is rejected without reading it).
 struct ZipArchive {
     bytes: Vec<u8>,
     entries: Vec<ZipEntry>,
@@ -105,14 +123,17 @@ struct ZipArchive {
 
 impl ZipArchive {
     fn open(path: impl AsRef<Path>) -> Result<Self, String> {
-        let bytes =
-            fs::read(path.as_ref()).map_err(|error| format!("EPUB open failed: {error}"))?;
-        if bytes.len() > EPUB_ARCHIVE_BYTES_LIMIT {
+        let path = path.as_ref();
+        let file_len = fs::metadata(path)
+            .map_err(|error| format!("EPUB open failed: {error}"))?
+            .len();
+        if file_len > EPUB_ARCHIVE_BYTES_LIMIT as u64 {
             return Err(format!(
                 "EPUB archive exceeds {} byte limit",
                 EPUB_ARCHIVE_BYTES_LIMIT
             ));
         }
+        let bytes = fs::read(path).map_err(|error| format!("EPUB open failed: {error}"))?;
         let eocd = find_eocd(&bytes).ok_or_else(|| "EPUB ZIP end record missing".to_string())?;
         let entry_count = read_u16(&bytes, eocd + 10)? as usize;
         let central_size = read_u32(&bytes, eocd + 12)? as usize;
@@ -306,6 +327,85 @@ pub fn read_epub_title(path: impl AsRef<Path>) -> Result<String, String> {
     Ok(package_title(&package))
 }
 
+/// One EPUB cover image, extracted but not decoded: raw member bytes plus the
+/// manifest's declared media type (a hint only — extraction does not trust it
+/// over sniffing the bytes' own magic number, since manifests occasionally
+/// lie).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EpubCoverImage {
+    pub bytes: Vec<u8>,
+    pub media_type: String,
+}
+
+/// Extract one EPUB's cover image on a short-lived bounded worker stack.
+/// Returns `Ok(None)` when the book declares no cover (not an error: the
+/// caller falls back to a placeholder thumbnail).
+pub fn extract_cover_on_worker(path: impl AsRef<Path>) -> Result<Option<EpubCoverImage>, String> {
+    let path = path.as_ref().to_path_buf();
+    let worker = std::thread::Builder::new()
+        .name("epub-cover".into())
+        .stack_size(EPUB_COVER_WORKER_STACK_BYTES)
+        .spawn(move || extract_cover(path))
+        .map_err(|error| format!("EPUB cover worker start failed: {error}"))?;
+    worker
+        .join()
+        .map_err(|_| "EPUB cover worker panicked".to_string())?
+}
+
+/// Locate and extract one EPUB's cover image member without flattening the
+/// spine. Identifies the cover via, in order: the EPUB3
+/// `properties="cover-image"` manifest hint, the EPUB2
+/// `<meta name="cover" content="ID"/>` convention, then an `id="cover"`
+/// manifest item as a last-resort fallback for malformed packages.
+#[inline(never)]
+pub fn extract_cover(path: impl AsRef<Path>) -> Result<Option<EpubCoverImage>, String> {
+    let archive = ZipArchive::open(path)?;
+    let (_, package, package_dir) = epub_package(&archive)?;
+    let manifest = parse_manifest(&package)?;
+    let Some(item) = find_cover_manifest_item(&package, &manifest) else {
+        return Ok(None);
+    };
+    let member = normalize_archive_path(&package_dir, &item.href);
+    let bytes = archive.extract(&member)?;
+    if bytes.len() > EPUB_COVER_BYTES_LIMIT {
+        return Err(format!(
+            "EPUB cover exceeds {EPUB_COVER_BYTES_LIMIT} byte limit"
+        ));
+    }
+    Ok(Some(EpubCoverImage {
+        bytes,
+        media_type: item.media_type.clone(),
+    }))
+}
+
+fn find_cover_manifest_item<'a>(
+    package: &str,
+    manifest: &'a BTreeMap<String, ManifestItem>,
+) -> Option<&'a ManifestItem> {
+    if let Some(item) = manifest.values().find(|item| {
+        item.properties
+            .split_whitespace()
+            .any(|value| value == "cover-image")
+    }) {
+        return Some(item);
+    }
+    if let Some(id) = first_meta_cover_id(package) {
+        if let Some(item) = manifest.get(&id) {
+            return Some(item);
+        }
+    }
+    manifest
+        .get("cover")
+        .filter(|item| item.media_type.starts_with("image/"))
+}
+
+fn first_meta_cover_id(package: &str) -> Option<String> {
+    open_tags(package, "meta")
+        .into_iter()
+        .find(|tag| attribute(tag, "name").as_deref() == Some("cover"))
+        .and_then(|tag| attribute(tag, "content"))
+}
+
 fn epub_package(archive: &ZipArchive) -> Result<(String, String, String), String> {
     let container = utf8_member(archive, "META-INF/container.xml")?;
     let rootfile = first_open_tag(&container, "rootfile")
@@ -326,7 +426,13 @@ fn package_title(package: &str) -> String {
 /// Open one EPUB archive and produce a bounded reflowable document.
 #[inline(never)]
 pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
+    let zip_open_started_at = Instant::now();
     let archive = ZipArchive::open(path)?;
+    log::info!(
+        "rustmix-wave=epub-parse-timing stage=zip-open elapsed-ms={} entries={}",
+        zip_open_started_at.elapsed().as_millis(),
+        archive.entries.len()
+    );
     let (_, package, package_dir) = epub_package(&archive)?;
     let title = package_title(&package);
 
@@ -335,6 +441,7 @@ pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
     if spine_ids.is_empty() {
         return Err("EPUB spine is empty".into());
     }
+    let spine_started_at = Instant::now();
 
     let mut text = String::new();
     let mut chapter_offsets = BTreeMap::new();
@@ -376,7 +483,14 @@ pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
     if text.trim().is_empty() {
         return Err("EPUB spine did not contain readable text".into());
     }
+    log::info!(
+        "rustmix-wave=epub-parse-timing stage=spine-extract-and-flatten elapsed-ms={} chapters={} text-bytes={}",
+        spine_started_at.elapsed().as_millis(),
+        chapters.len(),
+        text.len()
+    );
 
+    let toc_started_at = Instant::now();
     let mut toc = parse_navigation_toc(
         &archive,
         &package,
@@ -384,6 +498,10 @@ pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
         &manifest,
         &chapter_offsets,
     )?;
+    log::info!(
+        "rustmix-wave=epub-parse-timing stage=navigation-toc elapsed-ms={}",
+        toc_started_at.elapsed().as_millis()
+    );
     if toc.is_empty() {
         toc = chapter_labels
             .into_iter()
@@ -812,7 +930,14 @@ fn first_element_text(xml: &str, local_name: &str) -> Option<String> {
 }
 
 /// Convert XHTML into bounded, paragraph-aware reflowable UTF-8 text.
+///
+/// Callers pass either a full XHTML document or a small inner fragment (a TOC
+/// link label, a heading's own text). When a `<body>` tag is present this
+/// skips straight to it, so `<head>` metadata, `<title>` and any `<style>`/
+/// `<script>` content never leaks into reflowed body text. Fragments without
+/// a `<body>` tag are processed as-is.
 pub fn html_to_text(html: &str) -> String {
+    let html = find_tag_start_ci(html, "body").map_or(html, |start| &html[start..]);
     let mut output = String::new();
     let mut cursor = 0;
     while cursor < html.len() {
@@ -830,6 +955,21 @@ pub fn html_to_text(html: &str) -> String {
                 .next()
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            // `<style>`/`<script>` bodies are raw CSS/JS, not XML-escaped
+            // text: skip straight to the matching close tag so their content
+            // never leaks into reflowed prose (most visibly right before a
+            // chapter's opening heading, where a stylesheet block usually
+            // sits). Self-closed elements (`<script src="x.js"/>`) have no
+            // body and no separate close tag; searching for one would either
+            // hit a later, unrelated element's close tag or, if none exists,
+            // swallow the rest of the chapter's text into `html.len()`.
+            let self_closed = tag.ends_with('/');
+            if !closing && !self_closed && matches!(name.as_str(), "script" | "style") {
+                let close_tag = format!("</{name}>");
+                cursor = find_ci(&html[cursor..], &close_tag)
+                    .map_or(html.len(), |relative| cursor + relative + close_tag.len());
+                continue;
+            }
             if matches!(
                 name.as_str(),
                 "p" | "div"
@@ -868,6 +1008,43 @@ pub fn html_to_text(html: &str) -> String {
         cursor += character.len_utf8();
     }
     output.trim().to_string()
+}
+
+/// Case-insensitive ASCII substring search that avoids allocating a
+/// lowercased copy of `haystack`, which may be up to
+/// [`EPUB_MEMBER_UNCOMPRESSED_LIMIT`] bytes.
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len()).find(|&start| {
+        haystack[start..start + needle.len()]
+            .iter()
+            .zip(needle)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
+}
+
+/// Locate the byte offset of a `<tag_name` open-tag start, case-insensitively,
+/// rejecting names that merely share a prefix (`<bodyfoo>` does not match
+/// `body`).
+fn find_tag_start_ci(html: &str, tag_name: &str) -> Option<usize> {
+    let needle = format!("<{tag_name}");
+    let mut search_from = 0;
+    while let Some(relative) = find_ci(&html[search_from..], &needle) {
+        let start = search_from + relative;
+        let after = start + needle.len();
+        let boundary = html[after..].chars().next().map_or(true, |character| {
+            character.is_whitespace() || character == '>' || character == '/'
+        });
+        if boundary {
+            return Some(start);
+        }
+        search_from = after;
+    }
+    None
 }
 
 fn push_text_character(output: &mut String, character: char) {
@@ -919,6 +1096,44 @@ fn decode_entity(entity: &str) -> String {
         "quot" => "\"".into(),
         "apos" => "'".into(),
         "nbsp" => " ".into(),
+        // Typographic punctuation. Reader text normalization
+        // (`push_normalized_character` in reader.rs) folds the real Unicode
+        // characters below into plain ASCII, so decoding the named entity
+        // form here is what lets that normalization run at all; left
+        // undecoded, each one was silently replaced by a stray '?' that
+        // broke sentence flow mid-page.
+        "hellip" => "\u{2026}".into(),
+        "mdash" => "\u{2014}".into(),
+        "ndash" => "\u{2013}".into(),
+        "lsquo" | "sbquo" => "\u{2018}".into(),
+        "rsquo" => "\u{2019}".into(),
+        "ldquo" | "bdquo" => "\u{201C}".into(),
+        "rdquo" => "\u{201D}".into(),
+        "laquo" => "\u{00AB}".into(),
+        "raquo" => "\u{00BB}".into(),
+        // Accented letters some EPUBs spell as named entities rather than
+        // raw UTF-8 (common in older Italian-language exports).
+        "agrave" => "à".into(),
+        "egrave" => "è".into(),
+        "eacute" => "é".into(),
+        "igrave" => "ì".into(),
+        "ograve" => "ò".into(),
+        "ugrave" => "ù".into(),
+        "Agrave" => "À".into(),
+        "Egrave" => "È".into(),
+        "Eacute" => "É".into(),
+        "Igrave" => "Ì".into(),
+        "Ograve" => "Ò".into(),
+        "Ugrave" => "Ù".into(),
+        "acirc" | "auml" => "â".into(),
+        "ecirc" | "euml" => "ê".into(),
+        "icirc" | "iuml" => "î".into(),
+        "ocirc" | "ouml" => "ô".into(),
+        "ucirc" | "uuml" => "û".into(),
+        "ccedil" => "ç".into(),
+        "Ccedil" => "Ç".into(),
+        "ntilde" => "ñ".into(),
+        "Ntilde" => "Ñ".into(),
         value if value.starts_with("#x") || value.starts_with("#X") => {
             u32::from_str_radix(&value[2..], 16)
                 .ok()
@@ -943,8 +1158,9 @@ mod tests {
     };
 
     use super::{
-        attribute, first_open_tag, html_to_text, open_epub, open_epub_on_worker,
-        read_epub_title_on_worker, EPUB_PARSER_WORKER_STACK_BYTES, EPUB_TITLE_WORKER_STACK_BYTES,
+        attribute, extract_cover, extract_cover_on_worker, first_open_tag, html_to_text,
+        open_epub, open_epub_on_worker, read_epub_title_on_worker, EPUB_PARSER_WORKER_STACK_BYTES,
+        EPUB_TITLE_WORKER_STACK_BYTES,
     };
 
     fn temp_epub(name: &str) -> PathBuf {
@@ -1057,6 +1273,40 @@ mod tests {
     }
 
     #[test]
+    fn decodes_named_typographic_and_accent_entities_instead_of_a_stray_question_mark() {
+        assert_eq!(
+            html_to_text("<p>Perch&eacute; &laquo;cos&igrave;&raquo;&hellip; disse lei&mdash;e tacque.</p>"),
+            "Perché «così»… disse lei\u{2014}e tacque."
+        );
+    }
+
+    #[test]
+    fn skips_head_style_and_script_content_before_body() {
+        let xhtml = "<html><head><title>Meta Title</title><style type=\"text/css\">/* chapter heading */ h1 { color: red; }</style><script>var x = 1;</script></head><body><h1>Real Title</h1><p>First line.</p></body></html>";
+        assert_eq!(html_to_text(xhtml), "Real Title\n\nFirst line.");
+    }
+
+    #[test]
+    fn skips_style_and_script_embedded_inside_body() {
+        let xhtml = "<body><style>/* inline */</style><h1>Title</h1><script>track();</script><p>Body text.</p></body>";
+        assert_eq!(html_to_text(xhtml), "Title\n\nBody text.");
+    }
+
+    #[test]
+    fn fragments_without_a_body_tag_still_flatten() {
+        assert_eq!(html_to_text("<a href='c1.xhtml'>Start</a>"), "Start");
+    }
+
+    #[test]
+    fn self_closed_script_and_style_do_not_swallow_rest_of_chapter() {
+        let xhtml = "<html><body><h1>Title</h1><p>First paragraph.</p><script src=\"x.js\"/><p>Second paragraph.</p><style href=\"x.css\"/><p>Third paragraph.</p></body></html>";
+        assert_eq!(
+            html_to_text(xhtml),
+            "Title\n\nFirst paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+        );
+    }
+
+    #[test]
     fn opens_stored_epub_manifest_spine_and_nav_toc() {
         let path = temp_epub("stored");
         let bytes = stored_zip(&[
@@ -1087,6 +1337,53 @@ mod tests {
         assert_eq!(epub.toc.len(), 2);
         assert_eq!(epub.toc[0].label, "Start");
         assert!(epub.toc[1].text_offset > epub.toc[0].text_offset);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn extracts_epub3_cover_via_properties_hint() {
+        let path = temp_epub("cover-epub3");
+        let bytes = stored_zip(&[
+            ("META-INF/container.xml", "<container><rootfiles><rootfile full-path='OEBPS/book.opf'/></rootfiles></container>"),
+            ("OEBPS/book.opf", "<package><metadata><dc:title>Cover Book</dc:title></metadata><manifest><item id='cover-img' href='images/cover.jpg' media-type='image/jpeg' properties='cover-image'/><item id='c1' href='c1.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='c1'/></spine></package>"),
+            ("OEBPS/images/cover.jpg", "fake-jpeg-bytes"),
+            ("OEBPS/c1.xhtml", "<html><body><p>Body.</p></body></html>"),
+        ]);
+        fs::write(&path, bytes).unwrap();
+        let cover = extract_cover(&path).unwrap().unwrap();
+        assert_eq!(cover.media_type, "image/jpeg");
+        assert_eq!(cover.bytes, b"fake-jpeg-bytes");
+        let worker_cover = extract_cover_on_worker(&path).unwrap().unwrap();
+        assert_eq!(worker_cover, cover);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn extracts_epub2_cover_via_meta_name_convention() {
+        let path = temp_epub("cover-epub2");
+        let bytes = stored_zip(&[
+            ("META-INF/container.xml", "<container><rootfiles><rootfile full-path='OEBPS/book.opf'/></rootfiles></container>"),
+            ("OEBPS/book.opf", "<package><metadata><dc:title>Cover Book</dc:title><meta name='cover' content='cover-img'/></metadata><manifest><item id='cover-img' href='cover.png' media-type='image/png'/><item id='c1' href='c1.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='c1'/></spine></package>"),
+            ("OEBPS/cover.png", "fake-png-bytes"),
+            ("OEBPS/c1.xhtml", "<html><body><p>Body.</p></body></html>"),
+        ]);
+        fs::write(&path, bytes).unwrap();
+        let cover = extract_cover(&path).unwrap().unwrap();
+        assert_eq!(cover.media_type, "image/png");
+        assert_eq!(cover.bytes, b"fake-png-bytes");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn missing_cover_is_not_an_error() {
+        let path = temp_epub("cover-missing");
+        let bytes = stored_zip(&[
+            ("META-INF/container.xml", "<container><rootfiles><rootfile full-path='OEBPS/book.opf'/></rootfiles></container>"),
+            ("OEBPS/book.opf", "<package><metadata><dc:title>No Cover</dc:title></metadata><manifest><item id='c1' href='c1.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='c1'/></spine></package>"),
+            ("OEBPS/c1.xhtml", "<html><body><p>Body.</p></body></html>"),
+        ]);
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(extract_cover(&path).unwrap(), None);
         let _ = fs::remove_file(path);
     }
 }

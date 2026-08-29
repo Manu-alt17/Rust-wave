@@ -18,6 +18,7 @@ pub mod environment;
 pub mod files;
 pub mod home;
 pub mod lua_game;
+pub mod magic;
 pub mod motion;
 pub mod network;
 pub mod placeholder;
@@ -61,9 +62,12 @@ pub fn render_active_screen(
         ScreenRoute::LuaApps => lua_game::render_lua_apps(display, state),
         ScreenRoute::LuaGame => lua_game::render_lua_game(display, state),
         ScreenRoute::LuaGameError => lua_game::render_lua_error(display, state),
+        ScreenRoute::Magic => magic::render_magic_library(display, state),
+        ScreenRoute::MagicView => magic::render_magic_view(display, state),
         ScreenRoute::Dictionary => dictionary::render_dictionary(display, state),
         ScreenRoute::UnitConverter => unit_converter::render_unit_converter(display, state),
         ScreenRoute::Clock => clock::render_clock(display, state),
+        ScreenRoute::ClockSetTime => clock::render_clock_set_time(display, state),
         ScreenRoute::ClockDetails => clock::render_clock_details(display, state),
         ScreenRoute::Environment => environment::render_environment(display, state),
         ScreenRoute::EnvironmentDetails => environment::render_environment_details(display, state),
@@ -72,6 +76,8 @@ pub fn render_active_screen(
         ScreenRoute::MotionDetails => motion::render_motion_details(display, state),
         ScreenRoute::Network => network::render_network(display, state),
         ScreenRoute::NetworkDetails => network::render_network_details(display, state),
+        ScreenRoute::NetworkProvision => network::render_network_provision(display, state),
+        ScreenRoute::NetworkSaved => network::render_network_saved(display, state),
         ScreenRoute::WifiTransfer => network::render_wifi_transfer(display, state),
         ScreenRoute::Weather => weather::render_weather(display, state),
         ScreenRoute::WeatherDetails => weather::render_weather_details(display, state),

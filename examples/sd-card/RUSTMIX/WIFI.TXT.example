@@ -1,5 +1,15 @@
 # Copy this file to /RUSTMIX/WIFI.TXT on the FAT-formatted SD card.
 # Edit it locally. Do not commit or share your real password.
+#
+# This manual file is an advanced/headless fallback. The normal way to add
+# and manage Wi-Fi networks is on-device: Settings > Network > Configure via
+# phone, which opens the device's own hotspot and a small web page for your
+# phone (scan the QR codes shown on screen). That flow can save up to 8
+# networks; this file mirrors what it writes.
+#
+# Networks are numbered ssid1=/password1=, ssid2=/password2=, and so on, and
+# are tried in order at boot until one connects. A single unnumbered
+# ssid=/password= pair (as below) is equivalent to ssid1=/password1=.
 ssid=YOUR_NETWORK
 password=YOUR_PASSWORD
 timezone=America/New_York

@@ -336,18 +336,18 @@ voice_screen = Path('src/app/screens/voice_notes.rs').read_text()
 calendar_screen = Path('src/app/screens/calendar.rs').read_text()
 for fragment in (
     'VOICE NOTE TITLE', 'EDIT FRIENDLY TITLE', 'VOICE_TITLE_EDITOR_KEY_ROWS',
-    'MOVE  BOOT H/V  SELECT KEY  HOLD BACK',
+    'MOVE  HOLD H/V  SELECT KEY  BOOT BACK',
 ):
     assert fragment in voice_screen, f'voice title editor layout missing: {fragment}'
 for fragment in (
     'calendar_editor_status_date_label', 'CALENDAR_EDITOR_FOOTER_HINT',
-    'MOVE  BOOT H/V  SELECT KEY  HOLD BACK',
+    'MOVE  HOLD H/V  SELECT KEY  BOOT BACK',
 ):
     assert fragment in calendar_screen, f'calendar editor compact layout missing: {fragment}'
 
 # Wi-Fi portal protects configuration and internal sidecars.
 for protected in (
-    'WIFI.TXT', 'ALARMS.TXT', 'DISPLAY.TXT', 'WEATHER.TXT',
+    'WIFI.TXT', 'CLOCK.TXT', 'ALARMS.TXT', 'DISPLAY.TXT', 'WEATHER.TXT',
     'VOICE/META.TXT', 'VOICE/SETTINGS.TXT',
     'APPS/CALENDAR/EVENTS.TMP', 'APPS/CALENDAR/EVENTS.BAK',
 ):

@@ -99,8 +99,11 @@ impl WeatherConfig {
             .get("timezone")
             .cloned()
             .unwrap_or_else(|| "America/New_York".into());
-        if !matches!(timezone.as_str(), "America/New_York" | "UTC") {
-            bail!("timezone must be America/New_York or UTC in this milestone");
+        if !matches!(
+            timezone.as_str(),
+            "America/New_York" | "UTC" | "Europe/Rome"
+        ) {
+            bail!("timezone must be America/New_York, UTC or Europe/Rome in this milestone");
         }
 
         let refresh_minutes = values
@@ -169,6 +172,15 @@ mod tests {
         .unwrap();
         assert_eq!(config.timezone, "UTC");
         assert_eq!(config.refresh_minutes, 60);
+    }
+
+    #[test]
+    fn accepts_europe_rome_timezone() {
+        let config = WeatherConfig::parse(
+            "provider=open-meteo\nlatitude=41.9\nlongitude=12.5\ntimezone=Europe/Rome\n",
+        )
+        .unwrap();
+        assert_eq!(config.timezone, "Europe/Rome");
     }
 
     #[test]

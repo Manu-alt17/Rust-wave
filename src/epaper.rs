@@ -18,7 +18,7 @@ use crate::{
     power::PanelPower,
 };
 
-const BUSY_POLL_MS: u32 = 20;
+const BUSY_POLL_MS: u32 = 10;
 const BUSY_TIMEOUT_MS: u32 = 15_000;
 
 /// Controller driver with explicit ownership of the panel bus and pins.
@@ -134,10 +134,15 @@ where
 
     /// Apply a full-screen partial refresh. This intentionally mirrors the
     /// vendor UI behavior while keeping the API narrow for the first milestone.
+    ///
+    /// Does not toggle EPD_RST: the controller is already initialized (once,
+    /// in `initialize`) and a full hardware reset before every partial
+    /// refresh only adds a fixed ~102 ms of delay (plus reloading the
+    /// default waveform) without being needed to reconfigure partial mode,
+    /// which the commands below already do on every call.
     pub fn show_partial_fullscreen(&mut self, frame: &[u8]) -> Result<()> {
         validate_frame(frame)?;
         info!("epd397: partial full-screen refresh");
-        self.hardware_reset()?;
         self.command_data(0x18, &[0x80])?;
         self.command_data(0x3C, &[0x80])?;
         self.command_data(0x44, &[0x00, 0x00, 0x18, 0x03])?; // 0 .. 792

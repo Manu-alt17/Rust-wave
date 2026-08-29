@@ -6,14 +6,20 @@ use crate::{
     board_services::BoardSnapshot,
     buttons::ButtonEvent,
     calendar::{CalendarEditorOutcome, CalendarUiRequest, CalendarUiState},
+    clock_time_editor::{self, ClockEditField, ClockTimeEditor},
     dictionary::DictionaryUiState,
     imu::ImuReading,
     imu_events::{ImuControlOutcome, ImuDetectedEvent, ImuEventBridge},
     lua_runtime::LuaRuntimeUiState,
+    magic_tokens::{MagicRowAction, MagicUiState},
     network::NetworkSnapshot,
+    network_provision::{NetworkProvisionSnapshot, NetworkProvisionUiRequest},
+    network_saved::NetworkSavedUiState,
     orientation::DisplayOrientation,
     power_key_menu::{PowerKeyMenuOutcome, PowerKeyMenuUiState},
-    reader::{ReaderOption, ReaderOrientation, ReaderTickOutcome, ReaderUiState},
+    reader::{
+        ReaderDictionaryMode, ReaderOption, ReaderOrientation, ReaderTickOutcome, ReaderUiState,
+    },
     regional::RegionalPreferences,
     storage::StorageSnapshot,
     unit_converter::UnitConverterUiState,
@@ -34,8 +40,12 @@ pub const AUDIO_ACTION_COUNT: usize = 6;
 pub const DISPLAY_ACTION_COUNT: usize = 2;
 /// Number of selectable rows in the Weather overview screen.
 pub const WEATHER_ACTION_COUNT: usize = 2;
-/// Start/stop portal and provisioning-details rows on the Network screen.
-pub const NETWORK_ACTION_COUNT: usize = 2;
+/// Set date & time or open RTC details rows on the Clock overview screen.
+pub const CLOCK_ACTION_COUNT: usize = 2;
+/// Configure via phone, saved networks and provisioning-details rows on the
+/// Network screen. The Wi-Fi transfer portal is reached only from the Home
+/// "Upload" tile.
+pub const NETWORK_ACTION_COUNT: usize = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppState {
@@ -53,6 +63,9 @@ pub struct AppState {
     pub reader: ReaderUiState,
     /// SD-loaded app catalog, bounded bootstrap executor and native canvas session.
     pub lua_runtime: LuaRuntimeUiState,
+    /// Magic: The Gathering token library, active-selection cursor and
+    /// (once the view screen is entered) the loaded 1bpp tiles.
+    pub magic: MagicUiState,
     /// Rust-owned debounced QMI8658 event bridge and diagnostics controls.
     pub imu_events: ImuEventBridge,
     pub partial_refreshes: u8,
@@ -75,11 +88,35 @@ pub struct AppState {
     pub audio_action_selected: usize,
     /// Selected Weather-overview action: refresh or details.
     pub weather_action_selected: usize,
-    /// Selected Network action: portal toggle or provisioning details.
+    /// Selected Clock-overview action: set date & time or RTC details.
+    pub clock_action_selected: usize,
+    /// Runtime-only "Set date & time" editor draft, opened from the Clock
+    /// overview and discarded on cancel or save.
+    pub clock_time_editor: Option<ClockTimeEditor>,
+    /// Committed local edit, converted to the RTC storage basis, awaiting a
+    /// hardware write from the runtime owner in main.rs.
+    clock_set_time_request: Option<crate::rtc::RtcDateTime>,
+    /// Timezone committed from the "Set date & time" editor, awaiting
+    /// best-effort persistence to `WIFI.TXT` from the runtime owner in
+    /// main.rs. Applied to `regional` immediately regardless of whether
+    /// persistence succeeds.
+    clock_set_timezone_request: Option<crate::regional::TimeZoneProfile>,
+    /// Selected Network action: configure via phone, saved networks or
+    /// provisioning details.
     pub network_action_selected: usize,
     /// Compact LAN portal lifecycle snapshot.
     pub wifi_transfer: WifiTransferSnapshot,
     wifi_transfer_request: Option<WifiTransferUiRequest>,
+    /// Phone Wi-Fi provisioning portal lifecycle snapshot (hotspot + HTTP
+    /// portal), replacing the old on-device rotary-keyboard credential
+    /// editor.
+    pub network_provision: NetworkProvisionSnapshot,
+    network_provision_request: Option<NetworkProvisionUiRequest>,
+    /// Read-only saved-network list and rotary selection for the "Saved
+    /// networks" screen. Adding or changing a password only happens through
+    /// the phone portal.
+    pub network_saved: NetworkSavedUiState,
+    network_saved_forget_request: Option<String>,
     /// SD-backed PCM WAV voice-note catalog and recorder UI snapshot.
     pub voice_notes: VoiceNotesUiState,
     /// Global display-maintenance menu opened by a physical Power short press.
@@ -101,6 +138,7 @@ impl Default for AppState {
             unit_converter: UnitConverterUiState::default(),
             reader: ReaderUiState::default(),
             lua_runtime: LuaRuntimeUiState::default(),
+            magic: MagicUiState::default(),
             imu_events: ImuEventBridge::default(),
             partial_refreshes: 0,
             panel_awake: true,
@@ -116,9 +154,17 @@ impl Default for AppState {
             audio: AudioSnapshot::default(),
             audio_action_selected: 0,
             weather_action_selected: 0,
+            clock_action_selected: 0,
+            clock_time_editor: None,
+            clock_set_time_request: None,
+            clock_set_timezone_request: None,
             network_action_selected: 0,
             wifi_transfer: WifiTransferSnapshot::default(),
             wifi_transfer_request: None,
+            network_provision: NetworkProvisionSnapshot::default(),
+            network_provision_request: None,
+            network_saved: NetworkSavedUiState::default(),
+            network_saved_forget_request: None,
             voice_notes: VoiceNotesUiState::default(),
             power_key_menu: PowerKeyMenuUiState::default(),
             power_key_menu_return_route: ScreenRoute::Home,
@@ -129,6 +175,37 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Compact local time label for the persistent header status glyphs.
+    #[must_use]
+    pub fn status_time_label(&self) -> String {
+        self.board.time_label(self.regional)
+    }
+
+    /// Compact local date label ("Thu, Aug 13") for the persistent header
+    /// status glyphs.
+    #[must_use]
+    pub fn status_date_label(&self) -> String {
+        self.board.rtc.map_or_else(
+            || "Date unavailable".into(),
+            |rtc| compact_local_date(self.regional.localize_rtc(rtc)),
+        )
+    }
+
+    /// Whether Wi-Fi is fully connected, for the persistent header Wi-Fi icon.
+    #[must_use]
+    pub fn wifi_connected(&self) -> bool {
+        self.network.wifi_state == crate::network::WifiConnectionState::Connected
+    }
+
+    /// Battery percentage for the persistent header battery icon, when the
+    /// PMIC reports a connected battery.
+    #[must_use]
+    pub fn battery_percent(&self) -> Option<u8> {
+        self.board
+            .power
+            .and_then(|snapshot| snapshot.battery_percent)
+    }
+
     /// Apply one debounced button event to routes whose behavior is fully
     /// hardware-independent. Files, Alarms and Audio remain delegated to their
     /// existing owners from main.rs.
@@ -158,6 +235,8 @@ impl AppState {
             self.apply_unit_converter(event);
         } else if route == ScreenRoute::MotionEvents {
             self.apply_motion_events(event);
+        } else if route == ScreenRoute::ClockSetTime {
+            self.apply_clock_set_time(event);
         } else if matches!(
             route,
             ScreenRoute::VoiceNotes
@@ -170,6 +249,8 @@ impl AppState {
             ScreenRoute::LuaApps | ScreenRoute::LuaGame | ScreenRoute::LuaGameError
         ) {
             self.apply_lua_runtime(event);
+        } else if route == ScreenRoute::Magic {
+            self.apply_magic(event);
         } else if matches!(
             route,
             ScreenRoute::ContinueReading
@@ -185,7 +266,7 @@ impl AppState {
             self.apply_reader(event);
         } else if route.is_placeholder() {
             // Placeholders are intentionally inert. Hierarchical navigation is
-            // consistently handled by the dedicated GPIO0 BOOT long press.
+            // consistently handled by the dedicated GPIO0 BOOT press.
         } else {
             match (route, event) {
                 (ScreenRoute::Weather, ButtonEvent::Up) => {
@@ -206,9 +287,24 @@ impl AppState {
                         self.router.navigate_to(ScreenRoute::WeatherDetails);
                     }
                 }
+                (ScreenRoute::Clock, ButtonEvent::Up) => {
+                    self.clock_action_selected = self
+                        .clock_action_selected
+                        .checked_sub(1)
+                        .unwrap_or(CLOCK_ACTION_COUNT - 1);
+                }
+                (ScreenRoute::Clock, ButtonEvent::Down) => {
+                    self.clock_action_selected =
+                        (self.clock_action_selected + 1) % CLOCK_ACTION_COUNT;
+                }
                 (ScreenRoute::Clock, ButtonEvent::Select) => {
                     self.note_select_press();
-                    self.router.navigate_to(ScreenRoute::ClockDetails);
+                    if self.clock_action_selected == 0 {
+                        self.open_clock_time_editor();
+                        self.router.navigate_to(ScreenRoute::ClockSetTime);
+                    } else {
+                        self.router.navigate_to(ScreenRoute::ClockDetails);
+                    }
                 }
                 (ScreenRoute::Environment, ButtonEvent::Select) => {
                     self.note_select_press();
@@ -230,21 +326,34 @@ impl AppState {
                 }
                 (ScreenRoute::Network, ButtonEvent::Select) => {
                     self.note_select_press();
-                    if self.network_action_selected == 0 {
-                        self.wifi_transfer_request = Some(if self.wifi_transfer.is_active() {
-                            WifiTransferUiRequest::Stop
-                        } else {
-                            WifiTransferUiRequest::Start
-                        });
-                        self.router.navigate_to(ScreenRoute::WifiTransfer);
-                    } else {
-                        self.router.navigate_to(ScreenRoute::NetworkDetails);
+                    match self.network_action_selected {
+                        0 => {
+                            self.request_network_provision_start();
+                            self.router.navigate_to(ScreenRoute::NetworkProvision);
+                        }
+                        1 => self.router.navigate_to(ScreenRoute::NetworkSaved),
+                        _ => self.router.navigate_to(ScreenRoute::NetworkDetails),
                     }
+                }
+                (ScreenRoute::NetworkProvision, ButtonEvent::Select) => {
+                    self.note_select_press();
+                    self.request_network_provision_stop();
+                    self.router.navigate_to(ScreenRoute::Network);
+                }
+                (ScreenRoute::NetworkSaved, ButtonEvent::Up) => {
+                    self.network_saved.move_previous();
+                }
+                (ScreenRoute::NetworkSaved, ButtonEvent::Down) => {
+                    self.network_saved.move_next();
+                }
+                (ScreenRoute::NetworkSaved, ButtonEvent::Select) => {
+                    self.note_select_press();
+                    self.confirm_or_arm_network_saved_forget();
                 }
                 (ScreenRoute::WifiTransfer, ButtonEvent::Select) => {
                     self.note_select_press();
                     self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
-                    self.router.navigate_to(ScreenRoute::Network);
+                    self.router.navigate_to(ScreenRoute::Home);
                 }
                 (ScreenRoute::DeviceInfo, ButtonEvent::Select) => {
                     self.note_select_press();
@@ -255,8 +364,7 @@ impl AppState {
                     self.router.navigate_to(ScreenRoute::DeviceInfoRuntime);
                 }
                 (
-                    ScreenRoute::Clock
-                    | ScreenRoute::Environment
+                    ScreenRoute::Environment
                     | ScreenRoute::Motion
                     | ScreenRoute::DeviceInfo
                     | ScreenRoute::DeviceInfoBoard,
@@ -269,15 +377,19 @@ impl AppState {
                     | ScreenRoute::EnvironmentDetails
                     | ScreenRoute::MotionDetails
                     | ScreenRoute::NetworkDetails
+                    | ScreenRoute::NetworkProvision
                     | ScreenRoute::WifiTransfer
                     | ScreenRoute::WeatherDetails,
                     _,
                 )
-                | (ScreenRoute::Files | ScreenRoute::Alarms | ScreenRoute::Audio, _) => {}
+                | (
+                    ScreenRoute::Files | ScreenRoute::Alarms | ScreenRoute::Audio | ScreenRoute::MagicView,
+                    _,
+                ) => {}
                 _ => {}
             }
         }
-        self.sync_reader_orientation_for_active_route();
+        self.sync_orientation_for_active_route();
     }
 
     fn apply_home(&mut self, event: ButtonEvent) {
@@ -290,6 +402,9 @@ impl AppState {
             ButtonEvent::Select => {
                 self.note_select_press();
                 if let Some(entry) = home_entries().get(self.home_selected) {
+                    if entry.route == ScreenRoute::WifiTransfer {
+                        self.request_wifi_transfer_start();
+                    }
                     self.router.navigate_to(entry.route);
                 }
             }
@@ -328,6 +443,9 @@ impl AppState {
                 }
                 if target == ScreenRoute::LuaApps {
                     self.lua_runtime.refresh_catalog(true);
+                }
+                if target == ScreenRoute::Magic {
+                    self.magic.refresh_catalog(true);
                 }
                 if target == ScreenRoute::VoiceNotes {
                     self.voice_notes.refresh_catalog();
@@ -400,6 +518,53 @@ impl AppState {
                 self.note_select_press();
                 if self.imu_events.apply_selected_control() == ImuControlOutcome::OpenDetails {
                     self.router.navigate_to(ScreenRoute::MotionDetails);
+                }
+            }
+        }
+    }
+
+    /// Seed the runtime "Set date & time" editor from the current UTC
+    /// instant (derived from the RTC reading, or a sane fallback while the
+    /// RTC is unavailable) and the currently active regional timezone.
+    fn open_clock_time_editor(&mut self) {
+        let anchor_utc = self
+            .board
+            .rtc
+            .map_or_else(clock_time_editor::fallback_local, |rtc| {
+                self.regional.rtc_to_utc(rtc)
+            });
+        self.clock_time_editor = Some(ClockTimeEditor::new(anchor_utc, self.regional));
+    }
+
+    fn apply_clock_set_time(&mut self, event: ButtonEvent) {
+        match event {
+            ButtonEvent::Up => {
+                if let Some(editor) = self.clock_time_editor.as_mut() {
+                    editor.adjust(1);
+                }
+            }
+            ButtonEvent::Down => {
+                if let Some(editor) = self.clock_time_editor.as_mut() {
+                    editor.adjust(-1);
+                }
+            }
+            ButtonEvent::Select => {
+                self.note_select_press();
+                let save = self
+                    .clock_time_editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.selected_field() == ClockEditField::Save);
+                if save {
+                    if let Some(editor) = self.clock_time_editor.take() {
+                        let local = editor.draft.as_local_rtc();
+                        self.clock_set_time_request =
+                            Some(self.regional.local_to_rtc_for_zone(editor.timezone, local));
+                        self.regional.timezone = editor.timezone;
+                        self.clock_set_timezone_request = Some(editor.timezone);
+                    }
+                    self.router.navigate_to(ScreenRoute::Clock);
+                } else if let Some(editor) = self.clock_time_editor.as_mut() {
+                    editor.advance_field();
                 }
             }
         }
@@ -502,10 +667,10 @@ impl AppState {
         }
     }
 
-    /// Calendar keeps the accepted SELECT Day / Month toggle. BOOT short opens
-    /// the selected-day agenda, then opens a create-personal editor from the
-    /// agenda. BOOT long remains hierarchical Back.
-    pub fn apply_calendar_boot_short_press(&mut self) -> bool {
+    /// Calendar keeps the accepted SELECT Day / Month toggle. A held SELECT
+    /// opens the selected-day agenda, then opens a create-personal editor from
+    /// the agenda. BOOT remains hierarchical Back.
+    pub fn apply_calendar_select_long_press(&mut self) -> bool {
         match self.router.current() {
             ScreenRoute::Calendar => {
                 self.calendar.prepare_agenda();
@@ -558,10 +723,27 @@ impl AppState {
         }
     }
 
-    /// Route BOOT short press into keyboard-style screens before game-specific
+    fn apply_magic(&mut self, event: ButtonEvent) {
+        if event == ButtonEvent::Select {
+            self.note_select_press();
+        }
+        match self.magic.apply_row_button(event) {
+            MagicRowAction::None | MagicRowAction::ToggledActive => {}
+            MagicRowAction::OpenView => {
+                self.magic.load_view_tiles();
+                self.router.navigate_to(ScreenRoute::MagicView);
+            }
+            MagicRowAction::OpenConfigure => {
+                self.request_wifi_transfer_start();
+                self.router.navigate_to(ScreenRoute::WifiTransfer);
+            }
+        }
+    }
+
+    /// Route a held SELECT into keyboard-style screens before game-specific
     /// contextual handlers. Future text-entry apps should compose the shared
     /// KeyboardGridNavigation helper and join this routing boundary.
-    pub fn apply_keyboard_boot_short_press(&mut self) -> bool {
+    pub fn apply_keyboard_select_long_press(&mut self) -> bool {
         if self.router.current() == ScreenRoute::CalendarEventEditor {
             self.calendar.toggle_editor_navigation_axis()
         } else if self.router.current() == ScreenRoute::VoiceNoteDetails
@@ -576,9 +758,40 @@ impl AppState {
         }
     }
 
-    pub fn apply_lua_game_boot_short_press(&mut self) -> bool {
+    pub fn apply_lua_game_select_long_press(&mut self) -> bool {
         self.router.current() == ScreenRoute::LuaGame
-            && self.lua_runtime.apply_game_boot_short_press()
+            && self.lua_runtime.apply_game_select_long_press()
+    }
+
+    /// Route a held SELECT into the reader's in-page dictionary lookup mode:
+    /// opens it (line-select cursor) from normal reading, or exits it
+    /// immediately from any of its sub-phases back to normal reading.
+    pub fn apply_reader_dictionary_select_long_press(&mut self) -> bool {
+        self.router.current() == ScreenRoute::ReaderPage && self.reader.toggle_dictionary_mode()
+    }
+
+    /// Held SELECT on Saved networks arms or confirms the "forget?" step
+    /// exactly like a short press: a two-step confirmation naturally invites
+    /// holding the button a beat too long on the second press, and a plain
+    /// long press has no other meaning on this route, so it must not be
+    /// silently swallowed here.
+    pub fn apply_network_saved_select_long_press(&mut self) -> bool {
+        if self.router.current() != ScreenRoute::NetworkSaved {
+            return false;
+        }
+        self.confirm_or_arm_network_saved_forget();
+        true
+    }
+
+    fn confirm_or_arm_network_saved_forget(&mut self) {
+        if self.network_saved.confirming_forget {
+            if let Some(entry) = self.network_saved.selected_entry() {
+                self.network_saved_forget_request = Some(entry.ssid.clone());
+            }
+            self.network_saved.confirming_forget = false;
+        } else {
+            self.network_saved.begin_forget_confirmation();
+        }
     }
 
     #[must_use]
@@ -639,14 +852,39 @@ impl AppState {
                 }
             }
             ScreenRoute::ReaderLoading => {}
-            ScreenRoute::ReaderPage => match event {
-                ButtonEvent::Up => self.reader.previous_page(),
-                ButtonEvent::Down => self.reader.next_page(),
-                ButtonEvent::Select => {
+            ScreenRoute::ReaderPage => match (self.reader.dictionary_mode.clone(), event) {
+                (ReaderDictionaryMode::Off, ButtonEvent::Up) => self.reader.previous_page(),
+                (ReaderDictionaryMode::Off, ButtonEvent::Down) => self.reader.next_page(),
+                (ReaderDictionaryMode::Off, ButtonEvent::Select) => {
                     self.note_select_press();
                     self.reader.options_selected = 0;
                     self.router.navigate_to(ScreenRoute::ReaderOptions);
                 }
+                (ReaderDictionaryMode::LineSelect { .. }, ButtonEvent::Up) => {
+                    self.reader.dictionary_move_line(-1);
+                }
+                (ReaderDictionaryMode::LineSelect { .. }, ButtonEvent::Down) => {
+                    self.reader.dictionary_move_line(1);
+                }
+                (ReaderDictionaryMode::LineSelect { .. }, ButtonEvent::Select) => {
+                    self.note_select_press();
+                    self.reader.dictionary_confirm_line();
+                }
+                (ReaderDictionaryMode::WordSelect { .. }, ButtonEvent::Up) => {
+                    self.reader.dictionary_move_word(-1);
+                }
+                (ReaderDictionaryMode::WordSelect { .. }, ButtonEvent::Down) => {
+                    self.reader.dictionary_move_word(1);
+                }
+                (ReaderDictionaryMode::WordSelect { .. }, ButtonEvent::Select) => {
+                    self.note_select_press();
+                    self.reader.dictionary_confirm_word();
+                }
+                (ReaderDictionaryMode::Definition { .. }, ButtonEvent::Select) => {
+                    self.note_select_press();
+                    self.reader.dictionary_step_back();
+                }
+                (ReaderDictionaryMode::Definition { .. }, ButtonEvent::Up | ButtonEvent::Down) => {}
             },
             ScreenRoute::ReaderOptions => match event {
                 ButtonEvent::Up => self.reader.cycle_option_previous(),
@@ -697,7 +935,7 @@ impl AppState {
         if outcome == ReaderTickOutcome::FirstPageReady {
             self.router.navigate_to(ScreenRoute::ReaderPage);
         }
-        self.sync_reader_orientation_for_active_route();
+        self.sync_orientation_for_active_route();
         outcome
     }
 
@@ -734,7 +972,7 @@ impl AppState {
 
     fn close_power_key_menu(&mut self) {
         self.router.navigate_to(self.power_key_menu_return_route);
-        self.sync_reader_orientation_for_active_route();
+        self.sync_orientation_for_active_route();
     }
 
     fn apply_power_key_menu(&mut self, event: ButtonEvent) {
@@ -822,10 +1060,13 @@ impl AppState {
     }
 
     /// Navigate one level toward Home. The hardware runtime calls this after a
-    /// validated GPIO0 BOOT-button long press.
+    /// validated GPIO0 BOOT-button press.
     pub fn back(&mut self) {
         if self.router.current() == ScreenRoute::PowerKeyMenu {
             self.close_power_key_menu();
+            return;
+        }
+        if self.router.current() == ScreenRoute::ReaderPage && self.reader.dictionary_step_back() {
             return;
         }
         if matches!(
@@ -836,6 +1077,9 @@ impl AppState {
         }
         if self.router.current() == ScreenRoute::WifiTransfer {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
+        }
+        if self.router.current() == ScreenRoute::NetworkProvision {
+            self.request_network_provision_stop();
         }
         if self.router.current() == ScreenRoute::VoiceNoteRecording {
             self.voice_notes.request_cancel_recording();
@@ -855,6 +1099,9 @@ impl AppState {
         if self.router.current() == ScreenRoute::CalendarEventEditor {
             self.calendar.clear_editor();
         }
+        if self.router.current() == ScreenRoute::ClockSetTime {
+            self.clock_time_editor = None;
+        }
         if self.router.current() == ScreenRoute::ReaderLoading {
             self.reader.cancel_loading();
         }
@@ -867,14 +1114,24 @@ impl AppState {
         } else {
             self.router.back();
         }
-        self.sync_reader_orientation_for_active_route();
+        self.sync_orientation_for_active_route();
     }
 
-    fn sync_reader_orientation_for_active_route(&mut self) {
+    /// Reader's landscape reading preference and the Magic token view (which
+    /// rotates to Landscape only once two tokens are loaded side by side —
+    /// see [`MagicUiState::load_view_tiles`]) are the only routes that ever
+    /// leave Portrait; every other route forces it back on entry.
+    fn sync_orientation_for_active_route(&mut self) {
         self.orientation = if self.router.current() == ScreenRoute::ReaderPage {
             match self.reader.preferences.orientation {
                 ReaderOrientation::Portrait => DisplayOrientation::Portrait,
                 ReaderOrientation::Landscape => DisplayOrientation::Landscape,
+            }
+        } else if self.router.current() == ScreenRoute::MagicView {
+            if self.magic.view_tiles.len() > 1 {
+                DisplayOrientation::Landscape
+            } else {
+                DisplayOrientation::Portrait
             }
         } else {
             DisplayOrientation::Portrait
@@ -924,6 +1181,40 @@ impl AppState {
         self.calendar.take_request()
     }
 
+    pub fn update_network_provision_snapshot(&mut self, snapshot: NetworkProvisionSnapshot) {
+        self.network_provision = snapshot;
+    }
+
+    #[must_use]
+    pub fn take_network_provision_request(&mut self) -> Option<NetworkProvisionUiRequest> {
+        self.network_provision_request.take()
+    }
+
+    /// Start the phone provisioning portal (hotspot + HTTP portal) from the
+    /// Network screen's "Configure via phone" action.
+    pub fn request_network_provision_start(&mut self) {
+        if !self.network_provision.is_active() {
+            self.network_provision_request = Some(NetworkProvisionUiRequest::Start);
+        }
+    }
+
+    pub fn request_network_provision_stop(&mut self) {
+        if self.network_provision.is_active() {
+            self.network_provision_request = Some(NetworkProvisionUiRequest::Stop);
+        }
+    }
+
+    /// Refresh the "Saved networks" screen list, as read from `WIFI.TXT` by
+    /// the main loop.
+    pub fn set_saved_networks(&mut self, networks: Vec<crate::network_saved::SavedNetworkEntry>) {
+        self.network_saved.set_networks(networks);
+    }
+
+    #[must_use]
+    pub fn take_network_saved_forget_request(&mut self) -> Option<String> {
+        self.network_saved_forget_request.take()
+    }
+
     pub fn refresh_voice_notes_catalog(&mut self) {
         self.voice_notes.refresh_catalog();
     }
@@ -952,15 +1243,71 @@ impl AppState {
         core::mem::take(&mut self.weather_refresh_requested)
     }
 
+    /// Take a manually edited local wall-clock value, already converted into
+    /// the RTC storage basis, for the runtime owner in main.rs to write.
+    #[must_use]
+    pub fn take_clock_set_time_request(&mut self) -> Option<crate::rtc::RtcDateTime> {
+        self.clock_set_time_request.take()
+    }
+
+    /// Take a timezone committed from the "Set date & time" editor for the
+    /// runtime owner in main.rs to persist to `WIFI.TXT`.
+    #[must_use]
+    pub fn take_clock_set_timezone_request(&mut self) -> Option<crate::regional::TimeZoneProfile> {
+        self.clock_set_timezone_request.take()
+    }
+
     pub fn set_orientation(&mut self, orientation: DisplayOrientation) {
         self.orientation = orientation;
     }
 }
 
+fn compact_local_date(local: crate::rtc::RtcDateTime) -> String {
+    const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let weekday = WEEKDAYS
+        .get(usize::from(local.weekday))
+        .copied()
+        .unwrap_or("---");
+    let month = local
+        .month
+        .checked_sub(1)
+        .and_then(|index| MONTHS.get(usize::from(index)))
+        .copied()
+        .unwrap_or("---");
+    format!("{weekday}, {month} {}", local.day)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::AppState;
-    use crate::{app::router::ScreenRoute, buttons::ButtonEvent};
+    use super::{compact_local_date, AppState, ClockEditField};
+    use crate::{
+        app::router::ScreenRoute,
+        buttons::ButtonEvent,
+        reader::{
+            BookFormat, ReaderBook, ReaderCachedPage, ReaderDictionaryMode, ReaderPageLine,
+            ReaderPreferences, ReaderSession, TextEncoding,
+        },
+        rtc::RtcDateTime,
+    };
+
+    #[test]
+    fn renders_compact_status_bar_date() {
+        assert_eq!(
+            compact_local_date(RtcDateTime {
+                year: 2026,
+                month: 6,
+                day: 4,
+                weekday: 4,
+                hour: 8,
+                minute: 13,
+                second: 0,
+            }),
+            "Thu, Jun 4"
+        );
+    }
 
     #[test]
     fn motion_event_screen_cycles_thresholds_and_opens_sensor_details() {
@@ -982,7 +1329,7 @@ mod tests {
     fn home_categories_wrap_and_open() {
         let mut state = AppState::default();
         state.apply(ButtonEvent::Up);
-        assert_eq!(state.home_selected, 4);
+        assert_eq!(state.home_selected, 5);
         state.apply(ButtonEvent::Down);
         assert_eq!(state.home_selected, 0);
         state.apply(ButtonEvent::Select);
@@ -1005,7 +1352,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_boot_short_opens_daily_agenda_and_details_route_safely() {
+    fn calendar_select_long_opens_daily_agenda_and_details_route_safely() {
         use crate::calendar::{
             CalendarCatalogSnapshot, CalendarDate, CalendarEvent, CalendarEventKind,
         };
@@ -1025,7 +1372,7 @@ mod tests {
             us_loaded: true,
             warning: None,
         };
-        assert!(state.apply_calendar_boot_short_press());
+        assert!(state.apply_calendar_select_long_press());
         assert_eq!(state.active_route(), ScreenRoute::CalendarAgenda);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::CalendarEventDetails);
@@ -1035,10 +1382,91 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::Calendar);
     }
 
+    fn reader_session_with_lines(lines: &[&str]) -> ReaderSession {
+        ReaderSession {
+            book: ReaderBook {
+                path: "Book.txt".into(),
+                title: "Book".into(),
+                format: BookFormat::Text,
+                size_bytes: 1000,
+                modified_seconds: 0,
+            },
+            encoding: TextEncoding::Utf8,
+            epub_document: None,
+            layout: ReaderPreferences::default().layout(),
+            current_page: 0,
+            page_number_base: 0,
+            page_offsets: vec![0],
+            indexed_through: 0,
+            index_complete: true,
+            cache: vec![ReaderCachedPage {
+                page_index: 0,
+                byte_offset: 0,
+                next_byte_offset: 0,
+                lines: lines
+                    .iter()
+                    .map(|text| ReaderPageLine {
+                        text: (*text).to_string(),
+                        paragraph_end: true,
+                    })
+                    .collect(),
+            }],
+            epub_chapter_pages: Vec::new(),
+            epub_pending_chapter: None,
+            epub_document_cache_pending: false,
+        }
+    }
+
+    /// A held SELECT on the reader page opens the in-page dictionary lookup
+    /// mode; BOOT then retraces it one phase at a time instead of leaving
+    /// the book, and only falls through to ordinary Back once the mode is
+    /// off again.
+    #[test]
+    fn reader_dictionary_select_long_press_opens_mode_and_back_steps_out_one_level() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::ReaderPage);
+        state.reader.session = Some(reader_session_with_lines(&["Il gatto corre veloce"]));
+
+        assert!(state.apply_reader_dictionary_select_long_press());
+        assert_eq!(
+            state.reader.dictionary_mode,
+            ReaderDictionaryMode::LineSelect { line_index: 0 }
+        );
+        assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
+
+        state.apply(ButtonEvent::Select);
+        assert_eq!(
+            state.reader.dictionary_mode,
+            ReaderDictionaryMode::WordSelect {
+                line_index: 0,
+                word_index: 0
+            }
+        );
+
+        // BOOT/Back steps back one dictionary-mode level at a time and never
+        // leaves ReaderPage while the mode is still active.
+        state.back();
+        assert_eq!(
+            state.reader.dictionary_mode,
+            ReaderDictionaryMode::LineSelect { line_index: 0 }
+        );
+        assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
+
+        state.back();
+        assert_eq!(state.reader.dictionary_mode, ReaderDictionaryMode::Off);
+        assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
+
+        // A held SELECT also exits immediately from any sub-phase.
+        assert!(state.apply_reader_dictionary_select_long_press());
+        state.reader.dictionary_confirm_line();
+        assert!(state.apply_reader_dictionary_select_long_press());
+        assert_eq!(state.reader.dictionary_mode, ReaderDictionaryMode::Off);
+    }
+
     #[test]
     fn tools_file_browser_returns_to_tools() {
         let mut state = AppState::default();
-        state.home_selected = 3;
+        state.home_selected = 4;
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
@@ -1050,7 +1478,7 @@ mod tests {
     #[test]
     fn settings_display_changes_persistent_preferences_without_a_back_row() {
         let mut state = AppState::default();
-        state.home_selected = 4;
+        state.home_selected = 5;
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Settings);
         state.apply(ButtonEvent::Down);
@@ -1072,9 +1500,9 @@ mod tests {
     }
 
     #[test]
-    fn network_portal_is_explicitly_started_and_stopped_from_network_settings() {
+    fn wifi_transfer_stop_and_return_goes_to_home_not_network() {
         let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::Network);
+        state.home_selected = 3;
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
         assert_eq!(
@@ -1090,10 +1518,159 @@ mod tests {
             error: None,
         });
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Network);
+        assert_eq!(state.active_route(), ScreenRoute::Home);
         assert_eq!(
             state.take_wifi_transfer_request(),
             Some(crate::wifi_transfer::WifiTransferUiRequest::Stop)
+        );
+    }
+
+    #[test]
+    fn network_configure_via_phone_action_requests_provisioning_start() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Network);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::NetworkProvision);
+        assert_eq!(
+            state.take_network_provision_request(),
+            Some(crate::network_provision::NetworkProvisionUiRequest::Start)
+        );
+        // A second request while already active/starting is suppressed.
+        state.network_provision = crate::network_provision::NetworkProvisionSnapshot::starting();
+        state.request_network_provision_start();
+        assert_eq!(state.take_network_provision_request(), None);
+    }
+
+    #[test]
+    fn network_provision_select_stops_the_portal_and_returns_to_network() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::NetworkProvision);
+        state.network_provision.state =
+            crate::network_provision::NetworkProvisionState::Ready;
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Network);
+        assert_eq!(
+            state.take_network_provision_request(),
+            Some(crate::network_provision::NetworkProvisionUiRequest::Stop)
+        );
+    }
+
+    #[test]
+    fn network_provision_back_also_stops_the_portal() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::NetworkProvision);
+        state.network_provision.state =
+            crate::network_provision::NetworkProvisionState::Ready;
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Network);
+        assert_eq!(
+            state.take_network_provision_request(),
+            Some(crate::network_provision::NetworkProvisionUiRequest::Stop)
+        );
+    }
+
+    #[test]
+    fn network_saved_action_opens_the_saved_network_list() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Network);
+        state.network_action_selected = 1;
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::NetworkSaved);
+    }
+
+    #[test]
+    fn network_saved_select_requires_a_second_confirmation_before_forgetting() {
+        let mut state = AppState::default();
+        state.set_saved_networks(vec![
+            crate::network_saved::SavedNetworkEntry {
+                ssid: "Home".into(),
+                connected: true,
+            },
+            crate::network_saved::SavedNetworkEntry {
+                ssid: "Office".into(),
+                connected: false,
+            },
+        ]);
+        state.router.navigate_to(ScreenRoute::NetworkSaved);
+
+        state.apply(ButtonEvent::Select);
+        assert!(state.network_saved.confirming_forget);
+        assert_eq!(state.take_network_saved_forget_request(), None);
+
+        state.apply(ButtonEvent::Select);
+        assert!(!state.network_saved.confirming_forget);
+        assert_eq!(
+            state.take_network_saved_forget_request(),
+            Some("Home".into())
+        );
+    }
+
+    #[test]
+    fn network_saved_held_select_also_arms_and_confirms_forget() {
+        // A held SELECT is classified as a long press once it crosses
+        // SELECT_LONG_PRESS_MS; on this route that must behave exactly like
+        // a short press instead of being silently swallowed, since the
+        // two-step forget confirmation naturally invites holding the button
+        // a beat too long on the second tap.
+        let mut state = AppState::default();
+        state.set_saved_networks(vec![crate::network_saved::SavedNetworkEntry {
+            ssid: "Home".into(),
+            connected: true,
+        }]);
+        state.router.navigate_to(ScreenRoute::NetworkSaved);
+
+        assert!(state.apply_network_saved_select_long_press());
+        assert!(state.network_saved.confirming_forget);
+        assert_eq!(state.take_network_saved_forget_request(), None);
+
+        assert!(state.apply_network_saved_select_long_press());
+        assert!(!state.network_saved.confirming_forget);
+        assert_eq!(
+            state.take_network_saved_forget_request(),
+            Some("Home".into())
+        );
+    }
+
+    #[test]
+    fn network_saved_held_select_is_a_no_op_off_route() {
+        let mut state = AppState::default();
+        state.set_saved_networks(vec![crate::network_saved::SavedNetworkEntry {
+            ssid: "Home".into(),
+            connected: true,
+        }]);
+        assert!(!state.apply_network_saved_select_long_press());
+        assert!(!state.network_saved.confirming_forget);
+    }
+
+    #[test]
+    fn network_saved_moving_selection_cancels_a_pending_confirmation() {
+        let mut state = AppState::default();
+        state.set_saved_networks(vec![
+            crate::network_saved::SavedNetworkEntry {
+                ssid: "Home".into(),
+                connected: true,
+            },
+            crate::network_saved::SavedNetworkEntry {
+                ssid: "Office".into(),
+                connected: false,
+            },
+        ]);
+        state.router.navigate_to(ScreenRoute::NetworkSaved);
+        state.apply(ButtonEvent::Select);
+        assert!(state.network_saved.confirming_forget);
+        state.apply(ButtonEvent::Down);
+        assert!(!state.network_saved.confirming_forget);
+    }
+
+    #[test]
+    fn home_upload_tile_starts_wifi_transfer_directly() {
+        let mut state = AppState::default();
+        state.home_selected = 3;
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
+        assert_eq!(
+            state.take_wifi_transfer_request(),
+            Some(crate::wifi_transfer::WifiTransferUiRequest::Start)
         );
     }
 
@@ -1109,9 +1686,10 @@ mod tests {
     }
 
     #[test]
-    fn clock_details_use_select_then_hierarchical_back() {
+    fn clock_details_use_down_select_then_hierarchical_back() {
         let mut state = AppState::default();
         state.router.navigate_to(ScreenRoute::Clock);
+        state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::ClockDetails);
         state.back();
@@ -1119,9 +1697,72 @@ mod tests {
     }
 
     #[test]
+    fn clock_set_time_editor_adjusts_fields_and_requests_hardware_write_on_save() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Clock);
+        state.apply(ButtonEvent::Select); // action 0: open the set-time editor
+        assert_eq!(state.active_route(), ScreenRoute::ClockSetTime);
+        let editor = state.clock_time_editor.expect("editor opened");
+        assert_eq!(editor.selected_field(), ClockEditField::Timezone);
+
+        state.apply(ButtonEvent::Select); // advance to Hour
+        state.apply(ButtonEvent::Up); // hour + 1
+        state.apply(ButtonEvent::Select); // advance to Minute
+        state.apply(ButtonEvent::Up); // minute + 1
+        for _ in 0..(ClockEditField::COUNT - 3) {
+            state.apply(ButtonEvent::Select); // advance to Save
+        }
+        assert_eq!(
+            state.clock_time_editor.unwrap().selected_field(),
+            ClockEditField::Save
+        );
+        state.apply(ButtonEvent::Select); // commit
+        assert_eq!(state.active_route(), ScreenRoute::Clock);
+        assert!(state.clock_time_editor.is_none());
+        assert!(state.take_clock_set_time_request().is_some());
+        assert!(state.take_clock_set_timezone_request().is_some());
+    }
+
+    #[test]
+    fn clock_set_time_editor_timezone_field_changes_the_live_regional_zone_on_save() {
+        let mut state = AppState::default();
+        assert_eq!(
+            state.regional.timezone,
+            crate::regional::TimeZoneProfile::AmericaNewYork
+        );
+        state.router.navigate_to(ScreenRoute::Clock);
+        state.apply(ButtonEvent::Select); // open editor on the Timezone field
+        state.apply(ButtonEvent::Up); // cycle away from America/New_York
+        assert_ne!(
+            state.clock_time_editor.unwrap().timezone,
+            crate::regional::TimeZoneProfile::AmericaNewYork
+        );
+        for _ in 0..(ClockEditField::COUNT - 1) {
+            state.apply(ButtonEvent::Select); // advance to Save
+        }
+        state.apply(ButtonEvent::Select); // commit
+        assert_ne!(
+            state.regional.timezone,
+            crate::regional::TimeZoneProfile::AmericaNewYork
+        );
+    }
+
+    #[test]
+    fn clock_set_time_editor_discards_draft_on_cancel() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Clock);
+        state.apply(ButtonEvent::Select);
+        assert!(state.clock_time_editor.is_some());
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Clock);
+        assert!(state.clock_time_editor.is_none());
+        assert!(state.take_clock_set_time_request().is_none());
+    }
+
+    #[test]
     fn tools_dictionary_opens_native_screen_without_sd_pack() {
         let mut state = AppState::default();
-        state.home_selected = 3;
+        state.home_selected = 4;
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
         state.apply(ButtonEvent::Down);
@@ -1136,7 +1777,7 @@ mod tests {
     }
 
     #[test]
-    fn voice_note_title_editor_boot_short_toggles_axis_and_long_back_cancels() {
+    fn voice_note_title_editor_select_long_toggles_axis_and_boot_back_cancels() {
         let mut state = AppState::default();
         state
             .voice_notes
@@ -1156,7 +1797,7 @@ mod tests {
             state.voice_notes.title_editor_navigation_mode_label(),
             "NAV H"
         );
-        assert!(state.apply_keyboard_boot_short_press());
+        assert!(state.apply_keyboard_select_long_press());
         assert_eq!(
             state.voice_notes.title_editor_navigation_mode_label(),
             "NAV V"
@@ -1167,12 +1808,12 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_keyboard_boot_short_toggles_axis_preserves_key_and_long_back_route() {
+    fn dictionary_keyboard_select_long_toggles_axis_preserves_key_and_boot_back_route() {
         let mut state = AppState::default();
         state.router.navigate_to(ScreenRoute::Dictionary);
         state.apply(ButtonEvent::Down);
         assert_eq!(state.dictionary.selected_key_label(), "B");
-        assert!(state.apply_keyboard_boot_short_press());
+        assert!(state.apply_keyboard_select_long_press());
         assert_eq!(state.dictionary.navigation_mode_label(), "NAV V");
         assert_eq!(state.dictionary.selected_key_label(), "B");
         state.apply(ButtonEvent::Down);
@@ -1186,7 +1827,7 @@ mod tests {
         use crate::unit_converter::{ConverterField, UnitCategory};
 
         let mut state = AppState::default();
-        state.home_selected = 3;
+        state.home_selected = 4;
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
         state.apply(ButtonEvent::Down);
@@ -1273,7 +1914,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_personal_details_routes_edit_delete_and_boot_create_safely() {
+    fn calendar_personal_details_routes_edit_delete_and_select_hold_create_safely() {
         use crate::calendar::{
             CalendarCatalogSnapshot, CalendarDate, CalendarEvent, CalendarEventKind,
         };
@@ -1297,10 +1938,10 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::CalendarEventDetails);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::CalendarEventEditor);
-        assert!(state.apply_keyboard_boot_short_press());
+        assert!(state.apply_keyboard_select_long_press());
         state.back();
         assert_eq!(state.active_route(), ScreenRoute::CalendarAgenda);
-        assert!(state.apply_calendar_boot_short_press());
+        assert!(state.apply_calendar_select_long_press());
         assert_eq!(state.active_route(), ScreenRoute::CalendarEventEditor);
     }
 

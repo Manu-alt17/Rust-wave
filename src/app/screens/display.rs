@@ -13,11 +13,7 @@ use crate::app::typography::{Text, UiTextStyle};
 use crate::{
     app::{
         state::AppState,
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
 };
@@ -30,21 +26,12 @@ pub fn render_display(
     let body = state.display.body_style();
     let prefs = state.display;
 
-    draw_header(display, state.display, "DISPLAY", "FONT AND SIZE")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: prefs.font_family.compact_label(),
-            middle: prefs.font_size.label(),
-            right: prefs.persistence_label(),
-        },
-    )?;
-    Text::new("Display preferences", Point::new(22, 160), heading).draw(display)?;
+    draw_header(display, state, "DISPLAY")?;
+    Text::new("Display preferences", Point::new(22, 114), heading).draw(display)?;
 
     draw_setting_row(
         display,
-        202,
+        156,
         "UI font",
         prefs.font_family.compact_label(),
         state.display_action_selected == 0,
@@ -52,31 +39,27 @@ pub fn render_display(
     )?;
     draw_setting_row(
         display,
-        292,
+        246,
         "UI size",
         prefs.font_size.label(),
         state.display_action_selected == 1,
         body,
     )?;
 
-    Text::new("Live preview", Point::new(22, 410), heading).draw(display)?;
-    Rectangle::new(Point::new(22, 438), Size::new(436, 160))
+    Text::new("Live preview", Point::new(22, 364), heading).draw(display)?;
+    Rectangle::new(Point::new(22, 392), Size::new(436, 160))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
-    Text::new("Reader", Point::new(44, 500), prefs.navigation_style()).draw(display)?;
-    Text::new("Books, progress and bookmarks", Point::new(44, 548), body).draw(display)?;
+    Text::new("Reader", Point::new(44, 454), prefs.navigation_style()).draw(display)?;
+    Text::new("Books, progress and bookmarks", Point::new(44, 502), body).draw(display)?;
     Text::new(
-        "Hold BOOT to return to Settings.",
-        Point::new(22, 666),
+        "Press BOOT to return to Settings.",
+        Point::new(22, 620),
         body,
     )
     .draw(display)?;
 
-    draw_footer(
-        display,
-        state.display,
-        "MOVE  SELECT CHANGE  HOLD BOOT BACK",
-    )?;
+    draw_footer(display, state.display, "MOVE  SELECT CHANGE  BOOT BACK")?;
     Ok(())
 }
 

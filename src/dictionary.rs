@@ -64,6 +64,9 @@ pub struct DictionaryUiState {
     pub message: String,
     pub pack_ready: bool,
     pub shard_count: usize,
+    /// Parsed INDEX.TXT rows, loaded once and reused for the rest of the
+    /// session instead of re-reading/re-parsing the file on every lookup.
+    index_cache: Option<Vec<DictionaryIndexRow>>,
 }
 
 impl Default for DictionaryUiState {
@@ -80,17 +83,27 @@ impl Default for DictionaryUiState {
             message: "Type a word. * does prefix search.".into(),
             pack_ready: false,
             shard_count: 0,
+            index_cache: None,
         }
     }
 }
 
 impl DictionaryUiState {
+    /// Loads and parses INDEX.TXT on first use only; later lookups in the
+    /// same session reuse the cached rows instead of re-reading the file.
+    fn cached_index(&mut self) -> Result<&[DictionaryIndexRow]> {
+        if self.index_cache.is_none() {
+            self.index_cache = Some(load_dictionary_index(Path::new(DICTIONARY_ROOT))?);
+        }
+        Ok(self.index_cache.as_deref().expect("just populated above"))
+    }
+
     pub fn refresh_pack_status(&mut self) {
-        match load_dictionary_index(Path::new(DICTIONARY_ROOT)) {
-            Ok(rows) => {
+        match self.cached_index().map(<[_]>::len) {
+            Ok(count) => {
                 self.pack_ready = true;
-                self.shard_count = rows.len();
-                self.message = format!("Pack ready: {} indexed shards", rows.len());
+                self.shard_count = count;
+                self.message = format!("Pack ready: {count} indexed shards");
             }
             Err(error) => {
                 self.pack_ready = false;
@@ -191,7 +204,22 @@ impl DictionaryUiState {
             );
             return;
         }
-        match lookup_dictionary(Path::new(DICTIONARY_ROOT), &normalized, prefix_mode) {
+        let rows = match self.cached_index() {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.matches.clear();
+                self.selected_match = 0;
+                self.wildcard = prefix_mode;
+                self.message = compact_error(&error.to_string());
+                return;
+            }
+        };
+        match lookup_dictionary_with_index(
+            Path::new(DICTIONARY_ROOT),
+            rows,
+            &normalized,
+            prefix_mode,
+        ) {
             Ok(result) => {
                 self.matches = result.matches;
                 self.selected_match = 0;
@@ -283,30 +311,20 @@ pub fn lookup_dictionary_with_index(
     if query.is_empty() {
         bail!("type a word first");
     }
-    let candidates = candidate_rows(rows, &query);
-    if candidates.is_empty() {
-        bail!("no shard in INDEX.TXT for {}", alpha_prefix(&query));
-    }
 
     if !prefix_mode {
-        for row in &candidates {
-            let shard = read_bounded_shard(root, row)?;
-            if let Some(entry) = extract_shard_matches(&shard, &query, false, 1)?
-                .into_iter()
-                .next()
-            {
-                return Ok(DictionaryLookup {
-                    matches: vec![DictionaryMatch {
-                        word: entry.0,
-                        definition: entry.1,
-                        shard: row.name.clone(),
-                    }],
-                    prefix_mode: false,
-                });
-            }
+        if let Some(entry) = lookup_dictionary_exact(root, rows, &query)? {
+            return Ok(DictionaryLookup {
+                matches: vec![entry],
+                prefix_mode: false,
+            });
         }
     }
 
+    let candidates = candidate_rows(rows, &query, true);
+    if candidates.is_empty() {
+        bail!("no shard in INDEX.TXT for {}", alpha_prefix(&query));
+    }
     let mut matches = Vec::new();
     for row in &candidates {
         let shard = read_bounded_shard(root, row)?;
@@ -337,6 +355,39 @@ pub fn lookup_dictionary_with_index(
     })
 }
 
+/// Exact-only lookup with no prefix-search fallback. Only opens shards
+/// whose bucket is itself a prefix of (or equal to) the query's own
+/// alpha-prefix, so a query that reduces to a very short prefix -- e.g. an
+/// elided Italian "L'IMPERTURBABILE" alpha-prefixing down to just "L" --
+/// can't force a scan of every shard that happens to share that first
+/// letter. `lookup_dictionary_with_index`'s automatic prefix-search
+/// fallback (candidate_rows with `allow_broader_shards: true`) still needs
+/// that broader, more expensive match, but a plain exact check never does.
+pub fn lookup_dictionary_exact(
+    root: &Path,
+    rows: &[DictionaryIndexRow],
+    query: &str,
+) -> Result<Option<DictionaryMatch>> {
+    let query = normalize_query(query);
+    if query.is_empty() {
+        bail!("type a word first");
+    }
+    for row in candidate_rows(rows, &query, false) {
+        let shard = read_bounded_shard(root, row)?;
+        if let Some(entry) = extract_shard_matches(&shard, &query, false, 1)?
+            .into_iter()
+            .next()
+        {
+            return Ok(Some(DictionaryMatch {
+                word: entry.0,
+                definition: entry.1,
+                shard: row.name.clone(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
 fn read_bounded_shard(root: &Path, row: &DictionaryIndexRow) -> Result<String> {
     let path = root.join(PathBuf::from(&row.relative_path));
     let metadata = fs::metadata(&path)
@@ -347,11 +398,21 @@ fn read_bounded_shard(root: &Path, row: &DictionaryIndexRow) -> Result<String> {
     fs::read_to_string(&path).with_context(|| format!("read dictionary shard {}", path.display()))
 }
 
-fn candidate_rows<'a>(rows: &'a [DictionaryIndexRow], query: &str) -> Vec<&'a DictionaryIndexRow> {
+/// `allow_broader_shards` controls whether a shard whose bucket *extends
+/// past* the query's alpha-prefix can still match (needed for prefix/
+/// wildcard search: a short typed prefix like "CA" should surface longer
+/// buckets like "CAB"). Exact lookups never need that direction -- a shard
+/// can only genuinely contain a word if the shard's own bucket is a prefix
+/// of that word, so pass `false` there to keep the candidate set bounded.
+fn candidate_rows<'a>(
+    rows: &'a [DictionaryIndexRow],
+    query: &str,
+    allow_broader_shards: bool,
+) -> Vec<&'a DictionaryIndexRow> {
     let prefix = alpha_prefix(query);
     let mut candidates: Vec<_> = rows
         .iter()
-        .filter(|row| row_matches(&row.name, &prefix))
+        .filter(|row| row_matches(&row.name, &prefix, allow_broader_shards))
         .collect();
     candidates.sort_by(|left, right| {
         let left_base = shard_base(&left.name);
@@ -364,13 +425,12 @@ fn candidate_rows<'a>(rows: &'a [DictionaryIndexRow], query: &str) -> Vec<&'a Di
     candidates
 }
 
-fn row_matches(row_name: &str, prefix: &str) -> bool {
+fn row_matches(row_name: &str, prefix: &str, allow_broader_shards: bool) -> bool {
     let base = shard_base(row_name);
     if prefix == "OTHERS" {
-        base == "OTHERS"
-    } else {
-        base.starts_with(prefix) || prefix.starts_with(base)
+        return base == "OTHERS";
     }
+    prefix.starts_with(base) || (allow_broader_shards && base.starts_with(prefix))
 }
 
 fn shard_base(name: &str) -> &str {
@@ -568,7 +628,7 @@ fn compact_text(raw: &str, max_chars: usize) -> String {
     shortened
 }
 
-fn compact_error(message: &str) -> String {
+pub(crate) fn compact_error(message: &str) -> String {
     compact_text(message, 84)
 }
 

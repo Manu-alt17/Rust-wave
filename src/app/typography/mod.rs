@@ -25,11 +25,13 @@ pub struct Glyph {
     pub top: i8,
 }
 
-/// One complete printable-ASCII bitmap-font strike.
+/// One complete printable-ASCII bitmap-font strike, plus an optional sparse
+/// table of extra glyphs (e.g. accented letters) outside that ASCII range.
 #[derive(Clone, Copy, Debug)]
 pub struct BitmapFont {
     pub glyphs: &'static [Glyph; 95],
     pub bitmap: &'static [u8],
+    pub extra: &'static [(char, Glyph)],
     pub line_height: u8,
 }
 
@@ -37,12 +39,41 @@ impl BitmapFont {
     #[must_use]
     fn glyph(self, character: char) -> Glyph {
         let code = character as u32;
-        let index = if (32..=126).contains(&code) {
-            (code - 32) as usize
-        } else {
-            ('?' as usize) - 32
-        };
-        self.glyphs[index]
+        if (32..=126).contains(&code) {
+            return self.glyphs[(code - 32) as usize];
+        }
+        if let Some((_, glyph)) = self
+            .extra
+            .iter()
+            .find(|(candidate, _)| *candidate == character)
+        {
+            return *glyph;
+        }
+        // Strikes without real accented glyphs (e.g. Inter) still show a
+        // readable unaccented letter instead of '?' for the Italian accents
+        // Reader text normalization now preserves.
+        let fallback = italian_accent_ascii_fallback(character).unwrap_or('?');
+        self.glyphs[(fallback as usize) - 32]
+    }
+}
+
+/// Nearest unaccented ASCII letter for the Italian accented characters that
+/// Reader text normalization passes through unchanged. Used only by strikes
+/// that have no real glyph for the accented character.
+#[must_use]
+const fn italian_accent_ascii_fallback(character: char) -> Option<char> {
+    match character {
+        'à' => Some('a'),
+        'è' | 'é' => Some('e'),
+        'ì' => Some('i'),
+        'ò' => Some('o'),
+        'ù' => Some('u'),
+        'À' => Some('A'),
+        'È' | 'É' => Some('E'),
+        'Ì' => Some('I'),
+        'Ò' => Some('O'),
+        'Ù' => Some('U'),
+        _ => None,
     }
 }
 
@@ -119,6 +150,40 @@ impl UiTextStyle {
             .filter(|character| *character != '\n')
             .map(|character| i32::from(self.font.glyph(character).advance))
             .sum()
+    }
+
+    /// Vertical extent of one line's actual ink, as `(top, bottom)` offsets
+    /// from the text baseline (top is negative — glyphs sit above their
+    /// baseline). Unlike [`Self::line_height`], which is the font's full
+    /// line pitch (ascent + descent + leading, sized to fit any glyph
+    /// including descenders no particular string uses), this reflects only
+    /// the glyphs actually present — e.g. an all-digits label with no
+    /// descenders reports a shorter, higher box. Callers that need to center
+    /// a short label's *visible* ink inside a tightly-fitted shape (a badge
+    /// pill, not a text-flow line) should measure with this, not
+    /// `line_height`, or the centering will read as pushed toward the top.
+    #[must_use]
+    pub fn text_ink_bounds(self, text: &str) -> (i32, i32) {
+        let mut top = 0;
+        let mut bottom = 0;
+        let mut any = false;
+        for character in text.chars().filter(|character| *character != '\n') {
+            let glyph = self.font.glyph(character);
+            if glyph.width == 0 || glyph.height == 0 {
+                continue;
+            }
+            let glyph_top = i32::from(glyph.top);
+            let glyph_bottom = glyph_top + i32::from(glyph.height);
+            if !any {
+                top = glyph_top;
+                bottom = glyph_bottom;
+                any = true;
+            } else {
+                top = top.min(glyph_top);
+                bottom = bottom.max(glyph_bottom);
+            }
+        }
+        (top, bottom)
     }
 }
 
@@ -284,12 +349,7 @@ impl DisplayPreferences {
 
     #[must_use]
     pub const fn header_title_style(self) -> UiTextStyle {
-        self.text_style(UiTextRole::Large, BinaryColor::Off)
-    }
-
-    #[must_use]
-    pub const fn header_subtitle_style(self) -> UiTextStyle {
-        self.text_style(UiTextRole::Body, BinaryColor::Off)
+        self.text_style(UiTextRole::Large, BinaryColor::On)
     }
 
     #[must_use]
@@ -332,6 +392,25 @@ mod tests {
             .draw_clipped(&mut display, TextBounds::new(0, 0, 10, 64))
             .unwrap();
         assert!(cursor.x > 10);
+    }
+
+    #[test]
+    fn strikes_without_real_accent_glyphs_fall_back_to_the_ascii_letter() {
+        let style = DisplayPreferences::default().body_style();
+        assert_eq!(style.text_width("à"), style.text_width("a"));
+        assert_eq!(style.text_width("È"), style.text_width("E"));
+    }
+
+    #[test]
+    fn reader_strikes_with_extra_glyphs_render_the_real_accented_letter() {
+        let style = crate::app::reader_typography::reader_body_style(
+            crate::reader::BookFont::Serif,
+            crate::reader::BookFontSize::Medium,
+            crate::reader::ReadingTheme::Classic,
+        );
+        assert!(style.font.extra.iter().any(|(ch, _)| *ch == 'à'));
+        // The real glyph's advance need not match the ascii fallback.
+        assert_ne!(style.text_width("à"), 0);
     }
 
     #[test]

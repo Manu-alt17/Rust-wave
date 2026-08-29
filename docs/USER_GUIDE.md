@@ -8,8 +8,8 @@ This guide describes the Rustmix Wave v1.0.0 user interface as shown by the refe
 | --- | --- |
 | Rotary up / down | Move the highlighted row, change a value, turn a reader page, or move within the active keyboard axis |
 | Rotary SELECT | Open the highlighted item, activate an action, or advance an editor field |
-| BOOT short | Contextual secondary action. On grid keyboards it toggles `NAV H` / `NAV V`. In Calendar it opens the daily agenda or creates a personal event from the agenda. In Sudoku and Minesweeper it toggles the active movement axis or cancels an edit/action mode. |
-| BOOT long | Hierarchical Back. On editors it cancels and returns without saving. |
+| Hold SELECT | Contextual secondary action. On grid keyboards it toggles `NAV H` / `NAV V`. In Calendar it opens the daily agenda or creates a personal event from the agenda. In Sudoku and Minesweeper it toggles the active movement axis or cancels an edit/action mode. |
+| BOOT | Hierarchical Back. On editors it cancels and returns without saving. |
 | Power short | Open the display-maintenance menu. Select **Clear ghosting now** for a full e-paper base refresh, or select **Cancel**. |
 | Power long | Enter random sleep-image mode. After the wake guard quiet interval, press Power briefly to restore the previous screen. |
 
@@ -29,7 +29,7 @@ The home dashboard shows date, time, battery, weather summary, Wi-Fi state, and 
 | Tools | File Browser, Dictionary, and Unit Converter |
 | Settings | Device services, display, network, sensors, alarms, audio, and weather |
 
-Navigation: rotate to choose a category, then press SELECT. Use BOOT long from a category page to return home.
+Navigation: rotate to choose a category, then press SELECT. Use BOOT from a category page to return home.
 
 ## 2. Reader
 
@@ -43,19 +43,19 @@ The Reader category contains:
 - **Library**: browse TXT and EPUB files.
 - **Bookmarks**: open saved reading anchors directly.
 
-Navigation: rotate to choose a row, SELECT to open, BOOT long to return home.
+Navigation: rotate to choose a row, SELECT to open, BOOT to return home.
 
 ### Continue Reading
 
 <img src="../screenshots/continue-reading1.jpg" width="360" alt="Continue Reading screen">
 
-This screen shows the last saved book and the saved page. Press SELECT to resume. Hold BOOT to return to the Reader menu.
+This screen shows the last saved book and the saved page. Press SELECT to resume. BOOT to return to the Reader menu.
 
 ### Opening a book
 
 <img src="../screenshots/opening_book.jpg" width="360" alt="Opening Book progress screen">
 
-TXT and EPUB opening is staged. The current page becomes available before full indexing completes. Hold BOOT to cancel an in-progress open.
+TXT and EPUB opening is staged. The current page becomes available before full indexing completes. BOOT to cancel an in-progress open.
 
 ### Library tabs
 
@@ -81,7 +81,7 @@ Reader page controls:
 | Rotary up | Previous page |
 | Rotary down | Next page |
 | SELECT | Open Reader Options |
-| BOOT long | Return to the Reader shell |
+| BOOT | Return to the Reader shell |
 
 TXT pages show encoding, page position, and cache state. EPUB pages additionally show chapter-relative progress.
 
@@ -101,19 +101,19 @@ Available actions include:
 - Go to Library
 - Go Home
 
-Navigation: rotate to highlight an action, SELECT to activate, BOOT long to return to the page.
+Navigation: rotate to highlight an action, SELECT to activate, BOOT to return to the page.
 
 ### Reading Preferences
 
 <img src="../screenshots/reader-reading-prefs.jpg" width="360" alt="Reading Preferences">
 
-Preferences include theme, orientation, book font size, font family, paragraph alignment, and progress display. Rotate to move; press SELECT to change a setting; hold BOOT to return.
+Preferences include theme, orientation, book font size, font family, paragraph alignment, and progress display. Rotate to move; press SELECT to change a setting; BOOT to return.
 
 ### EPUB Table of Contents
 
 <img src="../screenshots/reader-toc.jpg" width="360" alt="EPUB table of contents">
 
-The EPUB TOC lists chapter entries. Rotate to choose a chapter, SELECT to open it, and hold BOOT to return.
+The EPUB TOC lists chapter entries. Rotate to choose a chapter, SELECT to open it, and BOOT to return.
 
 ### Bookmarks
 
@@ -121,7 +121,7 @@ The EPUB TOC lists chapter entries. Rotate to choose a chapter, SELECT to open i
 <tr><td><img src="../screenshots/reader-bookmarks.jpg" width="300" alt="Reader bookmarks"></td><td><img src="../screenshots/reader-bookmarks-list.jpg" width="300" alt="Reader bookmarks list"></td></tr>
 </table>
 
-Bookmarks retain byte-offset anchors as the authoritative jump target. EPUB rows show chapter-relative labels when available; TXT rows show page labels. Rotate to choose a saved anchor, SELECT to open it, and hold BOOT to return.
+Bookmarks retain byte-offset anchors as the authoritative jump target. EPUB rows show chapter-relative labels when available; TXT rows show page labels. Rotate to choose a saved anchor, SELECT to open it, and BOOT to return.
 
 ## 3. Productivity
 
@@ -143,8 +143,8 @@ The native Calendar shows a Gregorian month grid, selected-day summary, personal
 | --- | --- |
 | Rotary up / down | Move the selected day or month, depending on active mode |
 | SELECT | Toggle Day / Month navigation mode |
-| BOOT short | Open the selected-day agenda |
-| BOOT long | Return to Productivity |
+| Hold SELECT | Open the selected-day agenda |
+| BOOT | Return to Productivity |
 
 ### Daily agenda
 
@@ -156,8 +156,8 @@ The agenda lists personal events and U.S. holidays for the selected date. It scr
 | --- | --- |
 | Rotary up / down | Move through agenda rows |
 | SELECT | Open event details |
-| BOOT short | Create a new personal event for the selected date |
-| BOOT long | Return to month view |
+| Hold SELECT | Create a new personal event for the selected date |
+| BOOT | Return to month view |
 
 Personal events can be edited or deleted. U.S. holiday rows remain read-only.
 
@@ -170,12 +170,12 @@ The editor writes only `EVENTS.TXT`. U.S. holidays remain untouched.
 | Control | Action |
 | --- | --- |
 | Rotary up / down | Move within the active keyboard axis |
-| BOOT short | Toggle `NAV H` / `NAV V` without moving the highlighted key |
+| Hold SELECT | Toggle `NAV H` / `NAV V` without moving the highlighted key |
 | SELECT | Activate the highlighted key |
 | FIELD | Switch between title and detail |
 | SAVE | Commit the personal event |
 | CANCEL | Exit without saving |
-| BOOT long | Cancel and return |
+| BOOT | Cancel and return |
 
 Calendar writes use recovery-safe `EVENTS.TMP -> EVENTS.TXT` replacement with `EVENTS.BAK` fallback.
 
@@ -191,7 +191,7 @@ Voice Notes records FAT 8.3 `VOICE###.WAV` files in PCM16 mono 16 kHz format. Th
 | SELECT on Record new note | Begin recording |
 | SELECT on microphone gain | Cycle gain profile |
 | SELECT on saved note | Open saved-WAV details |
-| BOOT long | Return to Productivity |
+| BOOT | Return to Productivity |
 
 ### Record Voice Note
 
@@ -203,7 +203,7 @@ While recording, the screen shows filename, elapsed time, PCM byte count, peak l
 | --- | --- |
 | Rotary up / down | Pause or resume capture |
 | SELECT | Stop and save |
-| BOOT long | Cancel and return |
+| BOOT | Cancel and return |
 
 ### Saved-WAV details
 
@@ -219,7 +219,7 @@ Available actions:
 - Delete note with confirmation
 - Return to Voice Notes
 
-Navigation: rotate to choose an action, SELECT to run it, BOOT long to return.
+Navigation: rotate to choose an action, SELECT to run it, BOOT to return.
 
 ### Edit friendly title
 
@@ -230,10 +230,10 @@ The title editor reuses the shared keyboard-grid navigation model.
 | Control | Action |
 | --- | --- |
 | Rotary up / down | Move within active keyboard axis |
-| BOOT short | Toggle `NAV H` / `NAV V` |
+| Hold SELECT | Toggle `NAV H` / `NAV V` |
 | SELECT | Activate the highlighted key |
 | SAVE | Update friendly title in `META.TXT` |
-| CANCEL or BOOT long | Return without saving |
+| CANCEL or BOOT | Return without saving |
 
 The internal `VOICE###.WAV` filename does not change.
 
@@ -245,7 +245,7 @@ The internal `VOICE###.WAV` filename does not change.
 <tr><td><img src="../screenshots/games.jpg" width="300" alt="Games category"></td><td><img src="../screenshots/games-listing.jpg" width="300" alt="SD Lua apps listing"></td></tr>
 </table>
 
-Select **SD Lua Apps** to open the SD-loaded catalog. Rotate to choose a game, SELECT to open it, and hold BOOT to return.
+Select **SD Lua Apps** to open the SD-loaded catalog. Rotate to choose a game, SELECT to open it, and BOOT to return.
 
 Lua scripts declare bounded app behavior, but native Rust owns game state, rendering, dirty regions, sensors, and panel refresh policy.
 
@@ -264,9 +264,9 @@ Sudoku is a native board-state bridge driven by an SD app declaration.
 | Control | Action |
 | --- | --- |
 | Rotary up / down | Move cursor in active H/V axis, or cycle candidate in edit mode |
-| BOOT short | Toggle H/V axis in navigation mode; cancel edit mode when editing |
+| Hold SELECT | Toggle H/V axis in navigation mode; cancel edit mode when editing |
 | SELECT | Enter edit mode or commit candidate |
-| BOOT long | Return to catalog |
+| BOOT | Return to catalog |
 
 ### Minesweeper
 
@@ -277,27 +277,27 @@ Minesweeper uses a native beginner board with first-reveal safety, flags, flood 
 | Control | Action |
 | --- | --- |
 | Rotary up / down | Move in active axis or change the active action |
-| BOOT short | Toggle axis or cancel action mode |
+| Hold SELECT | Toggle axis or cancel action mode |
 | SELECT | Reveal or flag according to the current action |
-| BOOT long | Return to catalog |
+| BOOT | Return to catalog |
 
 ### Tilt Maze
 
 <img src="../screenshots/tilt-maze.jpg" width="360" alt="Tilt Maze">
 
-Tilt Maze uses debounced planar tilt events from the QMI8658 IMU. Tilt the device to move the player through the maze. SELECT resets the level; hold BOOT to return.
+Tilt Maze uses debounced planar tilt events from the QMI8658 IMU. Tilt the device to move the player through the maze. SELECT resets the level; BOOT to return.
 
 ### Motion 2048
 
 <img src="../screenshots/motion20248.jpg" width="360" alt="Motion 2048">
 
-Motion 2048 maps debounced tilt events to board swipes. Tilt the device to slide and merge tiles. SELECT resets the board; hold BOOT to return.
+Motion 2048 maps debounced tilt events to board swipes. Tilt the device to slide and merge tiles. SELECT resets the board; BOOT to return.
 
 ### Sokoban Tilt
 
 <img src="../screenshots/sobokan-tilt.jpg" width="360" alt="Sokoban Tilt">
 
-Sokoban Tilt maps debounced tilt events to player movement and crate pushes. Tilt the device to navigate the puzzle. SELECT resets the level; hold BOOT to return.
+Sokoban Tilt maps debounced tilt events to player movement and crate pushes. Tilt the device to navigate the puzzle. SELECT resets the level; BOOT to return.
 
 ## 5. Tools
 
@@ -319,7 +319,7 @@ The File Browser is a bounded read-only SDMMC browser. Directories sort before f
 | --- | --- |
 | Rotary up / down | Move row selection |
 | SELECT | Enter directory, open preview, or close preview |
-| BOOT long | Return to parent or Tools |
+| BOOT | Return to parent or Tools |
 
 ### Dictionary
 
@@ -332,9 +332,9 @@ The native Dictionary reuses the X4 prefix-shard SD pack. Enter letters, use **G
 | Control | Action |
 | --- | --- |
 | Rotary up / down | Move within active keyboard axis |
-| BOOT short | Toggle `NAV H` / `NAV V` |
+| Hold SELECT | Toggle `NAV H` / `NAV V` |
 | SELECT | Activate letter, DEL, CLR, GO, or `*` |
-| BOOT long | Return to Tools |
+| BOOT | Return to Tools |
 
 ### Unit Converter
 
@@ -348,7 +348,7 @@ The offline fixed-point converter supports categories such as length, mass, temp
 | --- | --- |
 | Rotary up / down | Change the highlighted row value |
 | SELECT | Advance to the next editable row |
-| BOOT long | Return to Tools |
+| BOOT | Return to Tools |
 
 ## 6. Settings
 
@@ -356,7 +356,7 @@ The offline fixed-point converter supports categories such as length, mass, temp
 <tr><td><img src="../screenshots/settings.jpg" width="300" alt="Settings page one"></td><td><img src="../screenshots/settings1.jpg" width="300" alt="Settings page two"></td></tr>
 </table>
 
-Settings is paginated. Rotate through rows, SELECT to open an item, and hold BOOT to return home.
+Settings is paginated. Rotate through rows, SELECT to open an item, and BOOT to return home.
 
 ### Alarms
 
@@ -372,8 +372,8 @@ The alarm list shows configured RTC schedules. The editor changes hour, minute, 
 | List: SELECT | Edit selected alarm |
 | Editor: rotary up / down | Change field value |
 | Editor: SELECT | Advance field |
-| Editor: BOOT short | Back |
-| BOOT long | Return to Settings |
+| Editor: Hold SELECT | Back |
+| BOOT | Return to Settings |
 
 ### Audio
 
@@ -383,7 +383,7 @@ The alarm list shows configured RTC schedules. The editor changes hour, minute, 
 
 The Audio screen exposes codec state, volume, amplifier state, chime playback, stop, mute/unmute, and detailed ES8311 routing diagnostics.
 
-Navigation: rotate through actions, SELECT to run, hold BOOT to return.
+Navigation: rotate through actions, SELECT to run, BOOT to return.
 
 ### Clock and RTC details
 
@@ -393,13 +393,13 @@ Navigation: rotate through actions, SELECT to run, hold BOOT to return.
 
 Clock shows localized RTC time, temperature, humidity, battery, USB, and charge status. RTC Details shows time basis, storage basis, battery voltage, USB state, charge state, and refresh policy.
 
-Navigation: SELECT opens details; hold BOOT returns.
+Navigation: SELECT opens details; BOOT returns.
 
 ### Display
 
 <img src="../screenshots/display.jpg" width="360" alt="Display preferences">
 
-Display settings change the global UI font and UI size. Rotate to choose a row, SELECT to change, and hold BOOT to return.
+Display settings change the global UI font and UI size. Rotate to choose a row, SELECT to change, and BOOT to return.
 
 ### Device Info
 
@@ -409,7 +409,7 @@ Display settings change the global UI font and UI size. Rotate to choose a row, 
 
 Device Info is a three-page read-only diagnostic surface covering firmware, display, board services, SD storage, runtime services, network, weather, alarm state, display zone, and temperature units.
 
-Navigation: SELECT advances to the next page; hold BOOT returns.
+Navigation: SELECT advances to the next page; BOOT returns.
 
 ### Environment
 
@@ -417,7 +417,7 @@ Navigation: SELECT advances to the next page; hold BOOT returns.
 <tr><td><img src="../screenshots/environment.jpg" width="300" alt="Environment overview"></td><td><img src="../screenshots/environment1.jpg" width="300" alt="Environment sensor details"></td></tr>
 </table>
 
-Environment uses the SHTC3 sensor for temperature and relative humidity. SELECT opens sensor details; hold BOOT returns.
+Environment uses the SHTC3 sensor for temperature and relative humidity. SELECT opens sensor details; BOOT returns.
 
 ### Motion and Motion Events
 
@@ -441,7 +441,7 @@ The Motion Events screen exposes thresholds, debounce timing, counters, reset, a
 | Overview: SELECT | Open Motion Events |
 | Motion Events: rotary up / down | Move through threshold and action rows |
 | Motion Events: SELECT | Change threshold, reset counters, or open details |
-| BOOT long | Return |
+| BOOT | Return |
 
 ### Network and Wi-Fi transfer
 
@@ -449,21 +449,25 @@ The Motion Events screen exposes thresholds, debounce timing, counters, reset, a
 <tr><td><img src="../screenshots/network.jpg" width="300" alt="Network overview"></td><td><img src="../screenshots/network-details.jpg" width="300" alt="Network details"></td></tr>
 </table>
 
-Network shows Wi-Fi, SNTP, SSID, IPv4 address, RSSI, provisioning details, regional timezone, RTC storage basis, and NTP server. The Wi-Fi transfer portal is off until explicitly started.
+Network shows Wi-Fi, SNTP, SSID, IPv4 address, RSSI, how many networks are saved, regional timezone, RTC storage basis, and NTP server.
 
 | Control | Action |
 | --- | --- |
-| Rotary up / down | Move between transfer and details actions |
-| SELECT on Start Wi-Fi Transfer | Start LAN portal and open portal status |
-| SELECT on Stop | Stop active portal |
+| Rotary up / down | Move between Configure via phone, Saved networks and Provisioning details |
+| SELECT on Configure via phone | Open the device's own hotspot and Wi-Fi setup portal |
+| SELECT on Saved networks | View and forget saved networks |
 | SELECT on Provisioning details | Open network details |
-| BOOT long | Stop active portal when appropriate and return |
+| BOOT | Return to Settings |
 
-### Browser Wi-Fi transfer portal
+Configure via phone replaces typing an SSID and password on the device. Selecting it starts a temporary hotspot with a freshly generated name and password, plus a small web portal, both shown on screen along with a single QR code: scan it with a phone camera to join the hotspot automatically. The device also answers as a captive portal, so most phones then open the setup page on their own (as a "Sign in to network" prompt or an automatically launched browser); if a phone doesn't offer that, open its displayed address in a browser instead. The portal lists nearby networks the device found (scanned while the hotspot runs) and any already-saved networks. Tap a network, type its password with the phone's own keyboard, and the device attempts a real connection before saving it — only a network that actually connects gets written to `WIFI.TXT`. Up to 8 networks can be saved this way; the device tries them in order at boot until one connects, so both a home and a travel router can be kept side by side. Changing a saved network's password is done the same way: add it again from the portal with the new password. SELECT on the Configure via phone screen (or BOOT) stops the hotspot and reconnects using the saved list.
+
+Saved networks lists the SSIDs already in `WIFI.TXT`, flagging whichever one is currently connected. Rotary up / down moves through the list; SELECT arms a "forget" confirmation on the highlighted network, and SELECT again removes it. Moving the selection cancels a pending confirmation. This screen is read-only otherwise — adding a network or changing its password happens through Configure via phone.
+
+### Wi-Fi transfer portal
 
 <img src="../screenshots/wifi-transfer.jpg" width="520" alt="Rustmix Wave Wi-Fi transfer browser portal">
 
-From a device on the same LAN, open the displayed URL and enter the six-digit session code. The portal lists the `/RUSTMIX` tree and supports bounded upload, download, rename, directory creation, and deletion operations while protecting internal configuration files.
+The Wi-Fi transfer portal is fully independent of the Network settings: it is started from the Home **Upload** tile, which jumps straight into the portal and starts it. SELECT on the portal screen stops it and returns to Home; BOOT does the same. From a device on the same LAN, open the displayed URL and enter the six-digit session code. The portal lists the `/RUSTMIX` tree and supports bounded upload, download, rename, directory creation, and deletion operations while protecting internal configuration files.
 
 ### Weather
 
@@ -477,11 +481,11 @@ Weather uses the configured Open-Meteo profile, bounded retries, and a last-know
 | --- | --- |
 | Rotary up / down | Move between Refresh weather and Weather details |
 | SELECT | Run the selected action |
-| BOOT long | Return to Settings |
+| BOOT | Return to Settings |
 
 ## 7. Power-key maintenance and sleep
 
-A short Power press opens a display-maintenance menu from any ordinary UI route. Select **Clear ghosting now** to request the shared global-base refresh path. Select **Cancel** or hold BOOT to return without refreshing.
+A short Power press opens a display-maintenance menu from any ordinary UI route. Select **Clear ghosting now** to request the shared global-base refresh path. Select **Cancel** or BOOT to return without refreshing.
 
 A long Power press enters sleep-image mode:
 

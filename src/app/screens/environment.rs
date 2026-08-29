@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
 };
@@ -34,38 +30,23 @@ pub fn render_environment(
         .board
         .temperature_label(state.regional.temperature_unit);
     let humidity = state.board.humidity_label();
-    let battery = state.board.battery_label();
 
-    draw_header(
-        display,
-        state.display,
-        "ENVIRONMENT",
-        "TEMPERATURE AND HUMIDITY",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: &temperature,
-            middle: &humidity,
-            right: &battery,
-        },
-    )?;
+    draw_header(display, state, "ENVIRONMENT")?;
 
-    Rectangle::new(Point::new(22, 156), Size::new(436, 160))
+    Rectangle::new(Point::new(22, 110), Size::new(436, 160))
         .into_styled(outline)
         .draw(display)?;
-    Text::new("Temperature", Point::new(42, 198), heading).draw(display)?;
-    Text::new(&temperature, Point::new(42, 270), large).draw(display)?;
+    Text::new("Temperature", Point::new(42, 152), heading).draw(display)?;
+    Text::new(&temperature, Point::new(42, 224), large).draw(display)?;
 
-    Rectangle::new(Point::new(22, 352), Size::new(436, 160))
+    Rectangle::new(Point::new(22, 306), Size::new(436, 160))
         .into_styled(outline)
         .draw(display)?;
-    Text::new("Relative humidity", Point::new(42, 394), heading).draw(display)?;
-    Text::new(&humidity, Point::new(42, 466), large).draw(display)?;
+    Text::new("Relative humidity", Point::new(42, 348), heading).draw(display)?;
+    Text::new(&humidity, Point::new(42, 420), large).draw(display)?;
 
-    draw_action(display, 640, "Sensor details", body)?;
-    draw_footer(display, state.display, "SELECT DETAILS  HOLD BOOT BACK")?;
+    draw_action(display, 594, "Sensor details", body)?;
+    draw_footer(display, state.display, "SELECT DETAILS  BOOT BACK")?;
     Ok(())
 }
 
@@ -79,45 +60,25 @@ pub fn render_environment_details(
         .board
         .environment_sensor_id
         .map_or_else(|| "Unavailable".into(), |id| format!("0x{id:04X}"));
-    let status = if state.board.environment.is_some() {
-        "Ready"
-    } else {
-        "Unavailable"
-    };
 
-    draw_header(
-        display,
-        state.display,
-        "SENSOR DETAILS",
-        "SHTC3 ENVIRONMENT SENSOR",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "SHTC3",
-            middle: status,
-            right: "DETAILS",
-        },
-    )?;
+    draw_header(display, state, "SENSOR DETAILS")?;
 
-    Text::new("Sensor", Point::new(22, 166), heading).draw(display)?;
-    line(display, 214, "Status", status, body)?;
-    line(display, 254, "Device ID", &id, body)?;
-    line(display, 294, "Command", "Wake / measure / sleep", body)?;
-    line(display, 334, "Validation", "Sensirion CRC-8", body)?;
+    Text::new("Sensor", Point::new(22, 120), heading).draw(display)?;
+    line(display, 168, "Device ID", &id, body)?;
+    line(display, 208, "Command", "Wake / measure / sleep", body)?;
+    line(display, 248, "Validation", "Sensirion CRC-8", body)?;
 
-    Text::new("Calibration", Point::new(22, 410), heading).draw(display)?;
-    line(display, 458, "Compensation", "-1.5 C / -2.7 F", body)?;
-    line(display, 498, "Live refresh", "Every 30 seconds", body)?;
+    Text::new("Calibration", Point::new(22, 324), heading).draw(display)?;
+    line(display, 372, "Compensation", "-1.5 C / -2.7 F", body)?;
+    line(display, 412, "Live refresh", "Every 30 seconds", body)?;
 
     Text::new(
-        "Hold BOOT to return to Environment.",
-        Point::new(22, 666),
+        "Press BOOT to return to Environment.",
+        Point::new(22, 580),
         body,
     )
     .draw(display)?;
-    draw_footer(display, state.display, "HOLD BOOT BACK")?;
+    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
 }
 

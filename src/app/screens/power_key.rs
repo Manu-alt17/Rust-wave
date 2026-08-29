@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
 };
@@ -28,47 +24,38 @@ pub fn render_power_key_menu(
     let heading = state.display.heading_style();
     let body = state.display.body_style();
 
-    draw_header(display, state.display, "POWER KEY", "DISPLAY MAINTENANCE")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: "SHORT PRESS",
-            middle: "CLEAR GHOST",
-            right: "HOLD SLEEP",
-        },
-    )?;
+    draw_header(display, state, "POWER KEY")?;
 
-    Text::new("Screen refresh", Point::new(22, 174), heading).draw(display)?;
+    Text::new("Screen refresh", Point::new(22, 128), heading).draw(display)?;
     Text::new(
         "Run a clean global refresh to clear e-paper ghosting.",
-        Point::new(22, 220),
+        Point::new(22, 174),
         body,
     )
     .draw(display)?;
 
     draw_action(
         display,
-        292,
+        246,
         "Clear ghosting now",
         state.power_key_menu.selected == 0,
         body,
     )?;
     draw_action(
         display,
-        372,
+        326,
         "Cancel",
         state.power_key_menu.selected == 1,
         body,
     )?;
 
-    Rectangle::new(Point::new(22, 500), Size::new(436, 104))
+    Rectangle::new(Point::new(22, 454), Size::new(436, 104))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
-    Text::new("Long Power press", Point::new(44, 546), heading).draw(display)?;
-    Text::new("Enter sleep-image mode", Point::new(44, 580), body).draw(display)?;
+    Text::new("Long Power press", Point::new(44, 500), heading).draw(display)?;
+    Text::new("Enter sleep-image mode", Point::new(44, 534), body).draw(display)?;
 
-    draw_footer(display, state.display, "MOVE  SELECT RUN  HOLD BOOT BACK")?;
+    draw_footer(display, state.display, "MOVE  SELECT RUN  BOOT BACK")?;
     Ok(())
 }
 

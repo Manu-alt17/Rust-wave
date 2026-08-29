@@ -1,7 +1,7 @@
 //! Reusable H/V axis navigation for rotary keyboard and grid-style editors.
 //!
-//! BOOT short press toggles the active axis without moving the selected key.
-//! Rotary Up / Down then move within the active row or column. BOOT long press
+//! A held SELECT press toggles the active axis without moving the selected
+//! key. Rotary Up / Down then move within the active row or column. BOOT
 //! remains owned by the application router as hierarchical Back.
 
 /// Rotary movement axis used by keyboard and grid-style text-entry screens.

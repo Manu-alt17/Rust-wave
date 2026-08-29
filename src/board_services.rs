@@ -166,6 +166,16 @@ where
         self.rtc.read_datetime()
     }
 
+    /// Persist a manually edited wall-clock value from the Clock screen's Set
+    /// Date & Time editor. The caller has already converted the local edit
+    /// into the retained RTC storage basis.
+    pub fn write_rtc_datetime(&mut self, stored: RtcDateTime) -> anyhow::Result<()> {
+        self.rtc.write_datetime(stored)?;
+        self.init_report.rtc_available = true;
+        self.init_report.rtc_clock_integrity_was_lost = false;
+        Ok(())
+    }
+
     /// Program the PCF85063 single hardware alarm slot using retained RTC
     /// storage-basis fields selected by the alarm domain scheduler.
     pub fn program_rtc_alarm(&mut self, stored: RtcDateTime) -> anyhow::Result<()> {
@@ -204,6 +214,25 @@ where
             anyhow::bail!("QMI8658 service unavailable");
         }
         self.imu.read_motion()
+    }
+
+    /// Disable QMI8658 accelerometer/gyroscope sampling before MCU deep
+    /// sleep. A no-op when the IMU never initialized.
+    pub fn sleep_imu(&mut self) -> anyhow::Result<()> {
+        if !self.init_report.imu_available {
+            return Ok(());
+        }
+        self.imu.sleep()
+    }
+
+    /// Re-enable QMI8658 sampling after a software-only sleep wake. Real MCU
+    /// deep sleep instead wakes through a full reboot, which re-initializes
+    /// the IMU from scratch in [`Self::initialize`].
+    pub fn wake_imu(&mut self) -> anyhow::Result<()> {
+        if !self.init_report.imu_available {
+            return Ok(());
+        }
+        self.imu.wake()
     }
 
     /// Capture a best-effort status snapshot. Each optional field remains

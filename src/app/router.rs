@@ -31,6 +31,8 @@ pub enum ScreenRoute {
     LuaApps,
     LuaGame,
     LuaGameError,
+    Magic,
+    MagicView,
     Files,
     Dictionary,
     UnitConverter,
@@ -38,6 +40,7 @@ pub enum ScreenRoute {
     Audio,
     AudioDetails,
     Clock,
+    ClockSetTime,
     ClockDetails,
     Display,
     PowerKeyMenu,
@@ -51,6 +54,8 @@ pub enum ScreenRoute {
     MotionDetails,
     Network,
     NetworkDetails,
+    NetworkProvision,
+    NetworkSaved,
     WifiTransfer,
     Weather,
     WeatherDetails,
@@ -87,6 +92,8 @@ impl ScreenRoute {
             Self::LuaApps => "SD Lua Apps",
             Self::LuaGame => "Lua App",
             Self::LuaGameError => "Lua App Error",
+            Self::Magic => "Magic Tokens",
+            Self::MagicView => "Token View",
             Self::Files => "File Browser",
             Self::Dictionary => "Dictionary",
             Self::UnitConverter => "Unit Converter",
@@ -94,6 +101,7 @@ impl ScreenRoute {
             Self::Audio => "Audio",
             Self::AudioDetails => "Audio details",
             Self::Clock => "Clock",
+            Self::ClockSetTime => "Set Date & Time",
             Self::ClockDetails => "RTC details",
             Self::Display => "Display",
             Self::PowerKeyMenu => "Power Key Menu",
@@ -107,6 +115,8 @@ impl ScreenRoute {
             Self::MotionDetails => "Motion details",
             Self::Network => "Network",
             Self::NetworkDetails => "Provisioning details",
+            Self::NetworkProvision => "Configure via Phone",
+            Self::NetworkSaved => "Saved Networks",
             Self::WifiTransfer => "Wi-Fi Transfer",
             Self::Weather => "Weather",
             Self::WeatherDetails => "Weather details",
@@ -143,6 +153,8 @@ impl ScreenRoute {
             Self::LuaApps => "lua-apps",
             Self::LuaGame => "lua-game",
             Self::LuaGameError => "lua-game-error",
+            Self::Magic => "magic",
+            Self::MagicView => "magic-view",
             Self::Files => "file-browser",
             Self::Dictionary => "dictionary",
             Self::UnitConverter => "unit-converter",
@@ -150,6 +162,7 @@ impl ScreenRoute {
             Self::Audio => "audio",
             Self::AudioDetails => "audio-details",
             Self::Clock => "clock",
+            Self::ClockSetTime => "clock-set-time",
             Self::ClockDetails => "rtc-details",
             Self::Display => "display",
             Self::PowerKeyMenu => "power-key-menu",
@@ -163,6 +176,8 @@ impl ScreenRoute {
             Self::MotionDetails => "motion-details",
             Self::Network => "network",
             Self::NetworkDetails => "network-details",
+            Self::NetworkProvision => "network-provision",
+            Self::NetworkSaved => "network-saved",
             Self::WifiTransfer => "wifi-transfer",
             Self::Weather => "weather",
             Self::WeatherDetails => "weather-details",
@@ -180,6 +195,23 @@ impl ScreenRoute {
     #[must_use]
     pub const fn is_placeholder(self) -> bool {
         matches!(self, Self::GamesTbd)
+    }
+
+    /// Whether this route only exists while a book session is open. Used to
+    /// decide, at the moment hardware deep sleep is entered, whether the
+    /// device should auto-resume the last book on the next boot instead of
+    /// landing on Home (a real deep-sleep wake is a full reboot, so nothing
+    /// in RAM, including the router's current route, survives it).
+    #[must_use]
+    pub const fn is_reader_active(self) -> bool {
+        matches!(
+            self,
+            Self::ReaderPage
+                | Self::ReaderOptions
+                | Self::ReaderToc
+                | Self::ReaderBookmarks
+                | Self::ReaderPreferences
+        )
     }
 
     #[must_use]
@@ -201,8 +233,9 @@ impl ScreenRoute {
             Self::CalendarEventEditor => Some(Self::CalendarAgenda),
             Self::CalendarDeleteConfirmation => Some(Self::CalendarEventDetails),
             Self::VoiceNoteDetails | Self::VoiceNoteRecording => Some(Self::VoiceNotes),
-            Self::GamesTbd | Self::LuaApps => Some(Self::Games),
+            Self::GamesTbd | Self::LuaApps | Self::Magic => Some(Self::Games),
             Self::LuaGame | Self::LuaGameError => Some(Self::LuaApps),
+            Self::MagicView => Some(Self::Magic),
             Self::Files | Self::Dictionary | Self::UnitConverter => Some(Self::Tools),
             Self::PowerKeyMenu => Some(Self::Home),
             Self::Alarms
@@ -215,13 +248,16 @@ impl ScreenRoute {
             | Self::Network
             | Self::Weather => Some(Self::Settings),
             Self::AudioDetails => Some(Self::Audio),
-            Self::ClockDetails => Some(Self::Clock),
+            Self::ClockSetTime | Self::ClockDetails => Some(Self::Clock),
             Self::DeviceInfoBoard => Some(Self::DeviceInfo),
             Self::DeviceInfoRuntime => Some(Self::DeviceInfoBoard),
             Self::EnvironmentDetails => Some(Self::Environment),
             Self::MotionEvents => Some(Self::Motion),
             Self::MotionDetails => Some(Self::MotionEvents),
-            Self::NetworkDetails | Self::WifiTransfer => Some(Self::Network),
+            Self::NetworkDetails | Self::NetworkProvision | Self::NetworkSaved => {
+                Some(Self::Network)
+            }
+            Self::WifiTransfer => Some(Self::Home),
             Self::WeatherDetails => Some(Self::Weather),
         }
     }
@@ -238,6 +274,8 @@ impl ScreenRoute {
                 | Self::MotionDetails
                 | Self::Network
                 | Self::NetworkDetails
+                | Self::NetworkProvision
+                | Self::NetworkSaved
                 | Self::WifiTransfer
                 | Self::Alarms
                 | Self::Calendar
@@ -308,6 +346,7 @@ mod tests {
         assert!(!ScreenRoute::UnitConverter.is_placeholder());
         assert!(!ScreenRoute::Dictionary.is_placeholder());
         assert_eq!(ScreenRoute::AudioDetails.parent(), Some(ScreenRoute::Audio));
+        assert_eq!(ScreenRoute::ClockSetTime.parent(), Some(ScreenRoute::Clock));
         assert_eq!(
             ScreenRoute::DeviceInfoRuntime.parent(),
             Some(ScreenRoute::DeviceInfoBoard)
@@ -319,7 +358,22 @@ mod tests {
             ScreenRoute::LuaGameError.parent(),
             Some(ScreenRoute::LuaApps)
         );
+        assert_eq!(ScreenRoute::Magic.parent(), Some(ScreenRoute::Games));
+        assert_eq!(ScreenRoute::MagicView.parent(), Some(ScreenRoute::Magic));
         assert_eq!(ScreenRoute::Home.parent(), None);
+        assert_eq!(ScreenRoute::WifiTransfer.parent(), Some(ScreenRoute::Home));
+        assert_eq!(
+            ScreenRoute::NetworkProvision.parent(),
+            Some(ScreenRoute::Network)
+        );
+        assert_eq!(
+            ScreenRoute::NetworkSaved.parent(),
+            Some(ScreenRoute::Network)
+        );
+        assert_eq!(
+            ScreenRoute::NetworkDetails.parent(),
+            Some(ScreenRoute::Network)
+        );
     }
 
     #[test]
@@ -334,5 +388,19 @@ mod tests {
         assert_eq!(router.current(), ScreenRoute::Settings);
         router.back();
         assert_eq!(router.current(), ScreenRoute::Home);
+    }
+
+    #[test]
+    fn only_in_session_reader_routes_are_reader_active() {
+        assert!(ScreenRoute::ReaderPage.is_reader_active());
+        assert!(ScreenRoute::ReaderOptions.is_reader_active());
+        assert!(ScreenRoute::ReaderToc.is_reader_active());
+        assert!(ScreenRoute::ReaderBookmarks.is_reader_active());
+        assert!(ScreenRoute::ReaderPreferences.is_reader_active());
+        assert!(!ScreenRoute::ReaderLoading.is_reader_active());
+        assert!(!ScreenRoute::ContinueReading.is_reader_active());
+        assert!(!ScreenRoute::Library.is_reader_active());
+        assert!(!ScreenRoute::Bookmarks.is_reader_active());
+        assert!(!ScreenRoute::Home.is_reader_active());
     }
 }

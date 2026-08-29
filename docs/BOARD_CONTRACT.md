@@ -20,7 +20,12 @@ BUSY           GPIO3
 
 ```text
 Rotary wheel / Select   Primary UI navigation
-BOOT                    GPIO0, short contextual action, long hierarchical Back
+BOOT                    GPIO0, single press hierarchical Back
+Hold SELECT             GPIO5, ~900ms hold triggers a route-specific
+                        contextual action (keyboard-grid axis toggle,
+                        calendar agenda/create, Sudoku/Minesweeper
+                        axis-toggle-or-cancel) instead of its normal
+                        short-press meaning
 Power key               AXP2101 PEK short / long interrupts
 ```
 
@@ -28,9 +33,25 @@ Power-key product behavior:
 
 ```text
 Short Power press   Open display-maintenance menu
-Long Power press    Enter random sleep-image mode
-Wake Power press    Restore retained route after quiet guard
+Long Power press    Enter random sleep-image mode, then real MCU deep sleep
+Wake Power press    Restore retained route after quiet guard (software-only fallback path)
+Wake rotary SELECT  GPIO5 ext1 wakeup from real MCU deep sleep (reboots the board)
 ```
+
+## MCU deep sleep
+
+```text
+Wakeup source   ext1 on GPIO5 (rotary SELECT), active low
+RTC alarm wake  Not available: GPIO45 is outside the ESP32-S3 RTC IO range
+                (GPIO0-21), so it cannot arm an ext1/ext0 deep-sleep wakeup
+State on wake   Full reboot, not a resume: RAM is lost, the app restarts and
+                lands on Home like any cold boot
+Fallback        If arming the GPIO5 wakeup source fails, the board stays in
+                the pre-existing software-only sleep-image loop (mcu-sleep
+                false) instead of a real deep sleep with no way to wake it
+```
+
+See `src/mcu_deep_sleep.rs`.
 
 ## Storage
 

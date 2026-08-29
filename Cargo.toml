@@ -32,9 +32,25 @@ strip = true
 anyhow = "1"
 embedded-graphics = "0.8.1"
 embedded-hal = "1.0"
+embedded-iconoir = { version = "0.2.3", features = ["96px"] }
 log = "0.4"
 enumset = { version = "1", optional = true }
 miniz_oxide = "0.8"
+# EPUB cover thumbnails: JPEG uses native scaled decoding (1/8..1) so covers
+# are decoded near the target thumbnail size instead of at full resolution.
+# `default-features = false` drops the optional `rayon` thread pool, which
+# this single-threaded firmware main loop has no use for.
+jpeg-decoder = { version = "0.3", default-features = false }
+# PNG has no native scaled decoding, so covers decode at full resolution and
+# are resized in software. Chosen over the `image` crate (already a
+# dev-dependency for host PNG test export) to avoid pulling its multi-format
+# decoder abstraction into the firmware target; this reuses `miniz_oxide`,
+# already a direct dependency for EPUB's DEFLATE.
+png = "0.17"
+# Wi-Fi provisioning portal: renders the AP-join and portal-URL QR codes on
+# the e-paper screen. `default-features = false` drops the optional `image`
+# rendering backend; only the raw module grid (`QrCode::to_colors`) is used.
+qrcode = { version = "0.14", default-features = false }
 
 [target.'cfg(target_os = "espidf")'.dependencies]
 embedded-svc = "0.29"
@@ -43,6 +59,11 @@ es8311 = "0.1.0"
 
 [build-dependencies]
 embuild = { version = "0.33", features = ["espidf"] }
+
+# Host-only: renders FrameBuffer screens to PNG for UI review without hardware.
+# See app::mod::tests::export_screen_previews (run with `cargo test -- --ignored`).
+[dev-dependencies]
+image = { version = "0.24", default-features = false, features = ["png"] }
 
 [package.metadata.esp-idf-sys]
 esp_idf_version = "v5.5.1"

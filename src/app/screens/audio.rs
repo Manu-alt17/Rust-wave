@@ -12,11 +12,7 @@ use crate::{
     app::{
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{
-            footer::draw_footer,
-            header::draw_header,
-            status_row::{draw_status_row, StatusRow},
-        },
+        widgets::{footer::draw_footer, header::draw_header},
     },
     audio::{
         AUDIO_AMP_ENABLE_GPIO, AUDIO_BCLK_GPIO, AUDIO_DIN_GPIO, AUDIO_DOUT_GPIO, AUDIO_MCLK_GPIO,
@@ -36,21 +32,12 @@ pub fn render_audio(
     let amp = if audio.amplifier_enabled { "ON" } else { "OFF" };
     let mute = if audio.muted { "Muted" } else { "Active" };
 
-    draw_header(display, state.display, "AUDIO", "PLAYBACK AND ALARMS")?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: audio.playback_state.label(),
-            middle: &volume,
-            right: amp,
-        },
-    )?;
+    draw_header(display, state, "AUDIO")?;
 
-    Text::new("Playback controls", Point::new(22, 158), heading).draw(display)?;
-    line(display, 202, "Status", mute, body)?;
-    line(display, 236, "Volume", &volume, body)?;
-    line(display, 270, "Amplifier", amp, body)?;
+    Text::new("Playback controls", Point::new(22, 112), heading).draw(display)?;
+    line(display, 156, "Status", mute, body)?;
+    line(display, 190, "Volume", &volume, body)?;
+    line(display, 224, "Amplifier", amp, body)?;
 
     let labels = [
         "Play test chime",
@@ -63,17 +50,13 @@ pub fn render_audio(
     for (index, label) in labels.into_iter().enumerate() {
         draw_action(
             display,
-            318 + index as i32 * 58,
+            272 + index as i32 * 58,
             label,
             state.audio_action_selected == index,
             body,
         )?;
     }
-    draw_footer(
-        display,
-        state.display,
-        "UP/DOWN  SELECT RUN  HOLD BOOT BACK",
-    )?;
+    draw_footer(display, state.display, "UP/DOWN  SELECT RUN  BOOT BACK")?;
     Ok(())
 }
 
@@ -90,67 +73,53 @@ pub fn render_audio_details(
     let amp = if audio.amplifier_enabled { "ON" } else { "OFF" };
     let mute = if audio.muted { "MUTED" } else { "ACTIVE" };
 
-    draw_header(
-        display,
-        state.display,
-        "AUDIO DETAILS",
-        "ES8311 BOARD PROFILE",
-    )?;
-    draw_status_row(
-        display,
-        state.display,
-        StatusRow {
-            left: audio.playback_state.label(),
-            middle: &volume,
-            right: amp,
-        },
-    )?;
+    draw_header(display, state, "AUDIO DETAILS")?;
 
-    Text::new("Codec", Point::new(22, 160), heading).draw(display)?;
-    line(display, 204, "Device", "ES8311 BSP-REF58", body)?;
-    line(display, 238, "Address", &address, body)?;
-    line(display, 272, "I2S mode", "TX ONLY / S16 STEREO", body)?;
+    Text::new("Codec", Point::new(22, 114), heading).draw(display)?;
+    line(display, 158, "Device", "ES8311 BSP-REF58", body)?;
+    line(display, 192, "Address", &address, body)?;
+    line(display, 226, "I2S mode", "TX ONLY / S16 STEREO", body)?;
     line(
         display,
-        306,
+        260,
         "Sample rate",
         &format!("{AUDIO_SAMPLE_RATE_HZ} Hz"),
         body,
     )?;
 
-    Text::new("Routing", Point::new(22, 370), heading).draw(display)?;
+    Text::new("Routing", Point::new(22, 324), heading).draw(display)?;
     line(
         display,
-        414,
+        368,
         "TX pins",
         &format!("M{AUDIO_MCLK_GPIO} B{AUDIO_BCLK_GPIO} W{AUDIO_WS_GPIO} D{AUDIO_DOUT_GPIO}"),
         body,
     )?;
     line(
         display,
-        448,
+        402,
         "RX input",
         &format!("DIN GPIO{AUDIO_DIN_GPIO} deferred"),
         body,
     )?;
     line(
         display,
-        482,
+        436,
         "Amplifier",
         &format!("GPIO{AUDIO_AMP_ENABLE_GPIO} {amp}"),
         body,
     )?;
-    line(display, 516, "Mute", mute, body)?;
-    line(display, 550, "Volume", &volume, body)?;
+    line(display, 470, "Mute", mute, body)?;
+    line(display, 504, "Volume", &volume, body)?;
 
-    Text::new("Last error", Point::new(22, 614), heading).draw(display)?;
+    Text::new("Last error", Point::new(22, 568), heading).draw(display)?;
     Text::new(
         audio.error.as_deref().unwrap_or("none"),
-        Point::new(22, 652),
+        Point::new(22, 606),
         detail,
     )
     .draw(display)?;
-    draw_footer(display, state.display, "HOLD BOOT BACK")?;
+    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
 }
 

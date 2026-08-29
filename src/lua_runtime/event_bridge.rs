@@ -223,7 +223,7 @@ impl LuaEventBridge {
                 .map(|r| r.map(LuaGameEventResult::SokobanTilt)),
         }
     }
-    pub fn apply_boot_short_press(
+    pub fn apply_select_long_press(
         &mut self,
         canvas: &mut NativeGameCanvas,
     ) -> Result<Option<LuaGameEventResult>, String> {
@@ -232,11 +232,11 @@ impl LuaEventBridge {
                 Ok(None)
             }
             Self::Sudoku(g) => g
-                .apply_boot_short_press_and_render(canvas)
+                .apply_select_long_press_and_render(canvas)
                 .map(LuaGameEventResult::Sudoku)
                 .map(Some),
             Self::Minesweeper(g) => g
-                .apply_boot_short_press_and_render(canvas)
+                .apply_select_long_press_and_render(canvas)
                 .map(LuaGameEventResult::Minesweeper)
                 .map(Some),
         }

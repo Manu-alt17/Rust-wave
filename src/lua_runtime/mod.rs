@@ -203,14 +203,14 @@ impl LuaRuntimeUiState {
         }
     }
 
-    pub fn apply_game_boot_short_press(&mut self) -> bool {
+    pub fn apply_game_select_long_press(&mut self) -> bool {
         let outcome = {
             let Some(session) = self.session.as_mut() else {
                 return false;
             };
             match session
                 .event_bridge
-                .apply_boot_short_press(&mut session.canvas)
+                .apply_select_long_press(&mut session.canvas)
             {
                 Ok(Some(result)) => {
                     session.refresh_plan = GameRefreshPolicy::plan(
@@ -226,7 +226,7 @@ impl LuaRuntimeUiState {
         match outcome {
             Ok(Some((id, result))) => {
                 self.push_diagnostic(format!(
-                    "rustmix-wave=lua-event-bridge id={id} bridge={} event=boot-short outcome={} row={} column={} mode={} axis={} {} completed={} dirty-regions={} refresh=partial-fullscreen transport=existing-fullscreen-partial",
+                    "rustmix-wave=lua-event-bridge id={id} bridge={} event=select-hold outcome={} row={} column={} mode={} axis={} {} completed={} dirty-regions={} refresh=partial-fullscreen transport=existing-fullscreen-partial",
                     result.bridge_marker(),
                     result.reason(),
                     result.row() + 1,
