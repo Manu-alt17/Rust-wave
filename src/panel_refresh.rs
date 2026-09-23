@@ -39,6 +39,15 @@ impl PanelGlobalReason {
             Self::SleepImage => "sleep-image",
         }
     }
+
+    /// Whether this global refresh may use the fast single-flash waveform.
+    /// Only the automatic cleanup after the partial chain does: it is the
+    /// one users see repeatedly during normal use. Boot, wake, manual
+    /// cleanup and safety fallback keep the full deep-clean waveform.
+    #[must_use]
+    pub const fn uses_fast_waveform(self) -> bool {
+        matches!(self, Self::PeriodicCleanup)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,6 +120,20 @@ mod tests {
                 reason: PanelGlobalReason::PeriodicCleanup
             }
         );
+    }
+
+    #[test]
+    fn only_periodic_cleanup_uses_fast_waveform() {
+        assert!(PanelGlobalReason::PeriodicCleanup.uses_fast_waveform());
+        for reason in [
+            PanelGlobalReason::InitialBoot,
+            PanelGlobalReason::AfterWake,
+            PanelGlobalReason::ManualGhostCleanup,
+            PanelGlobalReason::SafetyFallback,
+            PanelGlobalReason::SleepImage,
+        ] {
+            assert!(!reason.uses_fast_waveform());
+        }
     }
 
     #[test]

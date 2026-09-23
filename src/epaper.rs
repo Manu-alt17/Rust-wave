@@ -21,6 +21,11 @@ use crate::{
 const BUSY_POLL_MS: u32 = 10;
 const BUSY_TIMEOUT_MS: u32 = 15_000;
 
+/// Temperature forced into the controller (0x1A) before a fast global
+/// refresh. 0x5A (90 °C) makes the SSD1677 pick its short OTP waveform: one
+/// white → black flash instead of the multi-flash standard waveform.
+const FAST_GLOBAL_TEMPERATURE: u8 = 0x5A;
+
 /// Controller driver with explicit ownership of the panel bus and pins.
 pub struct Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER> {
     spi: SPI,
@@ -130,6 +135,30 @@ where
         self.command(0x26)?;
         self.data(frame)?;
         self.turn_on_display(0xF7)
+    }
+
+    /// Same RAM writes as `show_base`, but refreshed with the fast global
+    /// waveform: a single white → black flash (~1.5 s) instead of the
+    /// standard multi-flash sequence. Clears partial-refresh ghosting well
+    /// enough for periodic cleanup; `show_base` remains the deep clean.
+    ///
+    /// 0xD7 is 0xF7 without "load temperature", so the controller uses the
+    /// value written to 0x1A. Partial refreshes (0xFF) re-read the internal
+    /// sensor, so the forced temperature does not leak into them.
+    pub fn show_base_fast(&mut self, frame: &[u8]) -> Result<()> {
+        validate_frame(frame)?;
+        info!("epd397: fast global base refresh");
+        self.command_data(0x3C, &[0x01])?;
+        self.command_data(0x4E, &[0x00, 0x00])?;
+        self.command_data(0x4F, &[0x00, 0x00])?;
+        self.command(0x24)?;
+        self.data(frame)?;
+        self.command_data(0x4E, &[0x00, 0x00])?;
+        self.command_data(0x4F, &[0x00, 0x00])?;
+        self.command(0x26)?;
+        self.data(frame)?;
+        self.command_data(0x1A, &[FAST_GLOBAL_TEMPERATURE])?;
+        self.turn_on_display(0xD7)
     }
 
     /// Apply a full-screen partial refresh. This intentionally mirrors the

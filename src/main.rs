@@ -3697,9 +3697,15 @@ mod firmware {
 
         match plan {
             PanelRefreshPlan::GlobalBase { reason } => {
-                panel.show_base(frame.as_bytes())?;
+                let transport = if reason.uses_fast_waveform() {
+                    panel.show_base_fast(frame.as_bytes())?;
+                    "global-base-fast"
+                } else {
+                    panel.show_base(frame.as_bytes())?;
+                    "global-base"
+                };
                 info!(
-                    "rustmix-wave=panel-refresh plan=global-base reason={} transport=global-base",
+                    "rustmix-wave=panel-refresh plan=global-base reason={} transport={transport}",
                     reason.marker()
                 );
                 match reason {
