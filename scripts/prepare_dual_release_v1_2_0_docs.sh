@@ -134,7 +134,10 @@ else:
 p.write_text(new_text)
 PY
 
-cat > docs/architecture.md <<'EOF'
+# Written to docs/releases/ rather than docs/architecture.md, which clashed
+# with docs/ARCHITECTURE.md on case-insensitive filesystems (its content now
+# lives in that file, under "Hardware, release variants and Rustmix Remote BLE").
+cat > docs/releases/v1.2.0-architecture.md <<'EOF'
 # Rustmix Wave Architecture
 
 Rustmix Wave is an embedded Rust application for the Waveshare ESP32-S3 3.97-inch e-paper device.
