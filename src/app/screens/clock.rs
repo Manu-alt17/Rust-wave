@@ -11,6 +11,7 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
@@ -23,6 +24,7 @@ pub fn render_clock(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let large = state.display.large_style();
@@ -35,50 +37,83 @@ pub fn render_clock(
         .temperature_label(state.regional.temperature_unit);
     let humidity = state.board.humidity_label();
 
-    draw_header(display, state, "CLOCK")?;
+    draw_header(display, state, t(locale, "CLOCK", "OROLOGIO"))?;
 
     Rectangle::new(Point::new(22, 100), Size::new(436, 150))
         .into_styled(outline)
         .draw(display)?;
-    Text::new("Current RTC time", Point::new(42, 134), heading).draw(display)?;
+    Text::new(
+        t(locale, "Current RTC time", "Ora RTC corrente"),
+        Point::new(42, 134),
+        heading,
+    )
+    .draw(display)?;
     Text::new(&time, Point::new(42, 192), large).draw(display)?;
     Text::new(&date_time, Point::new(42, 228), body).draw(display)?;
 
-    Text::new("Onboard status", Point::new(22, 310), heading).draw(display)?;
-    line(display, 358, "Temperature", &temperature, body)?;
-    line(display, 396, "Humidity", &humidity, body)?;
-    line(display, 434, "Battery", &battery, body)?;
+    Text::new(
+        t(locale, "Onboard status", "Stato scheda"),
+        Point::new(22, 310),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        358,
+        t(locale, "Temperature", "Temperatura"),
+        &temperature,
+        body,
+    )?;
+    line(
+        display,
+        396,
+        t(locale, "Humidity", "Umidità"),
+        &humidity,
+        body,
+    )?;
+    line(
+        display,
+        434,
+        t(locale, "Battery", "Batteria"),
+        &battery,
+        body,
+    )?;
 
     if let Some(power) = state.board.power {
         let usb = if power.vbus_present {
-            "Connected"
+            t(locale, "Connected", "Connesso")
         } else {
-            "Not detected"
+            t(locale, "Not detected", "Non rilevato")
         };
         let charge = if power.charging {
-            "Charging"
+            t(locale, "Charging", "In carica")
         } else {
-            "Not charging"
+            t(locale, "Not charging", "Non in carica")
         };
-        line(display, 472, "USB", usb, body)?;
-        line(display, 510, "Charge state", charge, body)?;
+        line(display, 472, t(locale, "USB", "USB"), usb, body)?;
+        line(
+            display,
+            510,
+            t(locale, "Charge state", "Stato di carica"),
+            charge,
+            body,
+        )?;
     }
 
     draw_action(
         display,
         558,
-        "Set date & time",
+        t(locale, "Set date & time", "Imposta data e ora"),
         state.clock_action_selected == 0,
         body,
     )?;
     draw_action(
         display,
         612,
-        "RTC details",
+        t(locale, "RTC details", "Dettagli RTC"),
         state.clock_action_selected == 1,
         body,
     )?;
-    draw_footer(display, state.display, "UP/DOWN  SELECT OPEN  BOOT BACK")?;
     Ok(())
 }
 
@@ -88,18 +123,32 @@ pub fn render_clock_set_time(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
 
-    draw_header(display, state, "SET DATE & TIME")?;
+    draw_header(
+        display,
+        state,
+        t(locale, "SET DATE & TIME", "IMPOSTA DATA E ORA"),
+    )?;
 
     let Some(editor) = state.clock_time_editor.as_ref() else {
-        Text::new("No active edit.", Point::new(22, 140), body).draw(display)?;
-        draw_footer(display, state.display, "BOOT BACK")?;
+        Text::new(
+            t(locale, "No active edit.", "Nessuna modifica attiva."),
+            Point::new(22, 140),
+            body,
+        )
+        .draw(display)?;
         return Ok(());
     };
 
-    Text::new("Local wall clock", Point::new(22, 108), heading).draw(display)?;
+    Text::new(
+        t(locale, "Local wall clock", "Ora locale"),
+        Point::new(22, 108),
+        heading,
+    )
+    .draw(display)?;
     Text::new(
         &format!(
             "{}  {}",
@@ -114,7 +163,7 @@ pub fn render_clock_set_time(
     draw_editor_row(
         display,
         192,
-        "Timezone",
+        t(locale, "Timezone", "Fuso orario"),
         editor.timezone.name(),
         editor.field_index == 0,
         body,
@@ -122,7 +171,7 @@ pub fn render_clock_set_time(
     draw_editor_row(
         display,
         248,
-        "Hour",
+        t(locale, "Hour", "Ora"),
         &format!("{:02}", editor.draft.hour),
         editor.field_index == 1,
         body,
@@ -130,7 +179,7 @@ pub fn render_clock_set_time(
     draw_editor_row(
         display,
         304,
-        "Minute",
+        t(locale, "Minute", "Minuti"),
         &format!("{:02}", editor.draft.minute),
         editor.field_index == 2,
         body,
@@ -138,7 +187,7 @@ pub fn render_clock_set_time(
     draw_editor_row(
         display,
         360,
-        "Year",
+        t(locale, "Year", "Anno"),
         &format!("{:04}", editor.draft.year),
         editor.field_index == 3,
         body,
@@ -146,7 +195,7 @@ pub fn render_clock_set_time(
     draw_editor_row(
         display,
         416,
-        "Month",
+        t(locale, "Month", "Mese"),
         &format!("{:02}", editor.draft.month),
         editor.field_index == 4,
         body,
@@ -154,7 +203,7 @@ pub fn render_clock_set_time(
     draw_editor_row(
         display,
         472,
-        "Day",
+        t(locale, "Day", "Giorno"),
         &format!("{:02}", editor.draft.day),
         editor.field_index == 5,
         body,
@@ -162,21 +211,29 @@ pub fn render_clock_set_time(
     draw_action(
         display,
         528,
-        "Save date & time",
+        t(locale, "Save date & time", "Salva data e ora"),
         editor.field_index == 6,
         body,
     )?;
 
     Text::new(
-        "Changes apply to the on-board RTC immediately.",
+        t(
+            locale,
+            "Changes apply to the on-board RTC immediately.",
+            "Le modifiche vengono applicate subito all'RTC di bordo.",
+        ),
         Point::new(22, 592),
         body,
     )
     .draw(display)?;
     draw_footer(
         display,
-        state.display,
-        "UP/DOWN CHANGE  SELECT NEXT  BOOT BACK",
+        state,
+        t(
+            locale,
+            "UP/DOWN CHANGE  SELECT NEXT",
+            "SU/GIU CAMBIA  SELECT AVANTI",
+        ),
     )?;
     Ok(())
 }
@@ -186,62 +243,114 @@ pub fn render_clock_details(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let timezone = state.regional.timezone_label_for_rtc(state.board.rtc);
     let rtc_storage = state.regional.rtc_storage_label();
     let rtc_health = if state.board.rtc_clock_integrity_was_lost {
-        "Cleared during startup"
+        t(locale, "Cleared during startup", "Cancellato all'avvio")
     } else {
-        "Clear"
+        t(locale, "Clear", "Integro")
     };
     let battery_voltage = state.board.power.map_or_else(
-        || "Unavailable".into(),
+        || t(locale, "Unavailable", "Non disponibile").into(),
         |power| {
-            power
-                .battery_voltage_mv
-                .map_or_else(|| "Unavailable".into(), |mv| format!("{mv} mV"))
+            power.battery_voltage_mv.map_or_else(
+                || t(locale, "Unavailable", "Non disponibile").into(),
+                |mv| format!("{mv} mV"),
+            )
         },
     );
 
-    draw_header(display, state, "RTC DETAILS")?;
+    draw_header(display, state, t(locale, "RTC DETAILS", "DETTAGLI RTC"))?;
 
-    Text::new("Time basis", Point::new(22, 118), heading).draw(display)?;
-    line(display, 164, "Display zone", &timezone, body)?;
-    line(display, 204, "RTC storage", &rtc_storage, body)?;
-    line(display, 244, "Integrity", rtc_health, body)?;
+    Text::new(
+        t(locale, "Time basis", "Base oraria"),
+        Point::new(22, 118),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        164,
+        t(locale, "Display zone", "Fuso visualizzato"),
+        &timezone,
+        body,
+    )?;
+    line(
+        display,
+        204,
+        t(locale, "RTC storage", "Memoria RTC"),
+        &rtc_storage,
+        body,
+    )?;
+    line(
+        display,
+        244,
+        t(locale, "Integrity", "Integrità"),
+        rtc_health,
+        body,
+    )?;
 
-    Text::new("Power", Point::new(22, 318), heading).draw(display)?;
-    line(display, 364, "Battery voltage", &battery_voltage, body)?;
+    Text::new(
+        t(locale, "Power", "Alimentazione"),
+        Point::new(22, 318),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        364,
+        t(locale, "Battery voltage", "Tensione batteria"),
+        &battery_voltage,
+        body,
+    )?;
     if let Some(power) = state.board.power {
         line(
             display,
             404,
-            "USB VBUS",
+            t(locale, "USB VBUS", "USB VBUS"),
             if power.vbus_present {
-                "Connected"
+                t(locale, "Connected", "Connesso")
             } else {
-                "Not detected"
+                t(locale, "Not detected", "Non rilevato")
             },
             body,
         )?;
         line(
             display,
             444,
-            "Charge state",
+            t(locale, "Charge state", "Stato di carica"),
             if power.charging {
-                "Charging"
+                t(locale, "Charging", "In carica")
             } else {
-                "Not charging"
+                t(locale, "Not charging", "Non in carica")
             },
             body,
         )?;
     }
 
-    Text::new("Refresh policy", Point::new(22, 522), heading).draw(display)?;
-    line(display, 568, "Live refresh", "30 seconds", body)?;
-    line(display, 608, "Idle sleep", "60 seconds", body)?;
-    draw_footer(display, state.display, "BOOT BACK")?;
+    Text::new(
+        t(locale, "Refresh policy", "Criteri di aggiornamento"),
+        Point::new(22, 522),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        568,
+        t(locale, "Live refresh", "Aggiornamento attivo"),
+        t(locale, "30 seconds", "30 secondi"),
+        body,
+    )?;
+    line(
+        display,
+        608,
+        t(locale, "Idle sleep", "Sospensione inattiva"),
+        t(locale, "60 seconds", "60 secondi"),
+        body,
+    )?;
     Ok(())
 }
 

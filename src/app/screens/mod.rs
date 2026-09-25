@@ -17,13 +17,16 @@ pub mod display;
 pub mod environment;
 pub mod files;
 pub mod home;
+pub mod language;
 pub mod lua_game;
 pub mod magic;
 pub mod motion;
 pub mod network;
+pub mod ota;
 pub mod placeholder;
 pub mod power_key;
 pub mod reader;
+pub mod reading_stats;
 pub mod unit_converter;
 pub mod voice_notes;
 pub mod weather;
@@ -39,14 +42,15 @@ pub fn render_active_screen(
         route if route.is_placeholder() => placeholder::render_placeholder(display, state),
         ScreenRoute::ContinueReading => reader::render_continue_reading(display, state),
         ScreenRoute::Library => reader::render_library(display, state),
-        ScreenRoute::Bookmarks | ScreenRoute::ReaderBookmarks => {
-            reader::render_bookmarks(display, state)
-        }
+        ScreenRoute::LibraryBookActions => reader::render_library_book_actions(display, state),
+        ScreenRoute::LibraryBookBookmarks => reader::render_library_book_bookmarks(display, state),
+        ScreenRoute::ReaderBookmarks => reader::render_bookmarks(display, state),
         ScreenRoute::ReaderLoading => reader::render_loading(display, state),
         ScreenRoute::ReaderPage => reader::render_page(display, state),
         ScreenRoute::ReaderOptions => reader::render_options(display, state),
         ScreenRoute::ReaderPreferences => reader::render_preferences(display, state),
         ScreenRoute::ReaderToc => reader::render_toc(display, state),
+        ScreenRoute::ReadingStats => reading_stats::render_reading_stats(display, state),
         ScreenRoute::Calendar => calendar::render_calendar(display, state),
         ScreenRoute::CalendarAgenda => calendar::render_calendar_agenda(display, state),
         ScreenRoute::CalendarEventDetails => {
@@ -76,7 +80,6 @@ pub fn render_active_screen(
         ScreenRoute::MotionDetails => motion::render_motion_details(display, state),
         ScreenRoute::Network => network::render_network(display, state),
         ScreenRoute::NetworkDetails => network::render_network_details(display, state),
-        ScreenRoute::NetworkProvision => network::render_network_provision(display, state),
         ScreenRoute::NetworkSaved => network::render_network_saved(display, state),
         ScreenRoute::WifiTransfer => network::render_wifi_transfer(display, state),
         ScreenRoute::Weather => weather::render_weather(display, state),
@@ -86,15 +89,14 @@ pub fn render_active_screen(
         ScreenRoute::AudioDetails => audio::render_audio_details(display, state),
         ScreenRoute::Files => files::render_files(display, state),
         ScreenRoute::Display => display::render_display(display, state),
+        ScreenRoute::Language => language::render_language(display, state),
         ScreenRoute::PowerKeyMenu => power_key::render_power_key_menu(display, state),
         ScreenRoute::DeviceInfo => device_info::render_device_info(display, state),
         ScreenRoute::DeviceInfoBoard => device_info::render_device_info_board(display, state),
         ScreenRoute::DeviceInfoRuntime => device_info::render_device_info_runtime(display, state),
-        ScreenRoute::Reader
-        | ScreenRoute::Productivity
-        | ScreenRoute::Games
-        | ScreenRoute::Tools
-        | ScreenRoute::Settings
-        | ScreenRoute::GamesTbd => unreachable!("category and placeholder routes handled above"),
+        ScreenRoute::OtaUpdate => ota::render_ota_update(display, state),
+        ScreenRoute::Games | ScreenRoute::Tools | ScreenRoute::Settings | ScreenRoute::GamesTbd => {
+            unreachable!("category and placeholder routes handled above")
+        }
     }
 }

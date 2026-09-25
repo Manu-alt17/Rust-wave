@@ -10,9 +10,10 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
-        widgets::{footer::draw_footer, header::draw_header},
+        widgets::header::draw_header,
     },
     games::canvas::{CanvasTextStyle, DrawCommand},
     lua_runtime::LUA_CATALOG_PAGE_SIZE,
@@ -23,24 +24,60 @@ pub fn render_lua_apps(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let catalog = &state.lua_runtime.catalog;
     let selected = state.lua_runtime.selected;
     let page_start = (selected / LUA_CATALOG_PAGE_SIZE) * LUA_CATALOG_PAGE_SIZE;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
 
-    draw_header(display, state, "SD LUA APPS")?;
-    Text::new("Select an SD-loaded app", Point::new(22, 112), heading).draw(display)?;
-    Text::new("Press BOOT to go back.", Point::new(22, 142), body).draw(display)?;
+    draw_header(display, state, t(locale, "SD LUA APPS", "APP LUA DA SD"))?;
+    Text::new(
+        t(
+            locale,
+            "Select an SD-loaded app",
+            "Seleziona un'app caricata da SD",
+        ),
+        Point::new(22, 112),
+        heading,
+    )
+    .draw(display)?;
+    Text::new(
+        t(
+            locale,
+            "Press BOOT to go back.",
+            "Premi BOOT per tornare indietro.",
+        ),
+        Point::new(22, 142),
+        body,
+    )
+    .draw(display)?;
 
     if catalog.entries.is_empty() {
         Rectangle::new(Point::new(22, 186), Size::new(436, 228))
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)?;
-        Text::new("No Lua apps found.", Point::new(44, 254), heading).draw(display)?;
-        Text::new("Install /RUSTMIX/APPS/HGRID", Point::new(44, 304), body).draw(display)?;
         Text::new(
-            catalog.warning.as_deref().unwrap_or("Catalog is empty"),
+            t(locale, "No Lua apps found.", "Nessuna app Lua trovata."),
+            Point::new(44, 254),
+            heading,
+        )
+        .draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "Install /RUSTMIX/APPS/HGRID",
+                "Installa /RUSTMIX/APPS/HGRID",
+            ),
+            Point::new(44, 304),
+            body,
+        )
+        .draw(display)?;
+        Text::new(
+            catalog
+                .warning
+                .as_deref()
+                .unwrap_or(t(locale, "Catalog is empty", "Catalogo vuoto")),
             Point::new(44, 354),
             state.display.detail_style(),
         )
@@ -90,11 +127,6 @@ pub fn render_lua_apps(
         }
     }
 
-    draw_footer(
-        display,
-        state.display,
-        "UP/DOWN MOVE  SELECT OPEN  BOOT BACK",
-    )?;
     Ok(())
 }
 
@@ -115,25 +147,39 @@ pub fn render_lua_error(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
-    draw_header(display, state, "LUA APP ERROR")?;
+    draw_header(display, state, t(locale, "LUA APP ERROR", "ERRORE APP LUA"))?;
     Rectangle::new(Point::new(22, 164), Size::new(436, 270))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
-    Text::new("App could not open.", Point::new(44, 234), heading).draw(display)?;
     Text::new(
-        state
-            .lua_runtime
-            .error
-            .as_deref()
-            .unwrap_or("No active app session"),
+        t(locale, "App could not open.", "Impossibile aprire l'app."),
+        Point::new(44, 234),
+        heading,
+    )
+    .draw(display)?;
+    Text::new(
+        state.lua_runtime.error.as_deref().unwrap_or(t(
+            locale,
+            "No active app session",
+            "Nessuna sessione app attiva",
+        )),
         Point::new(44, 304),
         body,
     )
     .draw(display)?;
-    Text::new("Press BOOT to return.", Point::new(44, 384), body).draw(display)?;
-    draw_footer(display, state.display, "BOOT BACK")?;
+    Text::new(
+        t(
+            locale,
+            "Press BOOT to return.",
+            "Premi BOOT per tornare indietro.",
+        ),
+        Point::new(44, 384),
+        body,
+    )
+    .draw(display)?;
     Ok(())
 }
 

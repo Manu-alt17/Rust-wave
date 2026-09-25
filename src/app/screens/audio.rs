@@ -10,6 +10,7 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
@@ -19,33 +20,58 @@ use crate::{
         AUDIO_SAMPLE_RATE_HZ, AUDIO_WS_GPIO,
     },
     orientation::OrientedFrameBuffer,
+    regional::Locale,
 };
 
 pub fn render_audio(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let audio = &state.audio;
     let volume = format!("{}%", audio.volume_percent);
-    let amp = if audio.amplifier_enabled { "ON" } else { "OFF" };
-    let mute = if audio.muted { "Muted" } else { "Active" };
+    let amp = if audio.amplifier_enabled {
+        t(locale, "ON", "ON")
+    } else {
+        t(locale, "OFF", "OFF")
+    };
+    let mute = if audio.muted {
+        t(locale, "Muted", "Silenziato")
+    } else {
+        t(locale, "Active", "Attivo")
+    };
 
-    draw_header(display, state, "AUDIO")?;
+    draw_header(display, state, t(locale, "AUDIO", "AUDIO"))?;
 
-    Text::new("Playback controls", Point::new(22, 112), heading).draw(display)?;
-    line(display, 156, "Status", mute, body)?;
-    line(display, 190, "Volume", &volume, body)?;
-    line(display, 224, "Amplifier", amp, body)?;
+    Text::new(
+        t(locale, "Playback controls", "Controlli di riproduzione"),
+        Point::new(22, 112),
+        heading,
+    )
+    .draw(display)?;
+    line(display, 156, t(locale, "Status", "Stato"), mute, body)?;
+    line(display, 190, t(locale, "Volume", "Volume"), &volume, body)?;
+    line(
+        display,
+        224,
+        t(locale, "Amplifier", "Amplificatore"),
+        amp,
+        body,
+    )?;
 
     let labels = [
-        "Play test chime",
-        "Stop playback",
-        "Increase volume",
-        "Decrease volume",
-        if audio.muted { "Unmute" } else { "Mute" },
-        "Audio details",
+        t(locale, "Play test chime", "Riproduci suono di prova"),
+        t(locale, "Stop playback", "Interrompi riproduzione"),
+        t(locale, "Increase volume", "Aumenta volume"),
+        t(locale, "Decrease volume", "Diminuisci volume"),
+        if audio.muted {
+            t(locale, "Unmute", "Riattiva audio")
+        } else {
+            t(locale, "Mute", "Silenzia")
+        },
+        t(locale, "Audio details", "Dettagli audio"),
     ];
     for (index, label) in labels.into_iter().enumerate() {
         draw_action(
@@ -56,7 +82,7 @@ pub fn render_audio(
             body,
         )?;
     }
-    draw_footer(display, state.display, "UP/DOWN  SELECT RUN  BOOT BACK")?;
+    draw_footer(display, state, t(locale, "SELECT RUN", "SELECT ESEGUI"))?;
     Ok(())
 }
 
@@ -64,62 +90,103 @@ pub fn render_audio_details(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
     let audio = &state.audio;
     let address = audio.codec_address_label();
     let volume = format!("{}%", audio.volume_percent);
-    let amp = if audio.amplifier_enabled { "ON" } else { "OFF" };
-    let mute = if audio.muted { "MUTED" } else { "ACTIVE" };
+    let amp = if audio.amplifier_enabled {
+        t(locale, "ON", "ON")
+    } else {
+        t(locale, "OFF", "OFF")
+    };
+    let mute = if audio.muted {
+        t(locale, "MUTED", "SILENZIATO")
+    } else {
+        t(locale, "ACTIVE", "ATTIVO")
+    };
+    let sample_rate = format!("{AUDIO_SAMPLE_RATE_HZ} Hz");
+    let tx_pins =
+        format!("M{AUDIO_MCLK_GPIO} B{AUDIO_BCLK_GPIO} W{AUDIO_WS_GPIO} D{AUDIO_DOUT_GPIO}");
+    let rx_input = match locale {
+        Locale::English => format!("DIN GPIO{AUDIO_DIN_GPIO} deferred"),
+        Locale::Italian => format!("DIN GPIO{AUDIO_DIN_GPIO} rinviato"),
+    };
+    let amplifier_pin = format!("GPIO{AUDIO_AMP_ENABLE_GPIO} {amp}");
 
-    draw_header(display, state, "AUDIO DETAILS")?;
+    draw_header(display, state, t(locale, "AUDIO DETAILS", "DETTAGLI AUDIO"))?;
 
-    Text::new("Codec", Point::new(22, 114), heading).draw(display)?;
-    line(display, 158, "Device", "ES8311 BSP-REF58", body)?;
-    line(display, 192, "Address", &address, body)?;
-    line(display, 226, "I2S mode", "TX ONLY / S16 STEREO", body)?;
+    Text::new(t(locale, "Codec", "Codec"), Point::new(22, 114), heading).draw(display)?;
+    line(
+        display,
+        158,
+        t(locale, "Device", "Dispositivo"),
+        "ES8311 BSP-REF58",
+        body,
+    )?;
+    line(
+        display,
+        192,
+        t(locale, "Address", "Indirizzo"),
+        &address,
+        body,
+    )?;
+    line(
+        display,
+        226,
+        t(locale, "I2S mode", "Modalità I2S"),
+        "TX ONLY / S16 STEREO",
+        body,
+    )?;
     line(
         display,
         260,
-        "Sample rate",
-        &format!("{AUDIO_SAMPLE_RATE_HZ} Hz"),
+        t(locale, "Sample rate", "Frequenza di campionamento"),
+        &sample_rate,
         body,
     )?;
 
-    Text::new("Routing", Point::new(22, 324), heading).draw(display)?;
-    line(
-        display,
-        368,
-        "TX pins",
-        &format!("M{AUDIO_MCLK_GPIO} B{AUDIO_BCLK_GPIO} W{AUDIO_WS_GPIO} D{AUDIO_DOUT_GPIO}"),
-        body,
-    )?;
+    Text::new(
+        t(locale, "Routing", "Instradamento"),
+        Point::new(22, 324),
+        heading,
+    )
+    .draw(display)?;
+    line(display, 368, t(locale, "TX pins", "Pin TX"), &tx_pins, body)?;
     line(
         display,
         402,
-        "RX input",
-        &format!("DIN GPIO{AUDIO_DIN_GPIO} deferred"),
+        t(locale, "RX input", "Ingresso RX"),
+        &rx_input,
         body,
     )?;
     line(
         display,
         436,
-        "Amplifier",
-        &format!("GPIO{AUDIO_AMP_ENABLE_GPIO} {amp}"),
+        t(locale, "Amplifier", "Amplificatore"),
+        &amplifier_pin,
         body,
     )?;
-    line(display, 470, "Mute", mute, body)?;
-    line(display, 504, "Volume", &volume, body)?;
+    line(display, 470, t(locale, "Mute", "Silenzia"), mute, body)?;
+    line(display, 504, t(locale, "Volume", "Volume"), &volume, body)?;
 
-    Text::new("Last error", Point::new(22, 568), heading).draw(display)?;
     Text::new(
-        audio.error.as_deref().unwrap_or("none"),
+        t(locale, "Last error", "Ultimo errore"),
+        Point::new(22, 568),
+        heading,
+    )
+    .draw(display)?;
+    Text::new(
+        audio
+            .error
+            .as_deref()
+            .unwrap_or(t(locale, "none", "nessuno")),
         Point::new(22, 606),
         detail,
     )
     .draw(display)?;
-    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
 }
 

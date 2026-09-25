@@ -1,6 +1,7 @@
 //! Native RTC-localized Calendar with X4-compatible U.S. and personal events.
 
 use core::convert::Infallible;
+use std::collections::BTreeSet;
 
 use embedded_graphics::{
     pixelcolor::BinaryColor,
@@ -10,6 +11,7 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextRole, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
@@ -19,6 +21,7 @@ use crate::{
         CALENDAR_EDITOR_KEY_ROWS,
     },
     orientation::OrientedFrameBuffer,
+    regional::Locale,
 };
 
 const GRID_LEFT: i32 = 26;
@@ -33,10 +36,13 @@ const AGENDA_RANGE_BASELINE: i32 = 220;
 const AGENDA_FIRST_ROW_TOP: i32 = 254;
 const AGENDA_ROW_STEP: i32 = 60;
 const AGENDA_ROW_HEIGHT: u32 = 54;
-const AGENDA_FOOTER_HINT: &str = "MOVE  SELECT OPEN  HOLD ADD  BOOT BACK";
-const CALENDAR_EDITOR_FOOTER_HINT: &str = "MOVE  HOLD H/V  SELECT KEY  BOOT BACK";
-const WEEKDAY_LABELS: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
-const MONTH_LABELS: [&str; 12] = [
+const AGENDA_FOOTER_HINT_EN: &str = "HOLD ADD";
+const AGENDA_FOOTER_HINT_IT: &str = "TIENI AGGIUNGI";
+const CALENDAR_EDITOR_FOOTER_HINT_EN: &str = "HOLD H/V  SELECT KEY";
+const CALENDAR_EDITOR_FOOTER_HINT_IT: &str = "TIENI H/V  SELECT TASTO";
+const WEEKDAY_LABELS_EN: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+const WEEKDAY_LABELS_IT: [&str; 7] = ["DOM", "LUN", "MAR", "MER", "GIO", "VEN", "SAB"];
+const MONTH_LABELS_EN: [&str; 12] = [
     "January",
     "February",
     "March",
@@ -50,22 +56,44 @@ const MONTH_LABELS: [&str; 12] = [
     "November",
     "December",
 ];
+const MONTH_LABELS_IT: [&str; 12] = [
+    "gennaio",
+    "febbraio",
+    "marzo",
+    "aprile",
+    "maggio",
+    "giugno",
+    "luglio",
+    "agosto",
+    "settembre",
+    "ottobre",
+    "novembre",
+    "dicembre",
+];
+
+fn weekday_labels(locale: Locale) -> &'static [&'static str; 7] {
+    match locale {
+        Locale::English => &WEEKDAY_LABELS_EN,
+        Locale::Italian => &WEEKDAY_LABELS_IT,
+    }
+}
 
 /// Render the RTC-localized monthly Calendar page with compact event markers.
 pub fn render_calendar(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let cursor = state.calendar.cursor;
-    let month = month_label(cursor.month);
+    let month = month_label(locale, cursor.month);
     let month_year = format!("{month} {}", cursor.year);
-    let selected = selected_date_label(cursor);
+    let selected = selected_date_label(locale, cursor);
     let today = state
         .board
         .rtc
         .map(|rtc| CalendarDate::from_rtc(state.regional.localize_rtc(rtc)));
 
-    draw_header(display, state, "CALENDAR")?;
+    draw_header(display, state, t(locale, "CALENDAR", "CALENDARIO"))?;
 
     Text::new(
         &month_year,
@@ -74,19 +102,27 @@ pub fn render_calendar(
     )
     .draw(display)?;
     Text::new(
-        "SELECT changes DAY / MONTH navigation.",
+        t(
+            locale,
+            "SELECT changes DAY / MONTH navigation.",
+            "SELECT cambia navigazione GIORNO / MESE.",
+        ),
         Point::new(24, 158),
         state.display.body_style(),
     )
     .draw(display)?;
     Text::new(
-        "Hold SELECT opens selected-day agenda.",
+        t(
+            locale,
+            "Hold SELECT opens selected-day agenda.",
+            "Tieni premuto SELECT per l'agenda del giorno.",
+        ),
         Point::new(24, 184),
         state.display.detail_style(),
     )
     .draw(display)?;
 
-    for (column, label) in WEEKDAY_LABELS.iter().enumerate() {
+    for (column, label) in weekday_labels(locale).iter().enumerate() {
         Text::new(
             label,
             Point::new(GRID_LEFT + column as i32 * CELL_WIDTH + 8, 206),
@@ -101,7 +137,7 @@ pub fn render_calendar(
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
     Text::new(
-        "Selected day",
+        t(locale, "Selected day", "Giorno selezionato"),
         Point::new(40, 568),
         state.display.body_style(),
     )
@@ -127,8 +163,12 @@ pub fn render_calendar(
 
     draw_footer(
         display,
-        state.display,
-        "UP/DOWN MOVE  SELECT MODE  HOLD AGENDA  BOOT BACK",
+        state,
+        t(
+            locale,
+            "SELECT MODE  HOLD AGENDA",
+            "SELECT MODALITÀ  TIENI AGENDA",
+        ),
     )?;
     Ok(())
 }
@@ -138,9 +178,10 @@ pub fn render_calendar_agenda(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    let date = selected_date_label(state.calendar.cursor);
+    let locale = state.regional.locale;
+    let date = selected_date_label(locale, state.calendar.cursor);
     let events = state.calendar.selected_day_events();
-    draw_header(display, state, "CALENDAR")?;
+    draw_header(display, state, t(locale, "CALENDAR", "CALENDARIO"))?;
     Text::new(&date, Point::new(22, 126), state.display.heading_style()).draw(display)?;
     Rectangle::new(
         Point::new(22, AGENDA_SUMMARY_TOP),
@@ -160,9 +201,9 @@ pub fn render_calendar_agenda(
         state.display.detail_style(),
     )
     .draw(display)?;
-    let visible = state.calendar.agenda_visible_range();
+    let visible = state.calendar.agenda_visible_range_for_len(events.len());
     Text::new(
-        &agenda_visible_range_label(events.len(), &visible),
+        &agenda_visible_range_label(locale, events.len(), &visible),
         Point::new(34, AGENDA_RANGE_BASELINE),
         state.display.detail_style(),
     )
@@ -173,7 +214,11 @@ pub fn render_calendar_agenda(
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)?;
         Text::new(
-            "No events for selected day.",
+            t(
+                locale,
+                "No events for selected day.",
+                "Nessun evento per il giorno selezionato.",
+            ),
             Point::new(44, AGENDA_FIRST_ROW_TOP + 58),
             state.display.body_style(),
         )
@@ -192,7 +237,11 @@ pub fn render_calendar_agenda(
         }
     }
 
-    draw_footer(display, state.display, AGENDA_FOOTER_HINT)?;
+    draw_footer(
+        display,
+        state,
+        t(locale, AGENDA_FOOTER_HINT_EN, AGENDA_FOOTER_HINT_IT),
+    )?;
     Ok(())
 }
 
@@ -201,21 +250,33 @@ pub fn render_calendar_event_details(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let Some(event) = state.calendar.selected_agenda_event() else {
-        draw_header(display, state, "CALENDAR EVENT")?;
+        draw_header(
+            display,
+            state,
+            t(locale, "CALENDAR EVENT", "EVENTO CALENDARIO"),
+        )?;
         Text::new(
-            "No event is selected.",
+            t(
+                locale,
+                "No event is selected.",
+                "Nessun evento selezionato.",
+            ),
             Point::new(22, 184),
             state.display.body_style(),
         )
         .draw(display)?;
-        draw_footer(display, state.display, "BOOT BACK")?;
         return Ok(());
     };
 
     let personal = event.kind == CalendarEventKind::Personal;
-    draw_header(display, state, "CALENDAR EVENT")?;
-    let date = selected_date_label(event.date);
+    draw_header(
+        display,
+        state,
+        t(locale, "CALENDAR EVENT", "EVENTO CALENDARIO"),
+    )?;
+    let date = selected_date_label(locale, event.date);
     Text::new(
         &compact_text(&event.title, 34),
         Point::new(22, 130),
@@ -225,29 +286,40 @@ pub fn render_calendar_event_details(
     detail_line(
         display,
         184,
-        "Source",
+        t(locale, "Source", "Origine"),
         event.kind.source_file(),
         state.display.body_style(),
     )?;
     detail_line(
         display,
         228,
-        "Category",
+        t(locale, "Category", "Categoria"),
         event.kind.label(),
         state.display.body_style(),
     )?;
-    detail_line(display, 272, "Date", &date, state.display.body_style())?;
+    detail_line(
+        display,
+        272,
+        t(locale, "Date", "Data"),
+        &date,
+        state.display.body_style(),
+    )?;
     Rectangle::new(Point::new(22, 304), Size::new(436, 148))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
-    Text::new("Detail", Point::new(40, 340), state.display.body_style()).draw(display)?;
+    Text::new(
+        t(locale, "Detail", "Dettaglio"),
+        Point::new(40, 340),
+        state.display.body_style(),
+    )
+    .draw(display)?;
     draw_wrapped_detail(display, state, &event.detail, 40, 378)?;
 
     if personal {
         for (index, label) in [
-            "Edit personal event",
-            "Delete personal event",
-            "Return to agenda",
+            t(locale, "Edit personal event", "Modifica evento personale"),
+            t(locale, "Delete personal event", "Elimina evento personale"),
+            t(locale, "Return to agenda", "Torna all'agenda"),
         ]
         .iter()
         .enumerate()
@@ -261,24 +333,27 @@ pub fn render_calendar_event_details(
             )?;
         }
         Text::new(
-            "Only personal EVENTS.TXT rows can change.",
+            t(
+                locale,
+                "Only personal EVENTS.TXT rows can change.",
+                "Solo le righe personali di EVENTS.TXT possono cambiare.",
+            ),
             Point::new(22, 668),
             state.display.detail_style(),
         )
         .draw(display)?;
-        draw_footer(
-            display,
-            state.display,
-            "UP/DOWN MOVE  SELECT ACTION  BOOT BACK",
-        )?;
+        draw_footer(display, state, t(locale, "SELECT ACTION", "SELECT AZIONE"))?;
     } else {
         Text::new(
-            "U.S. pack entries remain read-only.",
+            t(
+                locale,
+                "U.S. pack entries remain read-only.",
+                "Le voci del pacchetto USA restano di sola lettura.",
+            ),
             Point::new(22, 526),
             state.display.body_style(),
         )
         .draw(display)?;
-        draw_footer(display, state.display, "BOOT BACK")?;
     }
     Ok(())
 }
@@ -288,19 +363,36 @@ pub fn render_calendar_event_editor(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let Some(editor) = state.calendar.editor.as_ref() else {
-        draw_header(display, state, "CALENDAR EDITOR")?;
+        draw_header(
+            display,
+            state,
+            t(locale, "CALENDAR EDITOR", "EDITOR CALENDARIO"),
+        )?;
         Text::new(
-            "No personal event editor is active.",
+            t(
+                locale,
+                "No personal event editor is active.",
+                "Nessun editor evento personale attivo.",
+            ),
             Point::new(22, 174),
             state.display.body_style(),
         )
         .draw(display)?;
-        draw_footer(display, state.display, "BOOT BACK")?;
         return Ok(());
     };
-    draw_header(display, state, "CALENDAR EDITOR")?;
-    Text::new("Title", Point::new(22, 124), state.display.body_style()).draw(display)?;
+    draw_header(
+        display,
+        state,
+        t(locale, "CALENDAR EDITOR", "EDITOR CALENDARIO"),
+    )?;
+    Text::new(
+        t(locale, "Title", "Titolo"),
+        Point::new(22, 124),
+        state.display.body_style(),
+    )
+    .draw(display)?;
     Rectangle::new(Point::new(22, 138), Size::new(436, 46))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
@@ -310,7 +402,12 @@ pub fn render_calendar_event_editor(
         state.display.body_style(),
     )
     .draw(display)?;
-    Text::new("Detail", Point::new(22, 214), state.display.body_style()).draw(display)?;
+    Text::new(
+        t(locale, "Detail", "Dettaglio"),
+        Point::new(22, 214),
+        state.display.body_style(),
+    )
+    .draw(display)?;
     Rectangle::new(Point::new(22, 228), Size::new(436, 58))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
@@ -327,7 +424,15 @@ pub fn render_calendar_event_editor(
     )
     .draw(display)?;
     draw_editor_keyboard(display, state)?;
-    draw_footer(display, state.display, CALENDAR_EDITOR_FOOTER_HINT)?;
+    draw_footer(
+        display,
+        state,
+        t(
+            locale,
+            CALENDAR_EDITOR_FOOTER_HINT_EN,
+            CALENDAR_EDITOR_FOOTER_HINT_IT,
+        ),
+    )?;
     Ok(())
 }
 
@@ -336,11 +441,16 @@ pub fn render_calendar_delete_confirmation(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    draw_header(display, state, "DELETE CALENDAR EVENT?")?;
-    let title = state
-        .calendar
-        .selected_agenda_event()
-        .map_or("No event selected", |event| event.title.as_str());
+    let locale = state.regional.locale;
+    draw_header(
+        display,
+        state,
+        t(locale, "DELETE CALENDAR EVENT?", "ELIMINARE EVENTO?"),
+    )?;
+    let title = state.calendar.selected_agenda_event().map_or(
+        t(locale, "No event selected", "Nessun evento selezionato"),
+        |event| event.title.as_str(),
+    );
     Text::new(
         &compact_text(title, 36),
         Point::new(22, 160),
@@ -348,12 +458,22 @@ pub fn render_calendar_delete_confirmation(
     )
     .draw(display)?;
     Text::new(
-        "The U.S. holiday pack is never modified.",
+        t(
+            locale,
+            "The U.S. holiday pack is never modified.",
+            "Il pacchetto festività USA non viene mai modificato.",
+        ),
         Point::new(22, 208),
         state.display.body_style(),
     )
     .draw(display)?;
-    for (index, label) in ["Cancel", "Delete permanently"].iter().enumerate() {
+    for (index, label) in [
+        t(locale, "Cancel", "Annulla"),
+        t(locale, "Delete permanently", "Elimina definitivamente"),
+    ]
+    .iter()
+    .enumerate()
+    {
         draw_action_row(
             display,
             state,
@@ -362,7 +482,6 @@ pub fn render_calendar_delete_confirmation(
             index == state.calendar.delete_confirmation_selected,
         )?;
     }
-    draw_footer(display, state.display, "UP/DOWN MOVE  SELECT  BOOT BACK")?;
     Ok(())
 }
 
@@ -374,6 +493,16 @@ fn draw_month_grid(
 ) -> Result<(), Infallible> {
     let first_weekday = usize::from(weekday(cursor.year, cursor.month, 1));
     let month_days = days_in_month(cursor.year, cursor.month);
+    // One pass over the whole catalog instead of one per day cell (up to
+    // 31 full linear scans of up to `CALENDAR_EVENT_LIMIT` events each).
+    let days_with_events: BTreeSet<CalendarDate> = state
+        .calendar
+        .catalog
+        .events
+        .iter()
+        .filter(|event| event.date.year == cursor.year && event.date.month == cursor.month)
+        .map(|event| event.date)
+        .collect();
 
     for day in 1..=month_days {
         let index = first_weekday + usize::from(day - 1);
@@ -388,7 +517,7 @@ fn draw_month_grid(
         };
         let is_selected = cell_date == cursor;
         let is_today = today.is_some_and(|value| value == cell_date);
-        let has_event = state.calendar.event_count_for_date(cell_date) > 0;
+        let has_event = days_with_events.contains(&cell_date);
         let border = PrimitiveStyleBuilder::new()
             .stroke_color(BinaryColor::On)
             .stroke_width(if is_selected { 3 } else { 1 })
@@ -462,15 +591,26 @@ fn draw_agenda_row(
     Ok(())
 }
 
-fn agenda_visible_range_label(event_count: usize, visible: &core::ops::Range<usize>) -> String {
+fn agenda_visible_range_label(
+    locale: Locale,
+    event_count: usize,
+    visible: &core::ops::Range<usize>,
+) -> String {
     if event_count == 0 {
-        "Showing 0 of 0".into()
+        t(locale, "Showing 0 of 0", "Mostra 0 di 0").into()
     } else {
-        format!(
-            "Showing {}-{} of {event_count}",
-            visible.start + 1,
-            visible.end
-        )
+        match locale {
+            Locale::English => format!(
+                "Showing {}-{} of {event_count}",
+                visible.start + 1,
+                visible.end
+            ),
+            Locale::Italian => format!(
+                "Mostra {}-{} di {event_count}",
+                visible.start + 1,
+                visible.end
+            ),
+        }
     }
 }
 
@@ -493,10 +633,15 @@ fn draw_wrapped_detail(
     left: i32,
     first_baseline: i32,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let words = detail.split_whitespace().collect::<Vec<_>>();
     if words.is_empty() {
         Text::new(
-            "No additional detail.",
+            t(
+                locale,
+                "No additional detail.",
+                "Nessun dettaglio aggiuntivo.",
+            ),
             Point::new(left, first_baseline),
             state.display.body_style(),
         )
@@ -604,16 +749,20 @@ fn truncate_or_placeholder(value: &str, placeholder: &str, max_chars: usize) -> 
     }
 }
 
-fn month_label(month: u8) -> &'static str {
+fn month_label(locale: Locale, month: u8) -> &'static str {
+    let labels: &[&str; 12] = match locale {
+        Locale::English => &MONTH_LABELS_EN,
+        Locale::Italian => &MONTH_LABELS_IT,
+    };
     month
         .checked_sub(1)
-        .and_then(|index| MONTH_LABELS.get(usize::from(index)))
+        .and_then(|index| labels.get(usize::from(index)))
         .copied()
-        .unwrap_or("Unknown")
+        .unwrap_or(t(locale, "Unknown", "Sconosciuto"))
 }
 
-fn selected_date_label(date: CalendarDate) -> String {
-    const WEEKDAYS: [&str; 7] = [
+fn selected_date_label(locale: Locale, date: CalendarDate) -> String {
+    const WEEKDAYS_EN: [&str; 7] = [
         "Sunday",
         "Monday",
         "Tuesday",
@@ -622,37 +771,67 @@ fn selected_date_label(date: CalendarDate) -> String {
         "Friday",
         "Saturday",
     ];
-    let weekday = WEEKDAYS
+    const WEEKDAYS_IT: [&str; 7] = [
+        "domenica",
+        "lunedì",
+        "martedì",
+        "mercoledì",
+        "giovedì",
+        "venerdì",
+        "sabato",
+    ];
+    let weekdays: &[&str; 7] = match locale {
+        Locale::English => &WEEKDAYS_EN,
+        Locale::Italian => &WEEKDAYS_IT,
+    };
+    let weekday = weekdays
         .get(usize::from(date.weekday()))
         .copied()
-        .unwrap_or("Unknown");
-    format!(
-        "{weekday}, {} {}, {}",
-        month_label(date.month),
-        date.day,
-        date.year
-    )
+        .unwrap_or(t(locale, "Unknown", "Sconosciuto"));
+    match locale {
+        Locale::English => format!(
+            "{weekday}, {} {}, {}",
+            month_label(locale, date.month),
+            date.day,
+            date.year
+        ),
+        Locale::Italian => format!(
+            "{weekday} {} {} {}",
+            date.day,
+            month_label(locale, date.month),
+            date.year
+        ),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         agenda_visible_range_label, month_label, selected_date_label, AGENDA_FIRST_ROW_TOP,
-        AGENDA_FOOTER_HINT, AGENDA_RANGE_BASELINE, AGENDA_ROW_HEIGHT, AGENDA_ROW_STEP,
-        CALENDAR_EDITOR_FOOTER_HINT,
+        AGENDA_FOOTER_HINT_EN, AGENDA_RANGE_BASELINE, AGENDA_ROW_HEIGHT, AGENDA_ROW_STEP,
+        CALENDAR_EDITOR_FOOTER_HINT_EN,
     };
     use crate::{
         app::AppState,
         calendar::{CalendarDate, CALENDAR_AGENDA_VISIBLE_ROWS},
         framebuffer::FrameBuffer,
         orientation::OrientedFrameBuffer,
+        regional::Locale,
     };
 
     #[test]
     fn renders_readable_selected_date() {
         let date = CalendarDate::new(2026, 6, 4).unwrap();
-        assert_eq!(month_label(6), "June");
-        assert_eq!(selected_date_label(date), "Thursday, June 4, 2026");
+        assert_eq!(month_label(Locale::English, 6), "June");
+        assert_eq!(
+            selected_date_label(Locale::English, date),
+            "Thursday, June 4, 2026"
+        );
+        assert_eq!(month_label(Locale::Italian, 6), "giugno");
+        assert_eq!(
+            selected_date_label(Locale::Italian, date),
+            "giovedì 4 giugno 2026"
+        );
     }
 
     #[test]
@@ -667,17 +846,24 @@ mod tests {
 
     #[test]
     fn editor_footer_fits_the_e_paper_width() {
-        assert_eq!(
-            CALENDAR_EDITOR_FOOTER_HINT,
-            "MOVE  HOLD H/V  SELECT KEY  BOOT BACK"
-        );
-        assert!(CALENDAR_EDITOR_FOOTER_HINT.chars().count() <= 40);
+        assert_eq!(CALENDAR_EDITOR_FOOTER_HINT_EN, "HOLD H/V  SELECT KEY");
+        assert!(CALENDAR_EDITOR_FOOTER_HINT_EN.chars().count() <= 40);
     }
 
     #[test]
     fn agenda_range_labels_use_safe_vertical_bounds() {
-        assert_eq!(agenda_visible_range_label(0, &(0..0)), "Showing 0 of 0");
-        assert_eq!(agenda_visible_range_label(1, &(0..1)), "Showing 1-1 of 1");
+        assert_eq!(
+            agenda_visible_range_label(Locale::English, 0, &(0..0)),
+            "Showing 0 of 0"
+        );
+        assert_eq!(
+            agenda_visible_range_label(Locale::English, 1, &(0..1)),
+            "Showing 1-1 of 1"
+        );
+        assert_eq!(
+            agenda_visible_range_label(Locale::Italian, 1, &(0..1)),
+            "Mostra 1-1 di 1"
+        );
         assert!(AGENDA_RANGE_BASELINE < AGENDA_FIRST_ROW_TOP);
         let last_row_bottom = AGENDA_FIRST_ROW_TOP
             + (CALENDAR_AGENDA_VISIBLE_ROWS as i32 - 1) * AGENDA_ROW_STEP
@@ -687,7 +873,7 @@ mod tests {
 
     #[test]
     fn agenda_footer_hint_is_compact_for_the_e_paper_width() {
-        assert_eq!(AGENDA_FOOTER_HINT, "MOVE  SELECT OPEN  HOLD ADD  BOOT BACK");
-        assert!(AGENDA_FOOTER_HINT.chars().count() <= 40);
+        assert_eq!(AGENDA_FOOTER_HINT_EN, "HOLD ADD");
+        assert!(AGENDA_FOOTER_HINT_EN.chars().count() <= 40);
     }
 }

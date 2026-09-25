@@ -16,7 +16,10 @@ pub fn dedupe_sorted_by_strength(mut networks: Vec<WifiScanEntry>) -> Vec<WifiSc
     networks.sort_by(|a, b| b.rssi_dbm.cmp(&a.rssi_dbm));
     let mut deduped: Vec<WifiScanEntry> = Vec::with_capacity(networks.len());
     for entry in networks {
-        if !deduped.iter().any(|kept: &WifiScanEntry| kept.ssid == entry.ssid) {
+        if !deduped
+            .iter()
+            .any(|kept: &WifiScanEntry| kept.ssid == entry.ssid)
+        {
             deduped.push(entry);
         }
     }
@@ -42,6 +45,9 @@ mod tests {
             entry("Lab", -55),
             entry("Strong", -30),
         ]);
-        assert_eq!(result, vec![entry("Strong", -30), entry("Lab", -40), entry("Weak", -80)]);
+        assert_eq!(
+            result,
+            vec![entry("Strong", -30), entry("Lab", -40), entry("Weak", -80)]
+        );
     }
 }

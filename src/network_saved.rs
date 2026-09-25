@@ -44,7 +44,10 @@ impl NetworkSavedUiState {
         if self.networks.is_empty() {
             return;
         }
-        self.selected = self.selected.checked_sub(1).unwrap_or(self.networks.len() - 1);
+        self.selected = self
+            .selected
+            .checked_sub(1)
+            .unwrap_or(self.networks.len() - 1);
         self.sync_page();
     }
 
@@ -124,7 +127,11 @@ mod tests {
         state.set_networks(vec![entry("Home", true), entry("Office", false)]);
         state.move_next();
         assert_eq!(state.selected_entry(), Some(&entry("Office", false)));
-        state.set_networks(vec![entry("Home", true), entry("Office", false), entry("Travel", false)]);
+        state.set_networks(vec![
+            entry("Home", true),
+            entry("Office", false),
+            entry("Travel", false),
+        ]);
         assert_eq!(state.selected_entry(), Some(&entry("Office", false)));
     }
 

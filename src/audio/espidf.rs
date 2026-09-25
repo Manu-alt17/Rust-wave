@@ -123,6 +123,80 @@ where
         self.begin_playback(ChimeMode::AlarmRepeat)
     }
 
+    /// Disable both I2S channels. ESP-IDF's I2S driver holds an
+    /// `ESP_PM_APB_FREQ_MAX` power-management lock for as long as either
+    /// channel is enabled (see `i2s_channel_enable` in
+    /// `esp_driver_i2s/i2s_common.c`), which blocks automatic light sleep
+    /// entirely -- not just DFS -- regardless of what else in the firmware is
+    /// idle. Call this only while nothing is playing or recording. MCLK keeps
+    /// toggling into the codec regardless; only the driver's software channel
+    /// state changes here.
+    pub fn suspend_i2s(&mut self) -> Result<()> {
+        self.tx
+            .rx_disable()
+            .map_err(|error| anyhow!("failed to disable I2S RX channel: {error:?}"))?;
+        self.tx
+            .tx_disable()
+            .map_err(|error| anyhow!("failed to disable I2S TX channel: {error:?}"))?;
+        Ok(())
+    }
+
+    /// Re-enable both I2S channels after [`Self::suspend_i2s`], restoring the
+    /// same boot-time channel state (and releasing the light-sleep-blocking
+    /// PM lock again) before codec traffic resumes.
+    pub fn resume_i2s(&mut self) -> Result<()> {
+        self.tx
+            .tx_enable()
+            .map_err(|error| anyhow!("failed to enable I2S TX channel: {error:?}"))?;
+        self.tx
+            .rx_enable()
+            .map_err(|error| anyhow!("failed to enable I2S RX channel: {error:?}"))?;
+        Ok(())
+    }
+
+    /// Reprogram the ES8311 after its AXP2101 rail (ALDO2) was cut and
+    /// re-enabled for battery savings while Reader was the active screen. A
+    /// power cycle resets every ES8311 register to its power-on default, so
+    /// this replays the same register sequence [`Self::initialize`] used at
+    /// boot -- minus the two-address probe, since the codec address is
+    /// already known -- and restores the previously selected volume rather
+    /// than resetting it to the boot default. The I2S driver and amplifier
+    /// GPIO stayed configured throughout: only the codec chip lost power.
+    pub fn reinit_after_rail_restore<D>(&mut self, delay: &mut D) -> Result<()>
+    where
+        D: DelayNs,
+    {
+        let clock = ClockConfig {
+            mclk_inverted: false,
+            sclk_inverted: false,
+            mclk_from_mclk_pin: true,
+            mclk_frequency: AUDIO_MCLK_HZ,
+            sample_frequency: AUDIO_SAMPLE_RATE_HZ,
+        };
+        self.profile = self.codec.init(
+            &mut self.bus,
+            &clock,
+            Resolution::Bits16,
+            Resolution::Bits16,
+            delay,
+        )?;
+        self.codec
+            .volume_set(&mut self.bus, self.snapshot.volume_percent, None)
+            .map_err(|error| anyhow!("failed to restore ES8311 volume: {error:?}"))?;
+        self.codec
+            .mute(&mut self.bus, true)
+            .map_err(|error| anyhow!("failed to re-mute ES8311 after rail restore: {error:?}"))?;
+        self.amplifier.set_low().map_err(|error| {
+            anyhow!("failed to disable audio amplifier after rail restore: {error:?}")
+        })?;
+        self.snapshot.codec_ready = true;
+        self.snapshot.amplifier_enabled = false;
+        self.snapshot.muted = true;
+        self.snapshot.playback_state = AudioPlaybackState::Muted;
+        self.snapshot.error = None;
+        Ok(())
+    }
+
     pub fn apply_request(&mut self, request: AudioUiRequest) -> Result<&'static str> {
         match request {
             AudioUiRequest::PlayTestChime => {

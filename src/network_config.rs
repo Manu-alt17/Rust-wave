@@ -135,7 +135,11 @@ impl NetworkConfig {
     /// validation `parse` enforces on every field. Used by the phone
     /// provisioning portal, which submits one SSID/password pair at a time
     /// instead of a hand-written `key=value` file.
-    pub fn validated(networks: Vec<SavedNetwork>, timezone: String, ntp_server: String) -> Result<Self> {
+    pub fn validated(
+        networks: Vec<SavedNetwork>,
+        timezone: String,
+        ntp_server: String,
+    ) -> Result<Self> {
         if networks.is_empty() {
             bail!("at least one saved network is required");
         }
@@ -168,7 +172,11 @@ impl NetworkConfig {
     pub fn upsert(&mut self, ssid: String, password: String) -> Result<()> {
         validate_ssid(&ssid)?;
         validate_password(&password)?;
-        if let Some(existing) = self.networks.iter_mut().find(|network| network.ssid == ssid) {
+        if let Some(existing) = self
+            .networks
+            .iter_mut()
+            .find(|network| network.ssid == ssid)
+        {
             existing.password = password;
             return Ok(());
         }
@@ -299,7 +307,9 @@ fn validate_ntp_server(ntp_server: &str) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use super::{NetworkConfig, SavedNetwork, DEFAULT_NTP_SERVER, DEFAULT_TIMEZONE, WIFI_MAX_SAVED_NETWORKS};
+    use super::{
+        NetworkConfig, SavedNetwork, DEFAULT_NTP_SERVER, DEFAULT_TIMEZONE, WIFI_MAX_SAVED_NETWORKS,
+    };
 
     fn network(ssid: &str, password: &str) -> SavedNetwork {
         SavedNetwork {
@@ -407,8 +417,12 @@ mod tests {
             DEFAULT_NTP_SERVER.into(),
         )
         .is_ok());
-        assert!(NetworkConfig::validated(Vec::new(), DEFAULT_TIMEZONE.into(), DEFAULT_NTP_SERVER.into())
-            .is_err());
+        assert!(NetworkConfig::validated(
+            Vec::new(),
+            DEFAULT_TIMEZONE.into(),
+            DEFAULT_NTP_SERVER.into()
+        )
+        .is_err());
         assert!(NetworkConfig::validated(
             vec![network("Lab", "short")],
             DEFAULT_TIMEZONE.into(),
@@ -426,16 +440,24 @@ mod tests {
         )
         .unwrap();
 
-        config.upsert("Office".into(), "battery-staple".into()).unwrap();
+        config
+            .upsert("Office".into(), "battery-staple".into())
+            .unwrap();
         assert_eq!(
             config.networks,
-            vec![network("Home", "correct-horse"), network("Office", "battery-staple")]
+            vec![
+                network("Home", "correct-horse"),
+                network("Office", "battery-staple")
+            ]
         );
 
         config.upsert("Home".into(), "new-password".into()).unwrap();
         assert_eq!(
             config.networks,
-            vec![network("Home", "new-password"), network("Office", "battery-staple")]
+            vec![
+                network("Home", "new-password"),
+                network("Office", "battery-staple")
+            ]
         );
     }
 
@@ -446,14 +468,20 @@ mod tests {
             networks.push(network(&format!("Net{index}"), "correct-horse"));
         }
         let mut config =
-            NetworkConfig::validated(networks, DEFAULT_TIMEZONE.into(), DEFAULT_NTP_SERVER.into()).unwrap();
-        assert!(config.upsert("OneMore".into(), "correct-horse".into()).is_err());
+            NetworkConfig::validated(networks, DEFAULT_TIMEZONE.into(), DEFAULT_NTP_SERVER.into())
+                .unwrap();
+        assert!(config
+            .upsert("OneMore".into(), "correct-horse".into())
+            .is_err());
     }
 
     #[test]
     fn remove_forgets_a_saved_network_and_is_a_no_op_when_absent() {
         let mut config = NetworkConfig::validated(
-            vec![network("Home", "correct-horse"), network("Office", "battery-staple")],
+            vec![
+                network("Home", "correct-horse"),
+                network("Office", "battery-staple"),
+            ],
             DEFAULT_TIMEZONE.into(),
             DEFAULT_NTP_SERVER.into(),
         )
@@ -474,7 +502,10 @@ mod tests {
         let path = dir.join("WIFI.TXT");
 
         let config = NetworkConfig::validated(
-            vec![network("Lab WiFi", "correct-horse"), network("Travel", "second-pass")],
+            vec![
+                network("Lab WiFi", "correct-horse"),
+                network("Travel", "second-pass"),
+            ],
             "UTC".into(),
             "time.example.org".into(),
         )

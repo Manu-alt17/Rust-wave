@@ -12,6 +12,8 @@ pub mod board_codec;
 #[cfg(target_os = "espidf")]
 pub mod espidf;
 
+use crate::regional::Locale;
+
 /// ES8311 seven-bit address when the CE strap is low.
 pub const ES8311_I2C_ADDRESS_LOW: u8 = 0x18;
 /// ES8311 seven-bit address when the CE strap is high.
@@ -143,6 +145,29 @@ impl AudioSnapshot {
                 "Audio unavailable - visual alarm only."
             }
             _ => "Audio is ready for the alarm chime.",
+        }
+    }
+
+    /// Locale-aware sibling of [`Self::alarm_label`]. `alarm_label` itself is
+    /// left untouched because `src/main.rs`'s serial diagnostics logging
+    /// depends on its English output staying stable.
+    #[must_use]
+    pub const fn alarm_label_i18n(&self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => self.alarm_label(),
+            Locale::Italian => match self.playback_state {
+                AudioPlaybackState::PlayingAlarm => "La suoneria della sveglia è attiva.",
+                AudioPlaybackState::PlayingVoiceNote => {
+                    "La riproduzione di una nota vocale occupa il codec."
+                }
+                AudioPlaybackState::RecordingVoiceNote => {
+                    "La registrazione di una nota vocale occupa il codec."
+                }
+                AudioPlaybackState::Unavailable | AudioPlaybackState::Error => {
+                    "Audio non disponibile - solo allarme visivo."
+                }
+                _ => "L'audio è pronto per la suoneria della sveglia.",
+            },
         }
     }
 

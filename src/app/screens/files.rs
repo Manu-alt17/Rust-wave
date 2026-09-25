@@ -8,7 +8,7 @@ use embedded_graphics::{
     primitives::{PrimitiveStyle, Rectangle},
 };
 
-use crate::app::typography::Text;
+use crate::app::{i18n::t, typography::Text};
 
 use crate::{
     app::{
@@ -16,7 +16,7 @@ use crate::{
         widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
-    storage::FilePreview,
+    storage::{FilePreview, StorageEntryKind},
 };
 
 /// Draw the read-only SDMMC browser or the bounded text-preview panel.
@@ -24,6 +24,7 @@ pub fn render_files(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let storage = &state.storage;
     if let Some(preview) = &storage.preview {
         return render_preview(display, state, preview);
@@ -33,21 +34,34 @@ pub fn render_files(
     let body = state.display.body_style();
     let detail = state.display.detail_style();
 
-    draw_header(display, state, "FILES")?;
+    draw_header(display, state, t(locale, "FILES", "FILE"))?;
 
-    Text::new("Directory", Point::new(22, 106), heading).draw(display)?;
+    Text::new(
+        t(locale, "Directory", "Cartella"),
+        Point::new(22, 106),
+        heading,
+    )
+    .draw(display)?;
     if let Some(error) = &storage.error {
         Text::new(&truncate_label(error, 68), Point::new(22, 134), body).draw(display)?;
     } else if storage.scan.retained_entries == 0 {
         Text::new(
-            "No files or directories found on this SD card.",
+            t(
+                locale,
+                "No files or directories found on this SD card.",
+                "Nessun file o cartella trovato su questa scheda SD.",
+            ),
             Point::new(22, 134),
             body,
         )
         .draw(display)?;
     } else {
         Text::new(
-            "Directories first, then files. No write operations.",
+            t(
+                locale,
+                "Directories first, then files. No write operations.",
+                "Prima le cartelle, poi i file. Nessuna operazione di scrittura.",
+            ),
             Point::new(22, 134),
             body,
         )
@@ -78,11 +92,20 @@ pub fn render_files(
             heading,
         )
         .draw(display)?;
-        Text::new(entry.kind.badge(), Point::new(62, top + 43), detail).draw(display)?;
-        Text::new(&entry.size_label(), Point::new(382, top + 32), detail).draw(display)?;
+        Text::new(
+            entry.kind.badge_i18n(locale),
+            Point::new(62, top + 43),
+            detail,
+        )
+        .draw(display)?;
+        let size_label = if entry.kind == StorageEntryKind::File {
+            entry.size_label()
+        } else {
+            entry.kind.badge_i18n(locale).to_string()
+        };
+        Text::new(&size_label, Point::new(382, top + 32), detail).draw(display)?;
     }
 
-    draw_footer(display, state.display, "MOVE  SELECT OPEN  BOOT BACK")?;
     Ok(())
 }
 
@@ -91,11 +114,12 @@ fn render_preview(
     state: &AppState,
     preview: &FilePreview,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
 
-    draw_header(display, state, "FILE PREVIEW")?;
+    draw_header(display, state, t(locale, "FILE PREVIEW", "ANTEPRIMA FILE"))?;
     Text::new(
         &truncate_label(&preview.name, 52),
         Point::new(22, 106),
@@ -104,11 +128,23 @@ fn render_preview(
     .draw(display)?;
     Text::new(
         if preview.binary {
-            "Binary content is intentionally not rendered."
+            t(
+                locale,
+                "Binary content is intentionally not rendered.",
+                "Il contenuto binario non viene visualizzato di proposito.",
+            )
         } else if preview.truncated {
-            "Preview capped at 384 bytes. File remains unchanged."
+            t(
+                locale,
+                "Preview capped at 384 bytes. File remains unchanged.",
+                "Anteprima limitata a 384 byte. Il file resta invariato.",
+            )
         } else {
-            "Text preview. File remains unchanged."
+            t(
+                locale,
+                "Text preview. File remains unchanged.",
+                "Anteprima testo. Il file resta invariato.",
+            )
         },
         Point::new(22, 136),
         body,
@@ -122,7 +158,7 @@ fn render_preview(
         Text::new(line, Point::new(34, 192 + (index as i32 * 24)), detail).draw(display)?;
     }
 
-    draw_footer(display, state.display, "SELECT CLOSE  BOOT BACK")?;
+    draw_footer(display, state, t(locale, "SELECT CLOSE", "SELECT CHIUDI"))?;
     Ok(())
 }
 

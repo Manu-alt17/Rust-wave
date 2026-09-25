@@ -20,7 +20,28 @@ else
   echo 'release-firmware-validation=skipped'
 fi
 
-cargo +esp build --release
+# Known embuild/esp-idf-sys quirk on this toolchain: the custom
+# partitions.csv (CONFIG_PARTITION_TABLE_CUSTOM_FILENAME) is sometimes not
+# copied into the generated CMake project directory for a release-profile
+# build, so `ninja` fails with "partitions.csv ... missing and no known
+# rule to make it" even though the exact same source tree builds fine in
+# debug. If the first attempt fails, drop our own copy into every pending
+# esp-idf-sys OUT_DIR that's missing one and retry once before giving up.
+if ! cargo +esp build --release; then
+  echo 'release-firmware-build=retrying reason=partitions-csv-workaround'
+  healed=0
+  for out_dir in target/xtensa-esp32s3-espidf/release/build/esp-idf-sys-*/out; do
+    if [[ -d "$out_dir" && ! -f "$out_dir/partitions.csv" ]]; then
+      cp partitions.csv "$out_dir/partitions.csv"
+      healed=1
+    fi
+  done
+  if [[ "$healed" -eq 0 ]]; then
+    echo 'release-firmware-build=failed error=cargo-build-failed-no-partitions-csv-gap-found' >&2
+    exit 1
+  fi
+  cargo +esp build --release
+fi
 
 VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
 if [[ -z "$VERSION" ]]; then
@@ -58,7 +79,7 @@ Supported release flashing path (ELF-aware):
 
 Equivalent direct command:
 
-  espflash flash --chip esp32s3 --monitor $(basename "$ELF_OUT")
+  espflash flash --chip esp32s3 --erase-parts otadata --monitor $(basename "$ELF_OUT")
 
 Development flashing with monitor remains available from the source tree:
 

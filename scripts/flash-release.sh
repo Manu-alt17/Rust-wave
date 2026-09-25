@@ -70,8 +70,13 @@ if [[ ! -f "$ELF" ]]; then
   exit 1
 fi
 
+# Reset otadata so the bootloader falls back to booting ota_0 -- the slot
+# espflash always writes to on this partition table (no "factory" partition,
+# see partitions.csv). Without this, a device that has ever completed an OTA
+# update keeps booting whatever slot otadata points at, silently ignoring a
+# fresh USB flash into ota_0.
 if [[ -n "$PORT" ]]; then
-  exec espflash flash --chip esp32s3 --port "$PORT" --monitor "$ELF"
+  exec espflash flash --chip esp32s3 --port "$PORT" --partition-table "$ROOT/partitions.csv" --erase-parts otadata --monitor "$ELF"
 else
-  exec espflash flash --chip esp32s3 --monitor "$ELF"
+  exec espflash flash --chip esp32s3 --partition-table "$ROOT/partitions.csv" --erase-parts otadata --monitor "$ELF"
 fi

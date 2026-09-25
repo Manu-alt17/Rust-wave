@@ -10,11 +10,13 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
+    regional::Locale,
     voice_note_metadata::format_storage_bytes,
     voice_notes::{format_duration, VoiceNotesMode, VOICE_TITLE_EDITOR_KEY_ROWS},
 };
@@ -23,29 +25,51 @@ pub fn render_voice_notes(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let body = state.display.body_style();
     let heading = state.display.heading_style();
     let voice = &state.voice_notes;
     let visible = voice.visible_note_range();
 
-    draw_header(display, state, "VOICE NOTES")?;
+    draw_header(display, state, t(locale, "VOICE NOTES", "NOTE VOCALI"))?;
     let recordings = if voice.notes.is_empty() {
-        "Recordings".into()
+        t(locale, "Recordings", "Registrazioni").to_string()
     } else {
-        format!(
-            "Recordings {}-{} of {}",
-            visible.start + 1,
-            visible.end,
-            voice.notes.len()
-        )
+        match locale {
+            Locale::English => format!(
+                "Recordings {}-{} of {}",
+                visible.start + 1,
+                visible.end,
+                voice.notes.len()
+            ),
+            Locale::Italian => format!(
+                "Registrazioni {}-{} di {}",
+                visible.start + 1,
+                visible.end,
+                voice.notes.len()
+            ),
+        }
     };
     Text::new(&recordings, Point::new(22, 112), heading).draw(display)?;
-    draw_action(display, 152, "Record new note", voice.selected == 0, body)?;
-    let gain = format!(
-        "Microphone gain: {} ({})",
-        voice.mic_gain.label(),
-        voice.mic_gain.db_label()
-    );
+    draw_action(
+        display,
+        152,
+        t(locale, "Record new note", "Registra nuova nota"),
+        voice.selected == 0,
+        body,
+    )?;
+    let gain = match locale {
+        Locale::English => format!(
+            "Microphone gain: {} ({})",
+            voice.mic_gain.label(),
+            voice.mic_gain.db_label()
+        ),
+        Locale::Italian => format!(
+            "Guadagno microfono: {} ({})",
+            voice.mic_gain.label_i18n(locale),
+            voice.mic_gain.db_label()
+        ),
+    };
     draw_action(display, 208, &gain, voice.selected == 1, body)?;
     for (visible_index, note_index) in visible.enumerate() {
         let note = &voice.notes[note_index];
@@ -63,11 +87,6 @@ pub fn render_voice_notes(
     if let Some(error) = voice.error.as_deref() {
         Text::new(error, Point::new(22, 640), state.display.detail_style()).draw(display)?;
     }
-    draw_footer(
-        display,
-        state.display,
-        "UP DOWN MOVE  SELECT OPEN  BOOT BACK",
-    )?;
     Ok(())
 }
 
@@ -75,16 +94,25 @@ pub fn render_voice_note_details(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let body = state.display.body_style();
     let detail = state.display.detail_style();
     let metadata = state.display.body_style();
     if state.voice_notes.title_editing {
         return render_voice_note_title_editor(display, state);
     }
-    draw_header(display, state, "VOICE NOTE")?;
+    draw_header(display, state, t(locale, "VOICE NOTE", "NOTA VOCALE"))?;
     let Some(note) = state.voice_notes.selected_note() else {
-        Text::new("No saved note selected.", Point::new(22, 186), detail).draw(display)?;
-        draw_footer(display, state.display, "BOOT BACK")?;
+        Text::new(
+            t(
+                locale,
+                "No saved note selected.",
+                "Nessuna nota salvata selezionata.",
+            ),
+            Point::new(22, 186),
+            detail,
+        )
+        .draw(display)?;
         return Ok(());
     };
     if state.voice_notes.delete_confirmation {
@@ -97,26 +125,38 @@ pub fn render_voice_note_details(
         state.display.heading_style(),
     )
     .draw(display)?;
-    line(display, 158, "File", &note.file_name, metadata)?;
-    line(display, 194, "Recorded", &note.recorded_at, metadata)?;
+    line(
+        display,
+        158,
+        t(locale, "File", "File"),
+        &note.file_name,
+        metadata,
+    )?;
+    line(
+        display,
+        194,
+        t(locale, "Recorded", "Registrata"),
+        &note.recorded_at,
+        metadata,
+    )?;
     line(
         display,
         230,
-        "Duration",
+        t(locale, "Duration", "Durata"),
         &format_duration(note.duration_seconds),
         metadata,
     )?;
     line(
         display,
         266,
-        "Available",
+        t(locale, "Available", "Disponibile"),
         &format_storage_bytes(state.voice_notes.available_storage_bytes),
         metadata,
     )?;
     line(
         display,
         302,
-        "Playback",
+        t(locale, "Playback", "Riproduzione"),
         &format!(
             "{} / {}",
             format_duration(state.voice_notes.playback_elapsed_seconds()),
@@ -128,9 +168,9 @@ pub fn render_voice_note_details(
         display,
         340,
         if state.voice_notes.is_playing_selected() {
-            "Stop playback"
+            t(locale, "Stop playback", "Interrompi riproduzione")
         } else {
-            "Play note"
+            t(locale, "Play note", "Riproduci nota")
         },
         state.voice_notes.detail_selected == 0,
         body,
@@ -138,28 +178,28 @@ pub fn render_voice_note_details(
     draw_action(
         display,
         390,
-        "Edit friendly title",
+        t(locale, "Edit friendly title", "Modifica titolo"),
         state.voice_notes.detail_selected == 1,
         body,
     )?;
     draw_action(
         display,
         440,
-        "Export / download",
+        t(locale, "Export / download", "Esporta / scarica"),
         state.voice_notes.detail_selected == 2,
         body,
     )?;
     draw_action(
         display,
         490,
-        "Delete note",
+        t(locale, "Delete note", "Elimina nota"),
         state.voice_notes.detail_selected == 3,
         body,
     )?;
     draw_action(
         display,
         540,
-        "Return to Voice Notes",
+        t(locale, "Return to Voice Notes", "Torna a Note vocali"),
         state.voice_notes.detail_selected == 4,
         body,
     )?;
@@ -167,32 +207,28 @@ pub fn render_voice_note_details(
         line(
             display,
             604,
-            "LAN",
+            t(locale, "LAN", "LAN"),
             state.wifi_transfer.url_label(),
             metadata,
         )?;
         line(
             display,
             636,
-            "Code",
+            t(locale, "Code", "Codice"),
             state.wifi_transfer.code_label(),
             metadata,
         )?;
         line(
             display,
             668,
-            "Path",
+            t(locale, "Path", "Percorso"),
             &format!("VOICE/{}", note.file_name),
             metadata,
         )?;
     } else if let Some(error) = state.voice_notes.error.as_deref() {
         Text::new(error, Point::new(22, 636), detail).draw(display)?;
     }
-    draw_footer(
-        display,
-        state.display,
-        "UP DOWN MOVE  SELECT RUN  BOOT BACK",
-    )?;
+    draw_footer(display, state, t(locale, "SELECT RUN", "SELECT ESEGUI"))?;
     Ok(())
 }
 
@@ -200,12 +236,22 @@ fn render_voice_note_title_editor(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let voice = &state.voice_notes;
     let body = state.display.body_style();
     let detail = state.display.detail_style();
     let title = voice.title_edit_buffer.iter().collect::<String>();
-    draw_header(display, state, "VOICE NOTE TITLE")?;
-    Text::new("Friendly title", Point::new(22, 124), body).draw(display)?;
+    draw_header(
+        display,
+        state,
+        t(locale, "VOICE NOTE TITLE", "TITOLO NOTA VOCALE"),
+    )?;
+    Text::new(
+        t(locale, "Friendly title", "Titolo descrittivo"),
+        Point::new(22, 124),
+        body,
+    )
+    .draw(display)?;
     Rectangle::new(Point::new(22, 138), Size::new(436, 54))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
@@ -216,7 +262,11 @@ fn render_voice_note_title_editor(
     };
     Text::new(title_label, Point::new(34, 172), body).draw(display)?;
     Text::new(
-        "Internal WAV filename remains unchanged.",
+        t(
+            locale,
+            "Internal WAV filename remains unchanged.",
+            "Il nome del file WAV interno resta invariato.",
+        ),
         Point::new(22, 230),
         detail,
     )
@@ -224,8 +274,12 @@ fn render_voice_note_title_editor(
     draw_voice_title_keyboard(display, state)?;
     draw_footer(
         display,
-        state.display,
-        "MOVE  HOLD H/V  SELECT KEY  BOOT BACK",
+        state,
+        t(
+            locale,
+            "HOLD H/V  SELECT KEY",
+            "TIENI PREMUTO O/V  SELECT TASTO",
+        ),
     )?;
     Ok(())
 }
@@ -262,13 +316,14 @@ fn render_voice_note_delete_confirmation(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let Some(note) = state.voice_notes.selected_note() else {
         return Ok(());
     };
     let body = state.display.body_style();
     let detail = state.display.detail_style();
     Text::new(
-        "DELETE VOICE NOTE?",
+        t(locale, "DELETE VOICE NOTE?", "ELIMINARE LA NOTA VOCALE?"),
         Point::new(22, 152),
         state.display.heading_style(),
     )
@@ -276,7 +331,11 @@ fn render_voice_note_delete_confirmation(
     Text::new(&note.title, Point::new(22, 218), body).draw(display)?;
     Text::new(&note.file_name, Point::new(22, 264), detail).draw(display)?;
     Text::new(
-        "This permanently removes the WAV file.",
+        t(
+            locale,
+            "This permanently removes the WAV file.",
+            "Questa azione rimuove definitivamente il file WAV.",
+        ),
         Point::new(22, 324),
         detail,
     )
@@ -284,18 +343,22 @@ fn render_voice_note_delete_confirmation(
     draw_action(
         display,
         402,
-        "Cancel",
+        t(locale, "Cancel", "Annulla"),
         state.voice_notes.delete_confirm_selected == 0,
         body,
     )?;
     draw_action(
         display,
         470,
-        "Delete permanently",
+        t(locale, "Delete permanently", "Elimina definitivamente"),
         state.voice_notes.delete_confirm_selected == 1,
         body,
     )?;
-    draw_footer(display, state.display, "UP DOWN MOVE  SELECT CONFIRM")?;
+    draw_footer(
+        display,
+        state,
+        t(locale, "SELECT CONFIRM", "SELECT CONFERMA"),
+    )?;
     Ok(())
 }
 
@@ -303,52 +366,87 @@ pub fn render_voice_note_recording(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let body = state.display.body_style();
     let heading = state.display.heading_style();
     let detail = state.display.detail_style();
     let voice = &state.voice_notes;
     let elapsed = format_duration(voice.elapsed_seconds);
     let file = voice.active_file.as_deref().unwrap_or("VOICE---.WAV");
-    draw_header(display, state, "RECORD VOICE NOTE")?;
+    draw_header(
+        display,
+        state,
+        t(locale, "RECORD VOICE NOTE", "REGISTRA NOTA VOCALE"),
+    )?;
     Text::new(file, Point::new(22, 130), heading).draw(display)?;
-    line(display, 176, "Elapsed", &elapsed, body)?;
+    line(
+        display,
+        176,
+        t(locale, "Elapsed", "Trascorso"),
+        &elapsed,
+        body,
+    )?;
     line(
         display,
         224,
-        "PCM bytes",
+        t(locale, "PCM bytes", "Byte PCM"),
         &voice.pcm_bytes.to_string(),
         body,
     )?;
-    line(display, 272, "Peak", &voice.peak.to_string(), body)?;
+    line(
+        display,
+        272,
+        t(locale, "Peak", "Picco"),
+        &voice.peak.to_string(),
+        body,
+    )?;
     line(
         display,
         320,
-        "Started",
-        voice
-            .active_recorded_at
-            .as_deref()
-            .unwrap_or("DATE UNKNOWN"),
+        t(locale, "Started", "Iniziata"),
+        voice.active_recorded_at.as_deref().unwrap_or(t(
+            locale,
+            "DATE UNKNOWN",
+            "DATA SCONOSCIUTA",
+        )),
         detail,
     )?;
     line(
         display,
         368,
-        "Mic gain",
-        &format!("{} ({})", voice.mic_gain.label(), voice.mic_gain.db_label()),
+        t(locale, "Mic gain", "Guadagno mic"),
+        &format!(
+            "{} ({})",
+            voice.mic_gain.label_i18n(locale),
+            voice.mic_gain.db_label()
+        ),
         body,
     )?;
     line(
         display,
         416,
-        "Clipped",
+        t(locale, "Clipped", "Troncati"),
         &voice.clipped_samples.to_string(),
         body,
     )?;
     match voice.mode {
         VoiceNotesMode::Recording => {
-            Text::new("Streaming VOICE###.TMP", Point::new(22, 500), body).draw(display)?;
             Text::new(
-                "UP / DOWN pause. SELECT stop + save.",
+                t(
+                    locale,
+                    "Streaming VOICE###.TMP",
+                    "Streaming su VOICE###.TMP",
+                ),
+                Point::new(22, 500),
+                body,
+            )
+            .draw(display)?;
+            Text::new(
+                t(
+                    locale,
+                    "UP / DOWN pause. SELECT stop + save.",
+                    "SU / GIU pausa. SELECT ferma e salva.",
+                ),
                 Point::new(22, 552),
                 detail,
             )
@@ -356,44 +454,113 @@ pub fn render_voice_note_recording(
         }
         VoiceNotesMode::Paused => {
             Text::new(
-                "Recording paused. WAV remains open.",
+                t(
+                    locale,
+                    "Recording paused. WAV remains open.",
+                    "Registrazione in pausa. Il file WAV resta aperto.",
+                ),
                 Point::new(22, 500),
                 body,
             )
             .draw(display)?;
             Text::new(
-                "UP / DOWN resume. SELECT stop + save.",
+                t(
+                    locale,
+                    "UP / DOWN resume. SELECT stop + save.",
+                    "SU / GIU riprendi. SELECT ferma e salva.",
+                ),
                 Point::new(22, 552),
                 detail,
             )
             .draw(display)?;
         }
         VoiceNotesMode::Playing => {
-            Text::new("Saved WAV playback active.", Point::new(22, 500), body).draw(display)?;
-            Text::new("Press BOOT to stop and return.", Point::new(22, 552), body).draw(display)?;
+            Text::new(
+                t(
+                    locale,
+                    "Saved WAV playback active.",
+                    "Riproduzione del WAV salvato attiva.",
+                ),
+                Point::new(22, 500),
+                body,
+            )
+            .draw(display)?;
+            Text::new(
+                t(
+                    locale,
+                    "Press BOOT to stop and return.",
+                    "Premi BOOT per fermare e tornare indietro.",
+                ),
+                Point::new(22, 552),
+                body,
+            )
+            .draw(display)?;
         }
         VoiceNotesMode::Saved => {
-            Text::new("Saved as recovery-safe WAV.", Point::new(22, 500), body).draw(display)?;
-            Text::new("Press BOOT to return.", Point::new(22, 552), body).draw(display)?;
+            Text::new(
+                t(
+                    locale,
+                    "Saved as recovery-safe WAV.",
+                    "Salvata in un WAV a prova di interruzioni.",
+                ),
+                Point::new(22, 500),
+                body,
+            )
+            .draw(display)?;
+            Text::new(
+                t(
+                    locale,
+                    "Press BOOT to return.",
+                    "Premi BOOT per tornare indietro.",
+                ),
+                Point::new(22, 552),
+                body,
+            )
+            .draw(display)?;
         }
         VoiceNotesMode::Error => {
             Text::new(
-                voice.error.as_deref().unwrap_or("Recording failed"),
+                voice.error.as_deref().unwrap_or(t(
+                    locale,
+                    "Recording failed",
+                    "Registrazione non riuscita",
+                )),
                 Point::new(22, 500),
                 detail,
             )
             .draw(display)?;
-            Text::new("Press BOOT to return.", Point::new(22, 552), body).draw(display)?;
+            Text::new(
+                t(
+                    locale,
+                    "Press BOOT to return.",
+                    "Premi BOOT per tornare indietro.",
+                ),
+                Point::new(22, 552),
+                body,
+            )
+            .draw(display)?;
         }
         VoiceNotesMode::Idle => {
-            Text::new("Preparing microphone capture...", Point::new(22, 500), body)
-                .draw(display)?;
+            Text::new(
+                t(
+                    locale,
+                    "Preparing microphone capture...",
+                    "Preparazione acquisizione microfono...",
+                ),
+                Point::new(22, 500),
+                body,
+            )
+            .draw(display)?;
         }
     }
     draw_footer(
         display,
-        state.display,
-        "UP DOWN PAUSE / RESUME  SELECT STOP + SAVE",
+        state,
+        t(
+            locale,
+            "UP DOWN PAUSE / RESUME  SELECT STOP + SAVE",
+            "SU GIU PAUSA / RIPRENDI  SELECT FERMA + SALVA",
+        ),
     )?;
     Ok(())
 }

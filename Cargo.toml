@@ -1,6 +1,6 @@
 [package]
 name = "waveshare-epd397-rust-app"
-version = "1.2.0"
+version = "1.4.5"
 authors = ["Piyush Daiya"]
 edition = "2021"
 resolver = "2"
@@ -24,15 +24,37 @@ rustmix-remote-ble = ["enumset"]
 
 [profile.release]
 codegen-units = 1
-lto = true
+# "thin" instead of full/"fat" LTO: fat LTO's cross-crate merging under
+# codegen-units=1 hits an Xtensa LLVM backend instruction-selection crash
+# ("Cannot select: i32 = Constant<-32768>") inside
+# `reader::paginate_epub_chapter_up_to` in this profile. Confirmed by
+# bisection: the pre-existing committed baseline builds fine with fat LTO,
+# and disabling LTO entirely also avoids the crash, so it is a backend
+# limitation exposed by this profile's code shape, not a Rust-level bug.
+# Thin LTO keeps most of fat LTO's cross-crate size/perf benefit while
+# avoiding this crash.
+lto = "thin"
 opt-level = "s"
 strip = true
+
+# The firmware as a whole optimizes for size, but these decoders are pure
+# compute on large buffers (EPUB DEFLATE on every uncached open, PNG and
+# fallback JPEG decode for covers and inline images), where -O3 is worth its
+# modest size cost. The image uses under 3 MB of each 5 MB OTA slot.
+[profile.release.package.miniz_oxide]
+opt-level = 3
+[profile.release.package.fdeflate]
+opt-level = 3
+[profile.release.package.png]
+opt-level = 3
+[profile.release.package.jpeg-decoder]
+opt-level = 3
 
 [dependencies]
 anyhow = "1"
 embedded-graphics = "0.8.1"
 embedded-hal = "1.0"
-embedded-iconoir = { version = "0.2.3", features = ["96px"] }
+embedded-iconoir = { version = "0.2.3", features = ["96px", "48px", "24px"] }
 log = "0.4"
 enumset = { version = "1", optional = true }
 miniz_oxide = "0.8"
@@ -68,3 +90,11 @@ image = { version = "0.24", default-features = false, features = ["png"] }
 [package.metadata.esp-idf-sys]
 esp_idf_version = "v5.5.1"
 esp_idf_tools_install_dir = "global"
+
+# SIMD-accelerated baseline JPEG decoder from Espressif, used for EPUB inline
+# images and cover thumbnails (see `cover_cache::decode_jpeg_scaled`), with
+# `jpeg-decoder` kept as the fallback for progressive JPEGs it rejects.
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp_new_jpeg", version = "1.0.2" }
+bindings_header = "bindings/esp_new_jpeg.h"
+bindings_module = "esp_new_jpeg"

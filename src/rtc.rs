@@ -144,17 +144,26 @@ where
     }
 
     /// Disable all alarm compare fields and the alarm interrupt-enable bit.
+    ///
+    /// One burst write over the five contiguous alarm registers (mirroring
+    /// `program_alarm`'s write) instead of five individual read-modify-write
+    /// round trips: the compare value bits are meaningless once every field
+    /// is disabled, since nothing reads them again until `program_alarm`
+    /// overwrites all five anyway, so there is nothing to preserve.
     pub fn disable_alarm(&mut self) -> Result<()> {
-        for register in [
-            SECOND_ALARM_REG,
-            MINUTES_ALARM_REG,
-            HOUR_ALARM_REG,
-            DAY_ALARM_REG,
-            WEEKDAY_ALARM_REG,
-        ] {
-            let value = self.read_register(register)?;
-            self.write_register(register, value | ALARM_FIELD_DISABLED)?;
-        }
+        self.i2c
+            .write(
+                PCF85063_ADDRESS,
+                &[
+                    SECOND_ALARM_REG,
+                    ALARM_FIELD_DISABLED,
+                    ALARM_FIELD_DISABLED,
+                    ALARM_FIELD_DISABLED,
+                    ALARM_FIELD_DISABLED,
+                    ALARM_FIELD_DISABLED,
+                ],
+            )
+            .map_err(|error| anyhow!("PCF85063 alarm disable write failed: {error:?}"))?;
         let control = self.read_register(CONTROL_2_REG)?;
         self.write_register(
             CONTROL_2_REG,

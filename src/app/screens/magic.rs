@@ -11,6 +11,7 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
@@ -23,17 +24,31 @@ pub fn render_magic_library(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let magic = &state.magic;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
 
-    draw_header(display, state, "MAGIC TOKENS")?;
+    draw_header(display, state, t(locale, "MAGIC TOKENS", "TOKEN MAGIC"))?;
 
     if magic.entries.is_empty() {
-        Text::new("No tokens downloaded yet.", Point::new(22, 130), heading).draw(display)?;
         Text::new(
-            "Pick tokens from your phone to add them.",
+            t(
+                locale,
+                "No tokens downloaded yet.",
+                "Nessun token scaricato.",
+            ),
+            Point::new(22, 130),
+            heading,
+        )
+        .draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "Pick tokens from your phone to add them.",
+                "Scegli i token dal telefono per aggiungerli.",
+            ),
             Point::new(22, 164),
             body,
         )
@@ -44,7 +59,7 @@ pub fn render_magic_library(
         draw_action(
             display,
             240,
-            "Configure from phone",
+            t(locale, "Configure from phone", "Configura dal telefono"),
             true,
             body,
         )?;
@@ -72,7 +87,7 @@ pub fn render_magic_library(
             draw_action(
                 display,
                 next_top,
-                "Show on screen",
+                t(locale, "Show on screen", "Mostra su schermo"),
                 magic.selected == view_index,
                 body,
             )?;
@@ -81,13 +96,13 @@ pub fn render_magic_library(
         draw_action(
             display,
             next_top,
-            "Configure from phone",
+            t(locale, "Configure from phone", "Configura dal telefono"),
             magic.selected == magic.configure_row_index(),
             body,
         )?;
     }
 
-    draw_footer(display, state.display, "MOVE  SELECT TOGGLE/OPEN  BOOT BACK")?;
+    draw_footer(display, state, t(locale, "SELECT TOGGLE", "SELECT ATTIVA"))?;
     Ok(())
 }
 
@@ -95,22 +110,25 @@ pub fn render_magic_view(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     match state.magic.view_tiles.as_slice() {
         [] => {
-            draw_header(display, state, "MAGIC TOKENS")?;
+            draw_header(display, state, t(locale, "MAGIC TOKENS", "TOKEN MAGIC"))?;
             Text::new(
-                "No token art loaded.",
+                t(
+                    locale,
+                    "No token art loaded.",
+                    "Nessuna immagine token caricata.",
+                ),
                 Point::new(22, 300),
                 state.display.heading_style(),
             )
             .draw(display)?;
-            draw_footer(display, state.display, "BOOT BACK")?;
         }
         [only] => {
-            draw_header(display, state, "MAGIC TOKENS")?;
+            draw_header(display, state, t(locale, "MAGIC TOKENS", "TOKEN MAGIC"))?;
             let top_left = Point::new((480 - i32::from(only.width)) / 2, 100);
             draw_tile(display, top_left, only)?;
-            draw_footer(display, state.display, "BOOT BACK")?;
         }
         [first, second, ..] => {
             // Two tokens rotate the whole screen to Landscape (see

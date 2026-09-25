@@ -27,10 +27,37 @@ case "$#" in
 esac
 
 BIN="target/xtensa-esp32s3-espidf/release/waveshare-epd397-rust-app"
-cargo +esp build --release
 
+# Known embuild/esp-idf-sys quirk on this toolchain: the custom
+# partitions.csv (CONFIG_PARTITION_TABLE_CUSTOM_FILENAME) is sometimes not
+# copied into the generated CMake project directory for a release-profile
+# build, so `ninja` fails with "partitions.csv ... missing and no known
+# rule to make it" even though the exact same source tree builds fine in
+# debug. If the first attempt fails, drop our own copy into every pending
+# esp-idf-sys OUT_DIR that's missing one and retry once before giving up.
+if ! cargo +esp build --release; then
+  echo 'release-build=retrying reason=partitions-csv-workaround'
+  healed=0
+  for out_dir in target/xtensa-esp32s3-espidf/release/build/esp-idf-sys-*/out; do
+    if [[ -d "$out_dir" && ! -f "$out_dir/partitions.csv" ]]; then
+      cp partitions.csv "$out_dir/partitions.csv"
+      healed=1
+    fi
+  done
+  if [[ "$healed" -eq 0 ]]; then
+    echo 'release-build=failed error=cargo-build-failed-no-partitions-csv-gap-found' >&2
+    exit 1
+  fi
+  cargo +esp build --release
+fi
+
+# Reset otadata so the bootloader falls back to booting ota_0 -- the slot
+# espflash always writes to on this partition table (no "factory" partition,
+# see partitions.csv). Without this, a device that has ever completed an OTA
+# update keeps booting whatever slot otadata points at, silently ignoring a
+# fresh USB flash into ota_0.
 if [[ -n "$PORT" ]]; then
-  exec espflash flash --chip esp32s3 --port "$PORT" --monitor "$BIN"
+  exec espflash flash --chip esp32s3 --port "$PORT" --partition-table partitions.csv --erase-parts otadata --monitor "$BIN"
 else
-  exec espflash flash --chip esp32s3 --monitor "$BIN"
+  exec espflash flash --chip esp32s3 --partition-table partitions.csv --erase-parts otadata --monitor "$BIN"
 fi

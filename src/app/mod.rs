@@ -9,6 +9,7 @@ use core::convert::Infallible;
 use crate::{framebuffer::FrameBuffer, orientation::OrientedFrameBuffer};
 
 pub mod display;
+pub mod i18n;
 pub mod menu;
 pub mod reader_atkinson_next_assets;
 pub mod reader_literata_assets;
@@ -25,8 +26,27 @@ pub use state::AppState;
 
 /// Idle interval before the panel controller and ALDO3 rail enter sleep.
 pub const PANEL_IDLE_SLEEP_SECONDS: u64 = 60;
+/// Idle interval, uniform across every screen including Reader, before the
+/// board arms real MCU hardware deep sleep on its own, without a power-key
+/// press. Reuses the exact same sleep-image entry and deep-sleep path as a
+/// manual power-key press; only the trigger differs.
+pub const AUTO_DEEP_SLEEP_IDLE_SECONDS: u64 = 10 * 60;
 /// Detail-screen status cadence inherited from the sample-app clock use case.
 pub const SAMPLE_LIVE_REFRESH_SECONDS: u64 = 30;
+/// Route-independent poll cadence for the persistent header's PMIC charging
+/// indicator. Home (the usual screen right after boot, and where a user
+/// plugging in USB is most likely to be sitting) is deliberately excluded
+/// from `ScreenRoute::uses_live_status`'s periodic refresh, since that also
+/// forces a full status sample (SHTC3 included) and an e-paper repaint on a
+/// screen meant to stay otherwise idle. This poll is cheaper and does not
+/// repaint on its own: every tick it takes a power-only reading (RTC + PMIC,
+/// no SHTC3 wake) and only triggers a screen refresh when the charging flag
+/// actually flips, so a device that is neither plugged nor unplugged causes
+/// no extra panel wear. This is what catches both a charger plugged in while
+/// idling on Home, and the AXP2101's charger-status classification still
+/// settling in the instant right after a cold power-on with VBUS already
+/// present.
+pub const CHARGING_STATUS_POLL_SECONDS: u64 = 5;
 /// Motion diagnostics refresh at a slower e-paper-safe cadence.
 pub const MOTION_LIVE_REFRESH_SECONDS: u64 = 10;
 /// Motion-event diagnostics refresh slowly unless an event arrives sooner.
@@ -47,6 +67,10 @@ pub const VOICE_RECORD_SCREEN_REFRESH_SECONDS: u64 =
 pub const LIBRARY_THUMBNAIL_REFRESH_SECONDS: u64 = 2;
 /// Poll the PCF85063 alarm flag and domain schedule once per second.
 pub const ALARM_POLL_SECONDS: u64 = 1;
+/// Minimum continuous time on a reader-active route before Wi-Fi and the
+/// audio rail are suspended for battery savings. Long enough that briefly
+/// opening a book from Library and backing out doesn't thrash the radio.
+pub const READER_POWER_SAVE_GRACE_SECONDS: u64 = 20;
 
 /// Clear the native frame and render the active product screen through the
 /// orientation adapter.
@@ -127,6 +151,87 @@ mod tests {
         render_current_screen(&mut frame, &state).unwrap();
     }
 
+    /// Sample Library books for the `library` preview shot: two
+    /// in-progress, one finished, two never opened — enough to exercise all
+    /// three status-bar styles the Library grid draws. Must run *after*
+    /// navigating into the Library route (which calls `refresh_library`,
+    /// rescanning `books_root` from disk and wiping any book data set
+    /// beforehand).
+    fn seed_library_preview_books(state: &mut AppState) {
+        let book = |path: &str, title: &str| crate::reader::ReaderBook {
+            path: path.into(),
+            title: title.into(),
+            format: crate::reader::BookFormat::Epub,
+            size_bytes: 900_000,
+            modified_seconds: 0,
+        };
+        let location = |path: &str, title: &str, percent: u8| crate::reader::ReaderLocation {
+            path: path.into(),
+            title: title.into(),
+            format: crate::reader::BookFormat::Epub,
+            size_bytes: 900_000,
+            modified_seconds: 0,
+            page_index: 10,
+            byte_offset: 9_000 * u64::from(percent),
+            epub_chapter: None,
+            reading_percent: Some(percent),
+        };
+        state.reader.books = vec![
+            book("MONDO1.EPUB", "Mondo Emerso"),
+            book("DUNGEON.EPUB", "Dungeon Crawler Carl"),
+            book("MONDO2.EPUB", "Mondo Emerso Vol. 2"),
+            book("GALATTICA.EPUB", "Guida Galattica"),
+            book("EXTRA.EPUB", "Un Altro Libro Mai Aperto"),
+        ];
+        state.reader.recent = vec![
+            location("MONDO1.EPUB", "Mondo Emerso", 17),
+            location("DUNGEON.EPUB", "Dungeon Crawler Carl", 30),
+            location("MONDO2.EPUB", "Mondo Emerso Vol. 2", 100),
+        ];
+    }
+
+    /// Sample Library books for the `library-deep-scroll` preview shot: 2
+    /// in-progress plus 8 never-opened books, so the Recent section runs 4
+    /// rows deep — enough to scroll well past its header and exercise the
+    /// "keep the current section's header pinned in view" behavior in
+    /// `screens::reader::library_window`.
+    fn seed_library_preview_books_long(state: &mut AppState) {
+        let book = |path: &str, title: &str| crate::reader::ReaderBook {
+            path: path.into(),
+            title: title.into(),
+            format: crate::reader::BookFormat::Epub,
+            size_bytes: 900_000,
+            modified_seconds: 0,
+        };
+        let location = |path: &str, title: &str, percent: u8| crate::reader::ReaderLocation {
+            path: path.into(),
+            title: title.into(),
+            format: crate::reader::BookFormat::Epub,
+            size_bytes: 900_000,
+            modified_seconds: 0,
+            page_index: 10,
+            byte_offset: 9_000 * u64::from(percent),
+            epub_chapter: None,
+            reading_percent: Some(percent),
+        };
+        state.reader.books = vec![
+            book("MONDO1.EPUB", "Mondo Emerso"),
+            book("DUNGEON.EPUB", "Dungeon Crawler Carl"),
+            book("N3.EPUB", "Racconti dal Nord"),
+            book("N4.EPUB", "L'Ultimo Faro"),
+            book("N5.EPUB", "Cronache di Vetro"),
+            book("N6.EPUB", "Il Giardino Sommerso"),
+            book("N7.EPUB", "Sentieri di Polvere"),
+            book("N8.EPUB", "La Torre Bianca"),
+            book("N9.EPUB", "Voci nella Nebbia"),
+            book("N10.EPUB", "Il Codice Perduto"),
+        ];
+        state.reader.recent = vec![
+            location("MONDO1.EPUB", "Mondo Emerso", 17),
+            location("DUNGEON.EPUB", "Dungeon Crawler Carl", 30),
+        ];
+    }
+
     /// Host-only visual review aid: renders a few representative screens to
     /// PNGs in the OS temp directory (logical portrait orientation, as a
     /// human looks at the device) so UI layout changes can be eyeballed
@@ -157,15 +262,224 @@ mod tests {
 
         let shots: &[(&str, fn(&mut AppState))] = &[
             ("home", |_| {}),
-            ("reader-category", |state| {
-                state.home_selected = 0;
-                state.apply(crate::buttons::ButtonEvent::Select);
+            ("home-with-book", |state| {
+                state.reader.resume = Some(crate::reader::ReaderLocation {
+                    path: "WIND.EPUB".into(),
+                    title: "Il nome del vento".into(),
+                    format: crate::reader::BookFormat::Epub,
+                    size_bytes: 900_000,
+                    modified_seconds: 0,
+                    page_index: 120,
+                    byte_offset: 558_000,
+                    epub_chapter: None,
+                    reading_percent: Some(62),
+                });
+                state.update_reading_stats_snapshot(crate::reading_stats::ReadingStatsSnapshot {
+                    available: true,
+                    today_seconds: 1_380,
+                    streak_days: 5,
+                    remaining_book_seconds: Some(12_000),
+                    ..Default::default()
+                });
+            }),
+            ("wifi-transfer", |state| {
+                state.update_wifi_transfer_snapshot(crate::wifi_transfer::WifiTransferSnapshot {
+                    state: crate::wifi_transfer::WifiTransferState::Ready,
+                    url: Some("http://192.168.1.10/".into()),
+                    code: Some("244126".into()),
+                    last_action: "Portal ready".into(),
+                    last_bytes: 0,
+                    ..Default::default()
+                });
+                state
+                    .router
+                    .navigate_to(crate::app::ScreenRoute::WifiTransfer);
+            }),
+            ("wifi-transfer-hotspot", |state| {
+                state.update_wifi_transfer_snapshot(crate::wifi_transfer::WifiTransferSnapshot {
+                    state: crate::wifi_transfer::WifiTransferState::Ready,
+                    url: Some("http://192.168.71.1/".into()),
+                    code: Some("713284".into()),
+                    ap_ssid: Some("RUSTMIX-5609".into()),
+                    ap_password: Some("SN72D48N9NNA".into()),
+                    join: crate::wifi_transfer::JoinAttemptState::Idle,
+                    ..Default::default()
+                });
+                state
+                    .router
+                    .navigate_to(crate::app::ScreenRoute::WifiTransfer);
             }),
             ("library", |state| {
+                // Italian, matching the product's primary target locale —
+                // otherwise the section captions and status labels render
+                // in their English fallback ("RECENT"/"NEW"/"DONE") instead
+                // of "RECENTI"/"NUOVO"/"COMPLETATO".
+                state.regional.locale = crate::regional::Locale::Italian;
                 state.home_selected = 0;
                 state.apply(crate::buttons::ButtonEvent::Select);
-                state.apply(crate::buttons::ButtonEvent::Down);
+                // Seeded after navigating in: entering the Library route
+                // calls `refresh_library`, which rescans `books_root` from
+                // disk and would otherwise wipe book data set beforehand.
+                seed_library_preview_books(state);
+            }),
+            ("library-recent-section", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.home_selected = 0;
                 state.apply(crate::buttons::ButtonEvent::Select);
+                // One never-opened book and one finished book, so Recent's
+                // single row shows New and Completato side by side: New
+                // sorts first, Completato last, per the requested order.
+                let book = |path: &str, title: &str| crate::reader::ReaderBook {
+                    path: path.into(),
+                    title: title.into(),
+                    format: crate::reader::BookFormat::Epub,
+                    size_bytes: 900_000,
+                    modified_seconds: 0,
+                };
+                let location = |path: &str, title: &str, percent: u8| crate::reader::ReaderLocation {
+                    path: path.into(),
+                    title: title.into(),
+                    format: crate::reader::BookFormat::Epub,
+                    size_bytes: 900_000,
+                    modified_seconds: 0,
+                    page_index: 10,
+                    byte_offset: 9_000 * u64::from(percent),
+                    epub_chapter: None,
+                    reading_percent: Some(percent),
+                };
+                state.reader.books = vec![
+                    book("MONDO1.EPUB", "Mondo Emerso"),
+                    book("DUNGEON.EPUB", "Dungeon Crawler Carl"),
+                    book("MONDO2.EPUB", "Mondo Emerso Vol. 2"),
+                    book("GALATTICA.EPUB", "Guida Galattica"),
+                ];
+                state.reader.recent = vec![
+                    location("MONDO1.EPUB", "Mondo Emerso", 17),
+                    location("DUNGEON.EPUB", "Dungeon Crawler Carl", 30),
+                    location("MONDO2.EPUB", "Mondo Emerso Vol. 2", 100),
+                ];
+                // Reading Now has 2 entries (0-1); Recent is [3: New, 2:
+                // Completato] — select the New entry to scroll Recent into
+                // view.
+                state.reader.library_selected = 3;
+            }),
+            ("library-zero-percent", |state| {
+                // Reproduces a report from real device data: one book at
+                // 99% and the rest opened but sitting at 0% — the 0% ones
+                // must land in Recent as "New", not in Reading Now, or
+                // Recent never gets a header at all when every book has a
+                // saved position.
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.home_selected = 0;
+                state.apply(crate::buttons::ButtonEvent::Select);
+                let book = |path: &str, title: &str| crate::reader::ReaderBook {
+                    path: path.into(),
+                    title: title.into(),
+                    format: crate::reader::BookFormat::Epub,
+                    size_bytes: 900_000,
+                    modified_seconds: 0,
+                };
+                let location = |path: &str, title: &str, percent: u8| crate::reader::ReaderLocation {
+                    path: path.into(),
+                    title: title.into(),
+                    format: crate::reader::BookFormat::Epub,
+                    size_bytes: 900_000,
+                    modified_seconds: 0,
+                    page_index: 0,
+                    byte_offset: 9_000 * u64::from(percent),
+                    epub_chapter: None,
+                    reading_percent: Some(percent),
+                };
+                state.reader.books = vec![
+                    book("MONDO1.EPUB", "Mondo Emerso"),
+                    book("DUNGEON.EPUB", "Dungeon Crawler Carl"),
+                    book("GALATTICA.EPUB", "Guida Galattica"),
+                ];
+                state.reader.recent = vec![
+                    location("MONDO1.EPUB", "Mondo Emerso", 99),
+                    location("DUNGEON.EPUB", "Dungeon Crawler Carl", 0),
+                    location("GALATTICA.EPUB", "Guida Galattica", 0),
+                ];
+            }),
+            ("library-book-actions", |state| {
+                // Held SELECT on a Library cover opens this overlay for the
+                // selected book.
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.home_selected = 0;
+                state.apply(crate::buttons::ButtonEvent::Select);
+                // Seeded after navigating in: entering the Library route
+                // calls `refresh_library`, which rescans `books_root` from
+                // disk and would otherwise wipe book data set beforehand.
+                state.reader.books = vec![crate::reader::ReaderBook {
+                    path: "MONDO1.EPUB".into(),
+                    title: "Mondo Emerso".into(),
+                    format: crate::reader::BookFormat::Epub,
+                    size_bytes: 900_000,
+                    modified_seconds: 0,
+                }];
+                assert!(state.apply_library_select_long_press());
+            }),
+            ("library-book-bookmarks", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                let book = crate::reader::ReaderBook {
+                    path: "MONDO1.EPUB".into(),
+                    title: "Mondo Emerso".into(),
+                    format: crate::reader::BookFormat::Epub,
+                    size_bytes: 900_000,
+                    modified_seconds: 0,
+                };
+                state.reader.books = vec![book.clone()];
+                state.reader.bookmarks = vec![
+                    crate::reader::ReaderLocation {
+                        path: "MONDO1.EPUB".into(),
+                        title: "Mondo Emerso".into(),
+                        format: crate::reader::BookFormat::Epub,
+                        size_bytes: 900_000,
+                        modified_seconds: 0,
+                        page_index: 12,
+                        byte_offset: 40_000,
+                        epub_chapter: None,
+                        reading_percent: Some(17),
+                    },
+                    crate::reader::ReaderLocation {
+                        path: "MONDO1.EPUB".into(),
+                        title: "Mondo Emerso".into(),
+                        format: crate::reader::BookFormat::Epub,
+                        size_bytes: 900_000,
+                        modified_seconds: 0,
+                        page_index: 40,
+                        byte_offset: 120_000,
+                        epub_chapter: None,
+                        reading_percent: Some(52),
+                    },
+                    // A bookmark from a different book, to prove the list is
+                    // filtered rather than showing every saved bookmark.
+                    crate::reader::ReaderLocation {
+                        path: "OTHER.EPUB".into(),
+                        title: "Un Altro Libro".into(),
+                        format: crate::reader::BookFormat::Epub,
+                        size_bytes: 500_000,
+                        modified_seconds: 0,
+                        page_index: 5,
+                        byte_offset: 10_000,
+                        epub_chapter: None,
+                        reading_percent: Some(5),
+                    },
+                ];
+                state.reader.open_book_actions(book);
+                state
+                    .router
+                    .navigate_to(crate::app::ScreenRoute::LibraryBookBookmarks);
+            }),
+            ("library-deep-scroll", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.home_selected = 0;
+                state.apply(crate::buttons::ButtonEvent::Select);
+                seed_library_preview_books_long(state);
+                // Reading Now has 2 entries (0-1); Recent's rows are
+                // [2,3],[4,5],[6,7],[8,9] — index 7 sits in the third row,
+                // scrolled well past the "RECENT" header.
+                state.reader.library_selected = 7;
             }),
             ("settings-paged", |state| {
                 state.home_selected = 5;
@@ -181,8 +495,115 @@ mod tests {
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("calendar", |state| {
+                state.home_selected = 4; // Tools: Files, Dictionary, Unit Converter, Calendar, Voice Notes.
+                state.apply(crate::buttons::ButtonEvent::Select);
+                state.apply(crate::buttons::ButtonEvent::Down);
+                state.apply(crate::buttons::ButtonEvent::Down);
+                state.apply(crate::buttons::ButtonEvent::Down);
+                state.apply(crate::buttons::ButtonEvent::Select);
+            }),
+            ("tools", |state| {
+                state.home_selected = 4;
+                state.apply(crate::buttons::ButtonEvent::Select);
+            }),
+            ("statistics-empty", |state| {
                 state.home_selected = 1;
                 state.apply(crate::buttons::ButtonEvent::Select);
+            }),
+            ("statistics-with-data", |state| {
+                state.update_reading_stats_snapshot(crate::reading_stats::ReadingStatsSnapshot {
+                    available: true,
+                    today_seconds: 1_800,
+                    sessions_today: 3,
+                    week_seconds: 13_320,
+                    month_seconds: 72_000,
+                    streak_days: 5,
+                    chars_per_minute: Some(180),
+                    remaining_chapter_seconds: Some(600),
+                    remaining_book_seconds: Some(12_000),
+                    last_7_days: [
+                        crate::reading_stats::DayBar {
+                            weekday: 1,
+                            total_seconds: 1_800,
+                        },
+                        crate::reading_stats::DayBar {
+                            weekday: 2,
+                            total_seconds: 3_600,
+                        },
+                        crate::reading_stats::DayBar {
+                            weekday: 3,
+                            total_seconds: 0,
+                        },
+                        crate::reading_stats::DayBar {
+                            weekday: 4,
+                            total_seconds: 2_700,
+                        },
+                        crate::reading_stats::DayBar {
+                            weekday: 5,
+                            total_seconds: 900,
+                        },
+                        crate::reading_stats::DayBar {
+                            weekday: 6,
+                            total_seconds: 2_400,
+                        },
+                        crate::reading_stats::DayBar {
+                            weekday: 0,
+                            total_seconds: 1_920,
+                        },
+                    ],
+                    books_this_month: vec![
+                        crate::reading_stats::BookMonthStats {
+                            book_id: 1,
+                            total_seconds: 8_280,
+                        },
+                        crate::reading_stats::BookMonthStats {
+                            book_id: 2,
+                            total_seconds: 5_040,
+                        },
+                    ],
+                });
+                state.reader.recent = vec![
+                    crate::reader::ReaderLocation {
+                        path: "GATSBY.TXT".into(),
+                        title: "Il nome del vento".into(),
+                        format: crate::reader::BookFormat::Text,
+                        size_bytes: 300_000,
+                        modified_seconds: 0,
+                        page_index: 0,
+                        byte_offset: 186_000,
+                        epub_chapter: None,
+                        reading_percent: Some(62),
+                    },
+                    crate::reader::ReaderLocation {
+                        path: "HAILMARY.TXT".into(),
+                        title: "Project Hail Mary".into(),
+                        format: crate::reader::BookFormat::Text,
+                        size_bytes: 400_000,
+                        modified_seconds: 0,
+                        page_index: 0,
+                        byte_offset: 400_000,
+                        epub_chapter: None,
+                        reading_percent: Some(100),
+                    },
+                ];
+                let ids: Vec<u32> = state
+                    .reader
+                    .recent
+                    .iter()
+                    .map(|location| {
+                        crate::reading_stats::book_id_for(
+                            &location.path,
+                            location.size_bytes,
+                            location.modified_seconds,
+                        )
+                    })
+                    .collect();
+                if let Some(snapshot_books) = Some(&mut state.reading_stats.books_this_month) {
+                    for (entry, id) in snapshot_books.iter_mut().zip(ids) {
+                        entry.book_id = id;
+                    }
+                }
+                state.home_selected = 1;
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("reader-preferences", |state| {
@@ -216,14 +637,17 @@ mod tests {
                             crate::reader::ReaderPageLine {
                                 text: "In my younger and more vulnerable years my".into(),
                                 paragraph_end: false,
+                                image: None,
                             },
                             crate::reader::ReaderPageLine {
                                 text: "father gave me some advice that I have been".into(),
                                 paragraph_end: false,
+                                image: None,
                             },
                             crate::reader::ReaderPageLine {
                                 text: "turning over in my mind ever since.".into(),
                                 paragraph_end: true,
+                                image: None,
                             },
                         ],
                     }],
@@ -260,14 +684,17 @@ mod tests {
                             crate::reader::ReaderPageLine {
                                 text: "In my younger and more vulnerable years my".into(),
                                 paragraph_end: false,
+                                image: None,
                             },
                             crate::reader::ReaderPageLine {
                                 text: "father gave me some advice that I have been".into(),
                                 paragraph_end: false,
+                                image: None,
                             },
                             crate::reader::ReaderPageLine {
                                 text: "turning over in my mind ever since.".into(),
                                 paragraph_end: true,
+                                image: None,
                             },
                         ],
                     }],
@@ -276,6 +703,75 @@ mod tests {
                     epub_document_cache_pending: false,
                 });
                 state.orientation = crate::orientation::DisplayOrientation::Landscape;
+                state
+                    .router
+                    .navigate_to(crate::app::ScreenRoute::ReaderPage);
+            }),
+            // Visual check for the inline-image spike: the book path does
+            // not exist on this host, so `draw_reader_inline_image` hits its
+            // extraction-failure path and this exercises
+            // `draw_inline_image_placeholder` end to end (bordered box +
+            // alt text) exactly as a real corrupt/unsupported embedded
+            // image would on device, without needing a real EPUB fixture.
+            ("reader-page-with-image", |state| {
+                state.reader.session = Some(crate::reader::ReaderSession {
+                    book: crate::reader::ReaderBook {
+                        path: "NOWHERE.EPUB".into(),
+                        title: "An Illustrated Book".into(),
+                        format: crate::reader::BookFormat::Epub,
+                        size_bytes: 900_000,
+                        modified_seconds: 0,
+                    },
+                    encoding: crate::reader::TextEncoding::Utf8,
+                    epub_document: None,
+                    layout: crate::reader::ReaderPreferences::default().layout(),
+                    current_page: 12,
+                    page_number_base: 0,
+                    page_offsets: vec![0; 40],
+                    indexed_through: 300_000,
+                    index_complete: true,
+                    cache: vec![crate::reader::ReaderCachedPage {
+                        page_index: 12,
+                        byte_offset: 0,
+                        next_byte_offset: 0,
+                        lines: {
+                            let mut lines = vec![
+                                crate::reader::ReaderPageLine {
+                                    text: "A chapter with a figure follows.".into(),
+                                    paragraph_end: true,
+                                    image: None,
+                                },
+                                crate::reader::ReaderPageLine {
+                                    text: String::new(),
+                                    paragraph_end: false,
+                                    image: Some(crate::reader::ReaderPageImage {
+                                        href: "OEBPS/images/fig1.jpg".into(),
+                                        alt: "Diagram of the lighthouse mechanism".into(),
+                                        slot_span: 6,
+                                        box_width: 752,
+                                        box_height: 208,
+                                    }),
+                                },
+                            ];
+                            for _ in 1..6 {
+                                lines.push(crate::reader::ReaderPageLine {
+                                    text: String::new(),
+                                    paragraph_end: false,
+                                    image: None,
+                                });
+                            }
+                            lines.push(crate::reader::ReaderPageLine {
+                                text: "Text resumes here after the image.".into(),
+                                paragraph_end: true,
+                                image: None,
+                            });
+                            lines
+                        },
+                    }],
+                    epub_chapter_pages: Vec::new(),
+                    epub_pending_chapter: None,
+                    epub_document_cache_pending: false,
+                });
                 state
                     .router
                     .navigate_to(crate::app::ScreenRoute::ReaderPage);
@@ -317,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn power_key_short_menu_route_renders_and_returns_to_previous_screen() {
+    fn power_key_long_menu_route_renders_and_returns_to_previous_screen() {
         let mut frame = FrameBuffer::new_white();
         let mut state = AppState::default();
         state.router.navigate_to(ScreenRoute::Dictionary);

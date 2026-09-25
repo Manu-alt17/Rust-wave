@@ -14,7 +14,7 @@ use std::{
 
 use log::{info, warn};
 
-use crate::buttons::ButtonEvent;
+use crate::{buttons::ButtonEvent, regional::Locale};
 
 /// VFS mount point used by the ESP-IDF FAT filesystem wrapper.
 pub const SD_MOUNT_POINT: &str = "/sdcard";
@@ -58,6 +58,23 @@ impl StorageEntryKind {
             Self::RetryScan => "RETRY",
             Self::Directory => "DIR",
             Self::File => "FILE",
+        }
+    }
+
+    /// Locale-aware sibling of [`Self::badge`] for on-screen display.
+    /// `badge` itself is left untouched in case other code relies on its
+    /// stable English output.
+    #[must_use]
+    pub const fn badge_i18n(self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => self.badge(),
+            Locale::Italian => match self {
+                Self::BackToHome => "TORNA",
+                Self::ParentDirectory => "SU",
+                Self::RetryScan => "RIPROVA",
+                Self::Directory => "CART",
+                Self::File => "FILE",
+            },
         }
     }
 }

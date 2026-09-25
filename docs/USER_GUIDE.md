@@ -10,8 +10,8 @@ This guide describes the Rustmix Wave v1.0.0 user interface as shown by the refe
 | Rotary SELECT | Open the highlighted item, activate an action, or advance an editor field |
 | Hold SELECT | Contextual secondary action. On grid keyboards it toggles `NAV H` / `NAV V`. In Calendar it opens the daily agenda or creates a personal event from the agenda. In Sudoku and Minesweeper it toggles the active movement axis or cancels an edit/action mode. |
 | BOOT | Hierarchical Back. On editors it cancels and returns without saving. |
-| Power short | Open the display-maintenance menu. Select **Clear ghosting now** for a full e-paper base refresh, or select **Cancel**. |
-| Power long | Enter random sleep-image mode. After the wake guard quiet interval, press Power briefly to restore the previous screen. |
+| Power short | Show a random sleep image and power the board off via the PMIC. After the wake guard quiet interval, press Power briefly to turn it back on and restore the previous screen. |
+| Power long | Open the display-maintenance menu. Select **Clear ghosting now** for a full e-paper base refresh, or select **Cancel**. |
 
 The bottom footer on each screen repeats the controls that are valid in that context.
 
@@ -454,20 +454,20 @@ Network shows Wi-Fi, SNTP, SSID, IPv4 address, RSSI, how many networks are saved
 | Control | Action |
 | --- | --- |
 | Rotary up / down | Move between Configure via phone, Saved networks and Provisioning details |
-| SELECT on Configure via phone | Open the device's own hotspot and Wi-Fi setup portal |
+| SELECT on Configure via phone | Open the same portal as the Home **Upload** tile |
 | SELECT on Saved networks | View and forget saved networks |
 | SELECT on Provisioning details | Open network details |
 | BOOT | Return to Settings |
 
-Configure via phone replaces typing an SSID and password on the device. Selecting it starts a temporary hotspot with a freshly generated name and password, plus a small web portal, both shown on screen along with a single QR code: scan it with a phone camera to join the hotspot automatically. The device also answers as a captive portal, so most phones then open the setup page on their own (as a "Sign in to network" prompt or an automatically launched browser); if a phone doesn't offer that, open its displayed address in a browser instead. The portal lists nearby networks the device found (scanned while the hotspot runs) and any already-saved networks. Tap a network, type its password with the phone's own keyboard, and the device attempts a real connection before saving it — only a network that actually connects gets written to `WIFI.TXT`. Up to 8 networks can be saved this way; the device tries them in order at boot until one connects, so both a home and a travel router can be kept side by side. Changing a saved network's password is done the same way: add it again from the portal with the new password. SELECT on the Configure via phone screen (or BOOT) stops the hotspot and reconnects using the saved list.
+Configure via phone is a shortcut into the same portal the Home **Upload** tile opens (see "Wi-Fi transfer and setup portal" below) — there is only one portal, not two. If no Wi-Fi is joined yet, opening it starts a temporary hotspot with a freshly generated name and password, both shown on screen along with a single QR code: scan it with a phone camera to join the hotspot automatically. The device also answers as a captive portal, so most phones then open the portal on their own (as a "Sign in to network" prompt or an automatically launched browser); if a phone doesn't offer that, open its displayed address in a browser instead. Enter the six-digit code shown on screen, then use the portal's Wi-Fi tab: it lists nearby networks the device found (scanned while the hotspot runs) and any already-saved networks. Tap a network, type its password with the phone's own keyboard, and the device attempts a real connection before saving it — only a network that actually connects gets written to `WIFI.TXT`. Up to 8 networks can be saved this way; the device tries them in order at boot until one connects, so both a home and a travel router can be kept side by side. Changing a saved network's password is done the same way: add it again from the portal's Wi-Fi tab with the new password. SELECT on the portal screen (or BOOT) stops it and, if it was reachable via the hotspot, reconnects using the saved list.
 
-Saved networks lists the SSIDs already in `WIFI.TXT`, flagging whichever one is currently connected. Rotary up / down moves through the list; SELECT arms a "forget" confirmation on the highlighted network, and SELECT again removes it. Moving the selection cancels a pending confirmation. This screen is read-only otherwise — adding a network or changing its password happens through Configure via phone.
+Saved networks lists the SSIDs already in `WIFI.TXT`, flagging whichever one is currently connected. Rotary up / down moves through the list; SELECT arms a "forget" confirmation on the highlighted network, and SELECT again removes it. Moving the selection cancels a pending confirmation. This screen is read-only otherwise — adding a network or changing its password happens through the portal's Wi-Fi tab.
 
-### Wi-Fi transfer portal
+### Wi-Fi transfer and setup portal
 
 <img src="../screenshots/wifi-transfer.jpg" width="520" alt="Rustmix Wave Wi-Fi transfer browser portal">
 
-The Wi-Fi transfer portal is fully independent of the Network settings: it is started from the Home **Upload** tile, which jumps straight into the portal and starts it. SELECT on the portal screen stops it and returns to Home; BOOT does the same. From a device on the same LAN, open the displayed URL and enter the six-digit session code. The portal lists the `/RUSTMIX` tree and supports bounded upload, download, rename, directory creation, and deletion operations while protecting internal configuration files.
+One portal handles both file transfer and Wi-Fi setup, started either from the Home **Upload** tile or the Network **Configure via phone** shortcut — both open the exact same running portal. SELECT on the portal screen stops it and returns to Home; BOOT does the same. Where it is reachable depends on whether Wi-Fi is already joined: if so, it binds on the existing LAN address with no network changes, so a PC or phone already on the same Wi-Fi just opens that address, no need to switch networks; if not, it bootstraps the device's own hotspot first (see Configure via phone above) and is reachable there instead. Either way, open the displayed address and enter the six-digit session code shown on screen — the same code gates every tab. The Files/Books/Wallpaper/Magic Token tabs list the `/RUSTMIX` tree and support bounded upload, download, rename, directory creation, and deletion operations while protecting internal configuration files; the Wi-Fi tab lists nearby and saved networks and lets you forget one, add one, or change a saved one's password in either mode. Doing this from the LAN address (not the hotspot) disconnects the device from its current network to try the new one: it returns automatically to the current network if the attempt fails, but if it succeeds the browser session on the old address is lost and the portal must be reopened at the device's new address — the same trade-off as changing Wi-Fi from any router's own admin page.
 
 ### Weather
 
@@ -485,13 +485,13 @@ Weather uses the configured Open-Meteo profile, bounded retries, and a last-know
 
 ## 7. Power-key maintenance and sleep
 
-A short Power press opens a display-maintenance menu from any ordinary UI route. Select **Clear ghosting now** to request the shared global-base refresh path. Select **Cancel** or BOOT to return without refreshing.
+A long Power press opens a display-maintenance menu from any ordinary UI route. Select **Clear ghosting now** to request the shared global-base refresh path. Select **Cancel** or BOOT to return without refreshing.
 
-A long Power press enters sleep-image mode:
+A short Power press powers the board off:
 
 <img src="../screenshots/sleep.jpg" width="360" alt="Sleep image mode">
 
-The firmware selects a random image from `/sdcard/RUSTMIX/SLEEP`, suspends network activity, sleeps the panel, retains the prior route, and uses a wake guard so the entry press is not mistaken for an immediate wake press.
+The firmware selects a random image from `/sdcard/RUSTMIX/SLEEP`, suspends network activity, sleeps the panel, then cuts power at the AXP2101 PMIC (real MCU deep sleep is the automatic fallback if the PMIC power-off cannot be armed). Pressing Power again turns the board back on, restores the prior route, and resumes the last open book in Reader if one was active; a wake guard makes sure the same press that requested the shutdown is never mistaken for the press that turns it back on.
 
 ## 8. Screenshot index
 

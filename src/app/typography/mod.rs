@@ -137,6 +137,14 @@ impl UiTextStyle {
         Self { font, color }
     }
 
+    /// Same strike, a different ink color — used to invert a line of text
+    /// (e.g. white-on-black) without needing the caller to know the
+    /// underlying font.
+    #[must_use]
+    pub const fn with_color(self, color: BinaryColor) -> Self {
+        Self { color, ..self }
+    }
+
     #[must_use]
     pub const fn line_height(self) -> u8 {
         self.font.line_height
@@ -259,24 +267,27 @@ fn draw_glyph<D>(
 where
     D: DrawTarget<Color = BinaryColor>,
 {
-    let stride = (usize::from(glyph.width) + 7) / 8;
+    let width = usize::from(glyph.width);
+    let stride = width.div_ceil(8);
     let offset = glyph.offset as usize;
-    for row in 0..usize::from(glyph.height) {
-        for column in 0..usize::from(glyph.width) {
-            let byte = style.font.bitmap[offset + row * stride + column / 8];
-            if byte & (0x80 >> (column % 8)) == 0 {
-                continue;
+    let origin_x = baseline.x + i32::from(glyph.left);
+    let origin_y = baseline.y + i32::from(glyph.top);
+    // One `draw_iter` call per glyph (not per ink pixel), so the target's
+    // per-call setup -- e.g. `OrientedFrameBuffer`'s orientation dispatch --
+    // runs once per glyph.
+    let ink = (0..usize::from(glyph.height)).flat_map(move |row| {
+        let row_bits = &style.font.bitmap[offset + row * stride..offset + (row + 1) * stride];
+        (0..width).filter_map(move |column| {
+            if row_bits[column / 8] & (0x80 >> (column % 8)) == 0 {
+                return None;
             }
-            let point = Point::new(
-                baseline.x + i32::from(glyph.left) + column as i32,
-                baseline.y + i32::from(glyph.top) + row as i32,
-            );
-            if bounds.map_or(true, |clip| clip.contains(point)) {
-                display.draw_iter(core::iter::once(Pixel(point, style.color)))?;
-            }
-        }
-    }
-    Ok(())
+            let point = Point::new(origin_x + column as i32, origin_y + row as i32);
+            bounds
+                .map_or(true, |clip| clip.contains(point))
+                .then_some(Pixel(point, style.color))
+        })
+    });
+    display.draw_iter(ink)
 }
 
 /// Resolve a firmware-local bitmap strike for one family, profile and role.
@@ -405,7 +416,7 @@ mod tests {
     fn reader_strikes_with_extra_glyphs_render_the_real_accented_letter() {
         let style = crate::app::reader_typography::reader_body_style(
             crate::reader::BookFont::Serif,
-            crate::reader::BookFontSize::Medium,
+            crate::reader::BookFontSize::Large,
             crate::reader::ReadingTheme::Classic,
         );
         assert!(style.font.extra.iter().any(|(ch, _)| *ch == 'à'));

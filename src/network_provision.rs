@@ -342,6 +342,14 @@ setInterval(loadScan,5000);
             let mut server = EspHttpServer::new(&Configuration {
                 http_port: 80,
                 stack_size: NETWORK_PROVISION_SERVER_STACK_BYTES,
+                // Task stack in PSRAM instead of internal RAM (ESP-IDF's
+                // default): the hotspot portal ran internal RAM out right
+                // after start (pthread_mutex_init ENOMEM, then a panic).
+                // Safe here because no handler writes the internal flash
+                // (NVS/OTA), which would disable the cache a PSRAM stack
+                // lives behind; the same holds for the firmware's PSRAM
+                // worker threads (`runtime_worker`).
+                task_caps: esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_8BIT,
                 max_open_sockets: 4,
                 max_sessions: 4,
                 max_uri_handlers: 8,

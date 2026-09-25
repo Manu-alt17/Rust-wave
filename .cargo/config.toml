@@ -1,3 +1,12 @@
+[env]
+# embuild (esp-idf-sys's build backend) otherwise *guesses* the project
+# directory by popping OUT_DIR six levels, to resolve CONFIG_PARTITION_TABLE_CUSTOM_FILENAME
+# (partitions.csv) and similar project-relative paths. That guess broke for
+# a release-profile build in this project ("partitions.csv not found"), so
+# pin it explicitly instead, per embuild's own documented escape hatch
+# (embuild::cargo::workspace_dir doc comment).
+CARGO_WORKSPACE_DIR = { value = "", relative = true }
+
 [build]
 target = "xtensa-esp32s3-espidf"
 

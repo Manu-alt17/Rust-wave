@@ -1,17 +1,54 @@
-# Rust main task: leave margin for rendering and log formatting.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+# Rust main task: leave margin for rendering and log formatting, plus a
+# reserved budget for OTA install (see `ota::espidf::install_update_on_main_task`
+# in src/ota.rs). That operation used to run on its own short-lived 64 KiB
+# worker thread, but by the time an install is actually requested, Wi-Fi,
+# reader background warm-up and the OTA check's own TLS handshake have
+# already fragmented internal SRAM below what a *fresh* 64 KiB stack needs --
+# confirmed in the field (repeatable ENOMEM on the worker spawn). Reserving
+# that budget for the main task itself, here at boot before anything else
+# can fragment memory, guarantees it stays available instead of depending on
+# a contiguous block still existing later under pressure. Normal main-task
+# usage measured well under the original 16384 in the field (~7 KiB
+# high-water observed), so this is 16384 (original margin) + 65536 (install's
+# former worker budget) + ~16 KiB extra safety margin.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=98304
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
 
 # Battery optimization: allow automatic CPU frequency scaling (DFS) during
-# FreeRTOS idle time (the main loop's per-iteration delay). Automatic light
-# sleep is deliberately left off in esp_pm_configure() (see main.rs): it
-# shares the RTC/GPIO domain that the real hardware deep-sleep path arms
-# GPIO5 (SELECT) in, and the two were observed to conflict.
-# esp_pm_configure() at boot sets the actual min/max frequency policy.
+# FreeRTOS idle time (the main loop's per-iteration delay).
+# esp_pm_configure() at boot sets the actual min/max frequency policy and
+# also requests automatic light sleep (main.rs); mcu_deep_sleep::espidf::enter
+# switches light sleep off right before real hardware deep sleep, where the
+# two were observed to conflict (they share the RTC/GPIO domain GPIO5
+# SELECT is armed in). Light sleep only engages when every task stays idle
+# for at least CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP ticks (default 3, i.e.
+# 30 ms at 100 Hz); the PM-profiling build (sdkconfig.defaults.pm-profiling,
+# see docs/PHYSICAL_SMOKE_TEST.md) measures whether it actually does.
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
+# The USB Serial/JTAG console cannot work during, or after waking from,
+# light sleep. While a USB host is attached (SOF packets every 1 ms, checked
+# from the FreeRTOS tick hook), hold ESP-IDF's NO_LIGHT_SLEEP lock so the
+# serial monitor and USB flashing keep working; on battery or a wall
+# charger (no host, no SOF) automatic light sleep is allowed.
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
+
+# Note: on ESP32-S3, ESP_SLEEP_GPIO_RESET_WORKAROUND (default y) forces
+# PM_SLP_DISABLE_GPIO=y, which isolates every GPIO during automatic light
+# sleep -- floating the e-paper RST/DC/CS lines and dropping the SD bus
+# pull-ups. It cannot be turned off from here, so the firmware switches the
+# per-pin sleep configuration off at runtime once all drivers are up (see
+# `keep_gpio_state_in_light_sleep` in src/main.rs).
+
+# Boot and busy-time CPU clock. Matches CPU_MAX_FREQ_MHZ in
+# src/mcu_deep_sleep.rs, the DFS ceiling esp_pm_configure() applies at boot:
+# running tasks hold ESP-IDF's CPU_FREQ_MAX "rtos" lock, so compute-bound
+# work (pagination, rendering, image decode) runs at 240 MHz, and idle time
+# still scales down to the 40 MHz floor.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
 # Waveshare ESP32-S3-WROOM-1-N16R8 module: 16 MB flash, octal PSRAM.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
@@ -21,6 +58,14 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# Keep the ~8 KB RTC FAST memory region out of the heap. It is not
+# DMA-reachable, yet it satisfies ordinary internal allocations: an SD read
+# buffer landing there (seen with fs::read of a 6570-byte .THB once internal
+# SRAM is fragmented) gets its whole sectors DMA'd nowhere while the read
+# still reports success, so cover thumbnails and EPUB text came back as stale
+# heap bytes or zero-filled sectors.
+CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n
 
 # Embed a semantic product milestone version in the ESP-IDF app descriptor.
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
@@ -34,8 +79,38 @@ CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_DEFAULT_CERTIFICATE_BUNDLE=y
 
+# mbedTLS internal-heap placement: by default every mbedTLS allocation
+# (SSL in/out record buffers, and the certificate-bundle's PK-parsing
+# buffers used during chain verification -- see esp_crt_bundle.c) is
+# pinned to internal SRAM regardless of PSRAM availability. Measured in
+# the field: a single OTA release-metadata check (fetch_latest_release in
+# src/ota.rs) drove heap-internal-minimum-free-bytes down to 1123 bytes
+# and permanently shrank the largest internal free block from 31744 to
+# 25600 -- this is the actual source of the squeeze, not worker stacks
+# (those already run in PSRAM via run_named_worker_in_psram). PSRAM sits
+# at ~8MB free throughout, so moving these buffers there removes the
+# pressure. Accepted trade-off: mbedTLS internal state (session buffers,
+# cert-parse scratch) then lives on PSRAM, an external/physically-probable
+# bus, instead of on-die SRAM -- acceptable here since the only HTTPS
+# destinations (GitHub releases/firmware, Open-Meteo) carry no user
+# credentials or secrets. Affects src/ota.rs (both fetch_latest_release
+# and install_update) and src/weather.rs (fetch_open_meteo).
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Also free the TX/RX SSL buffers as soon as each is no longer needed
+# instead of holding both for the connection's lifetime -- no downside,
+# reduces steady-state internal-RAM-adjacent PSRAM churn further.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
 # Embedded browser requests commonly exceed the ESP-IDF 512-byte default.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# OTA: two app slots (ota_0/ota_1) selected via otadata -- see partitions.csv.
+# Rollback support: a freshly flashed OTA image stays "unverified" until the
+# firmware itself calls esp_ota_mark_app_valid_cancel_rollback() (see
+# ota::espidf::mark_running_slot_valid in main.rs). If the device resets or
+# watchdogs before that call, the bootloader automatically reboots into the
+# previous, already-valid slot instead of retrying the new one.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

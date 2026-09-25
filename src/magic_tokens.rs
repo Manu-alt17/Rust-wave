@@ -285,10 +285,7 @@ fn load_tile(path: &Path) -> Option<MagicTile> {
 /// shape `cover_cache.rs` uses for its own `.THB` thumbnail cache.
 #[must_use]
 pub fn parse_token_bytes(bytes: &[u8]) -> Option<MagicTile> {
-    if bytes.len() < TOKEN_HEADER_BYTES
-        || bytes[0..4] != TOKEN_MAGIC
-        || bytes[4] != TOKEN_VERSION
-    {
+    if bytes.len() < TOKEN_HEADER_BYTES || bytes[0..4] != TOKEN_MAGIC || bytes[4] != TOKEN_VERSION {
         return None;
     }
     let width = u16::from_le_bytes([bytes[5], bytes[6]]);
@@ -381,14 +378,8 @@ mod tests {
     #[test]
     fn full_and_half_tile_paths_are_fat83_safe() {
         let root = PathBuf::from("/sdcard/RUSTMIX/MAGIC");
-        assert_eq!(
-            full_tile_path(&root, "A1B2C3"),
-            root.join("A1B2C3_F.TOK")
-        );
-        assert_eq!(
-            half_tile_path(&root, "A1B2C3"),
-            root.join("A1B2C3_H.TOK")
-        );
+        assert_eq!(full_tile_path(&root, "A1B2C3"), root.join("A1B2C3_F.TOK"));
+        assert_eq!(half_tile_path(&root, "A1B2C3"), root.join("A1B2C3_H.TOK"));
     }
 
     #[test]

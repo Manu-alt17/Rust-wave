@@ -110,7 +110,10 @@ mod tests {
 
     #[test]
     fn reserved_characters_are_escaped() {
-        assert_eq!(escape_wifi_qr_field("a;b,c:d\\e\"f"), "a\\;b\\,c\\:d\\\\e\\\"f");
+        assert_eq!(
+            escape_wifi_qr_field("a;b,c:d\\e\"f"),
+            "a\\;b\\,c\\:d\\\\e\\\"f"
+        );
     }
 
     #[test]

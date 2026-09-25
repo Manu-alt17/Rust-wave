@@ -10,12 +10,14 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
     },
     build_info::{FIRMWARE_VERSION, PRODUCT_NAME},
     orientation::OrientedFrameBuffer,
+    panel_refresh::PANEL_PARTIAL_REFRESH_LIMIT,
 };
 
 /// Page 1/3: product firmware and display contract.
@@ -23,25 +25,85 @@ pub fn render_device_info(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
-    let partials = format!("{} / 24", state.partial_refreshes);
+    let partials = format!("{} / {PANEL_PARTIAL_REFRESH_LIMIT}", state.partial_refreshes);
 
-    draw_header(display, state, "DEVICE INFO")?;
+    // "Info" reads the same in English and Italian chrome, so this header
+    // does not need a locale-branched `t()` call.
+    draw_header(display, state, "INFO")?;
 
-    Text::new("Firmware", Point::new(22, 118), heading).draw(display)?;
-    line(display, 166, "Product", PRODUCT_NAME, body)?;
-    line(display, 206, "Version", FIRMWARE_VERSION, body)?;
-    line(display, 246, "Milestone", "Readability repair", body)?;
+    Text::new(
+        t(locale, "Firmware", "Firmware"),
+        Point::new(22, 118),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        166,
+        t(locale, "Product", "Prodotto"),
+        PRODUCT_NAME,
+        body,
+    )?;
+    line(
+        display,
+        206,
+        t(locale, "Version", "Versione"),
+        FIRMWARE_VERSION,
+        body,
+    )?;
+    line(
+        display,
+        246,
+        t(locale, "Milestone", "Milestone"),
+        t(locale, "Readability repair", "Correzione leggibilità"),
+        body,
+    )?;
 
-    Text::new("Display", Point::new(22, 326), heading).draw(display)?;
-    line(display, 374, "Logical UI", "480 x 800 portrait", body)?;
-    line(display, 414, "Native panel", "800 x 480 mono", body)?;
-    line(display, 454, "Framebuffer", "48,000 bytes / 1-bpp", body)?;
-    line(display, 494, "Partial chain", &partials, body)?;
+    Text::new(
+        t(locale, "Display", "Display"),
+        Point::new(22, 326),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        374,
+        t(locale, "Logical UI", "UI logica"),
+        t(locale, "480 x 800 portrait", "480 x 800 verticale"),
+        body,
+    )?;
+    line(
+        display,
+        414,
+        t(locale, "Native panel", "Pannello nativo"),
+        t(locale, "800 x 480 mono", "800 x 480 mono"),
+        body,
+    )?;
+    line(
+        display,
+        454,
+        t(locale, "Framebuffer", "Framebuffer"),
+        t(locale, "48,000 bytes / 1-bpp", "48.000 byte / 1-bpp"),
+        body,
+    )?;
+    line(
+        display,
+        494,
+        t(locale, "Partial chain", "Catena parziale"),
+        &partials,
+        body,
+    )?;
 
-    draw_action(display, 594, "Board services", body)?;
-    draw_footer(display, state.display, "SELECT NEXT  BOOT BACK")?;
+    draw_action(
+        display,
+        594,
+        t(locale, "Board services", "Servizi scheda"),
+        body,
+    )?;
+    draw_footer(display, state, t(locale, "SELECT NEXT", "SELECT AVANTI"))?;
     Ok(())
 }
 
@@ -50,16 +112,40 @@ pub fn render_device_info_board(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
 
-    draw_header(display, state, "DEVICE INFO")?;
+    // "Info" reads the same in English and Italian chrome, so this header
+    // does not need a locale-branched `t()` call.
+    draw_header(display, state, "INFO")?;
 
-    Text::new("SDMMC storage", Point::new(22, 118), heading).draw(display)?;
-    line(display, 166, "Mount", state.storage.status_label(), body)?;
-    line(display, 206, "Mode", "4-bit FAT / read-only UI", body)?;
-    Text::new("Pins", Point::new(22, 246), body).draw(display)?;
+    Text::new(
+        t(locale, "SDMMC storage", "Archiviazione SDMMC"),
+        Point::new(22, 118),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        166,
+        t(locale, "Mount", "Montaggio"),
+        state.storage.status_label(),
+        body,
+    )?;
+    line(
+        display,
+        206,
+        t(locale, "Mode", "Modalità"),
+        t(
+            locale,
+            "4-bit FAT / read-only UI",
+            "FAT a 4 bit / UI sola lettura",
+        ),
+        body,
+    )?;
+    Text::new(t(locale, "Pins", "Pin"), Point::new(22, 246), body).draw(display)?;
     Text::new(
         "CLK16 CMD17 D0=15 D1=7 D2=8 D3=18",
         Point::new(22, 280),
@@ -67,8 +153,13 @@ pub fn render_device_info_board(
     )
     .draw(display)?;
 
-    draw_action(display, 348, "Runtime services", body)?;
-    draw_footer(display, state.display, "SELECT NEXT  BOOT BACK")?;
+    draw_action(
+        display,
+        348,
+        t(locale, "Runtime services", "Servizi runtime"),
+        body,
+    )?;
+    draw_footer(display, state, t(locale, "SELECT NEXT", "SELECT AVANTI"))?;
     Ok(())
 }
 
@@ -77,38 +168,106 @@ pub fn render_device_info_runtime(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
     let timezone = state.regional.timezone_label_for_rtc(state.board.rtc);
 
-    draw_header(display, state, "DEVICE INFO")?;
+    // "Info" reads the same in English and Italian chrome, so this header
+    // does not need a locale-branched `t()` call.
+    draw_header(display, state, "INFO")?;
 
-    Text::new("Runtime services", Point::new(22, 118), heading).draw(display)?;
-    line(display, 166, "Network", state.network.home_badge(), body)?;
-    line(display, 206, "Weather", state.weather.home_badge(), body)?;
-    line(display, 246, "RTC alarms", state.alarms.home_badge(), body)?;
-    line(display, 286, "Display zone", &timezone, body)?;
+    Text::new(
+        t(locale, "Runtime services", "Servizi runtime"),
+        Point::new(22, 118),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        166,
+        t(locale, "Network", "Rete"),
+        state.network.home_badge(),
+        body,
+    )?;
+    line(
+        display,
+        206,
+        t(locale, "Weather", "Meteo"),
+        state.weather.home_badge(),
+        body,
+    )?;
+    line(
+        display,
+        246,
+        t(locale, "RTC alarms", "Sveglie RTC"),
+        state.alarms.home_badge(),
+        body,
+    )?;
+    line(
+        display,
+        286,
+        t(locale, "Display zone", "Fuso orario"),
+        &timezone,
+        body,
+    )?;
     line(
         display,
         326,
-        "Temperature",
+        t(locale, "Temperature", "Temperatura"),
         state.regional.temperature_unit.marker(),
         body,
     )?;
 
-    Text::new("Stable ownership", Point::new(22, 404), heading).draw(display)?;
-    line(display, 452, "EPD busy", "GPIO3 / ALDO3 managed", body)?;
-    line(display, 492, "Buttons", "UP4 SELECT5 DOWN6", body)?;
-    line(display, 532, "Power key", "Short menu / hold sleep", body)?;
-    line(display, 572, "RTC alarm", "GPIO45 active-low", body)?;
     Text::new(
-        "Press BOOT to return to page 2.",
+        t(locale, "Stable ownership", "Risorse hardware stabili"),
+        Point::new(22, 404),
+        heading,
+    )
+    .draw(display)?;
+    line(
+        display,
+        452,
+        t(locale, "EPD busy", "EPD busy"),
+        t(locale, "GPIO3 / ALDO3 managed", "GPIO3 / gestito da ALDO3"),
+        body,
+    )?;
+    line(
+        display,
+        492,
+        t(locale, "Buttons", "Pulsanti"),
+        "UP4 SELECT5 DOWN6",
+        body,
+    )?;
+    line(
+        display,
+        532,
+        t(locale, "Power key", "Tasto accensione"),
+        t(
+            locale,
+            "Hold menu / short sleep",
+            "Pressione lunga menu / breve sospensione",
+        ),
+        body,
+    )?;
+    line(
+        display,
+        572,
+        t(locale, "RTC alarm", "Sveglia RTC"),
+        t(locale, "GPIO45 active-low", "GPIO45 attivo basso"),
+        body,
+    )?;
+    Text::new(
+        t(
+            locale,
+            "Press BOOT to return to page 2.",
+            "Premere BOOT per tornare alla pagina 2.",
+        ),
         Point::new(22, 634),
         detail,
     )
     .draw(display)?;
-    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
 }
 

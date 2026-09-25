@@ -51,7 +51,7 @@ The generic installer preserves an existing Dictionary and Calendar tree. Use th
 
 ## Wi-Fi
 
-The normal way to add and manage Wi-Fi networks is on-device: Settings ▸ Network ▸ Configure via phone opens the device's own hotspot and a small web page, reached by scanning a single on-screen QR code to join the hotspot — the page then opens on its own via captive-portal detection. From there, pick a network the device found nearby (or type one in) and enter its password with your phone's keyboard — no typing on the device itself. Up to 8 networks can be saved; Settings ▸ Network ▸ Saved networks lists them and can forget one. See `docs/USER_GUIDE.md` for the full walkthrough.
+The normal way to add and manage Wi-Fi networks is on-device: Settings ▸ Network ▸ Configure via phone (same portal as the Home ▸ Upload tile) opens the device's own hotspot and a small web page, reached by scanning a single on-screen QR code to join the hotspot — the page then opens on its own via captive-portal detection. Enter the six-digit code shown on screen, then use the portal's Wi-Fi tab: pick a network the device found nearby (or type one in) and enter its password with your phone's keyboard — no typing on the device itself. Up to 8 networks can be saved; Settings ▸ Network ▸ Saved networks lists them and can forget one. See `docs/USER_GUIDE.md` for the full walkthrough.
 
 Editing `/RUSTMIX/WIFI.TXT` by hand remains a supported fallback for headless or bulk provisioning:
 

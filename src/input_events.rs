@@ -5,10 +5,15 @@
 //! here; the main loop is the sole consumer, draining one event per tick and
 //! applying it through the normal UI path. This mirrors the BLE callback
 //! boundary in `rustmix_remote::queue::RemoteEventQueue`.
+//!
+//! The main loop blocks in [`InputEventQueue::wait_timeout`] between
+//! iterations, so a press wakes it immediately while an idle device can
+//! sleep for long stretches (see `MAIN_LOOP_IDLE_WAIT_MS` in `main.rs`).
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
+    time::Duration,
 };
 
 use crate::buttons::ButtonEvent;
@@ -29,7 +34,7 @@ pub enum InputEvent {
 
 #[derive(Clone, Debug)]
 pub struct InputEventQueue {
-    inner: Arc<Mutex<VecDeque<InputEvent>>>,
+    inner: Arc<(Mutex<VecDeque<InputEvent>>, Condvar)>,
     capacity: usize,
 }
 
@@ -43,7 +48,10 @@ impl InputEventQueue {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity.max(1)))),
+            inner: Arc::new((
+                Mutex::new(VecDeque::with_capacity(capacity.max(1))),
+                Condvar::new(),
+            )),
             capacity: capacity.max(1),
         }
     }
@@ -54,20 +62,35 @@ impl InputEventQueue {
     /// reachable under sustained, pathological button mashing far beyond
     /// normal use.
     pub fn push(&self, event: InputEvent) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.len() >= self.capacity {
-            inner.pop_front();
+        let (events, ready) = &*self.inner;
+        let mut events = events.lock().unwrap();
+        if events.len() >= self.capacity {
+            events.pop_front();
         }
-        inner.push_back(event);
+        events.push_back(event);
+        ready.notify_all();
     }
 
     pub fn pop(&self) -> Option<InputEvent> {
-        self.inner.lock().unwrap().pop_front()
+        self.inner.0.lock().unwrap().pop_front()
+    }
+
+    /// Block until at least one event is queued or `timeout` elapses,
+    /// whichever comes first; returns immediately when an event is already
+    /// waiting. Returns whether an event is available. Spurious wakeups are
+    /// absorbed, so an early return always means a real event.
+    pub fn wait_timeout(&self, timeout: Duration) -> bool {
+        let (events, ready) = &*self.inner;
+        let events = events.lock().unwrap();
+        let (events, _) = ready
+            .wait_timeout_while(events, timeout, |events| events.is_empty())
+            .unwrap();
+        !events.is_empty()
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.0.lock().unwrap().len()
     }
 
     #[must_use]
@@ -101,6 +124,38 @@ mod tests {
         assert_eq!(queue.pop(), Some(InputEvent::Button(ButtonEvent::Down)));
         assert_eq!(queue.pop(), Some(InputEvent::SelectLongPress));
         assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
+    fn wait_returns_immediately_when_an_event_is_already_queued() {
+        let queue = InputEventQueue::new(4);
+        queue.push(InputEvent::Back);
+        let started = std::time::Instant::now();
+        assert!(queue.wait_timeout(Duration::from_secs(5)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn wait_times_out_on_an_empty_queue() {
+        let queue = InputEventQueue::new(4);
+        let started = std::time::Instant::now();
+        assert!(!queue.wait_timeout(Duration::from_millis(30)));
+        assert!(started.elapsed() >= Duration::from_millis(30));
+    }
+
+    #[test]
+    fn a_push_from_another_thread_wakes_the_waiter_early() {
+        let queue = InputEventQueue::new(4);
+        let producer = queue.clone();
+        let started = std::time::Instant::now();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            producer.push(InputEvent::Button(ButtonEvent::Select));
+        });
+        assert!(queue.wait_timeout(Duration::from_secs(5)));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        handle.join().unwrap();
+        assert_eq!(queue.pop(), Some(InputEvent::Button(ButtonEvent::Select)));
     }
 
     #[test]

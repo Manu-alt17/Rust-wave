@@ -7,36 +7,51 @@ use embedded_graphics::{
     pixelcolor::BinaryColor,
     prelude::{Drawable, Point, Primitive, Size},
     primitives::{
-        Circle, CornerRadii, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle,
-        Triangle,
+        Circle, CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle, Triangle,
     },
+};
+
+use embedded_iconoir::{
+    icons::size24px::{
+        editor::{AlignCenter, AlignJustify, AlignLeft, AlignRight},
+        navigation::{FastArrowDownBox, FastArrowRightBox},
+    },
+    prelude::IconoirNewIcon,
 };
 
 use crate::{
     app::{
+        i18n::t,
         reader_typography::reader_body_style,
         state::AppState,
         typography::{Text, TextBounds, UiTextStyle},
         widgets::{
             footer::draw_footer,
             header::draw_header,
+            home_tile::draw_iconoir_icon,
             status_glyphs::{draw_battery_icon, BATTERY_SIZE},
         },
     },
     cover_cache::{CachedThumbnail, THUMB_HEIGHT, THUMB_WIDTH},
     orientation::{DisplayOrientation, OrientedFrameBuffer},
     reader::{
-        eligible_word_spans, ParagraphAlignment, ReaderBook, ReaderCachedPage,
-        ReaderDictionaryMode, ReaderLoadingStage, ReaderOption, ReaderSession, ReadingPreference,
-        ReadingTheme,
+        eligible_word_spans, BookFont, BookFontSize, LibraryBookAction, ParagraphAlignment,
+        ReaderBook, ReaderCachedPage, ReaderDictionaryMode, ReaderLoadingStage, ReaderOption,
+        ReaderOrientation, ReaderPreferences, ReaderSession, ReadingPreference, ReadingTheme,
     },
+    regional::Locale,
 };
 
 pub fn render_continue_reading(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    draw_header(display, state, "CONTINUE READING")?;
+    let locale = state.regional.locale;
+    draw_header(
+        display,
+        state,
+        t(locale, "CONTINUE READING", "CONTINUA A LEGGERE"),
+    )?;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     if let Some(session) = state.reader.session.as_ref() {
@@ -46,116 +61,392 @@ pub fn render_continue_reading(
             heading,
         )
         .draw(display)?;
-        Text::new(
-            &format!(
+        let page_line = match locale {
+            Locale::English => format!(
                 "Runtime page {} is ready.",
                 session.current_absolute_page() + 1
+            ),
+            Locale::Italian => format!("Pagina {} pronta.", session.current_absolute_page() + 1),
+        };
+        Text::new(&page_line, Point::new(24, 236), body).draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "SELECT resumes the open page.",
+                "SELECT riprende la pagina aperta.",
+            ),
+            Point::new(24, 280),
+            body,
+        )
+        .draw(display)?;
+    } else if let Some(resume) = state.reader.resume.as_ref() {
+        Text::new(&truncate(&resume.title, 38), Point::new(24, 186), heading).draw(display)?;
+        let saved_line = match locale {
+            Locale::English => format!("Saved page {} is ready to restore.", resume.page_index + 1),
+            Locale::Italian => format!(
+                "Pagina salvata {} pronta per il ripristino.",
+                resume.page_index + 1
+            ),
+        };
+        Text::new(&saved_line, Point::new(24, 236), body).draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "SELECT loads the saved position.",
+                "SELECT carica la posizione salvata.",
+            ),
+            Point::new(24, 280),
+            body,
+        )
+        .draw(display)?;
+    } else {
+        Text::new(
+            t(locale, "No saved book", "Nessun libro salvato"),
+            Point::new(24, 186),
+            heading,
+        )
+        .draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "Open Library and choose a TXT book.",
+                "Apri Libreria e scegli un libro TXT.",
             ),
             Point::new(24, 236),
             body,
         )
         .draw(display)?;
-        Text::new("SELECT resumes the open page.", Point::new(24, 280), body).draw(display)?;
-    } else if let Some(resume) = state.reader.resume.as_ref() {
-        Text::new(&truncate(&resume.title, 38), Point::new(24, 186), heading).draw(display)?;
         Text::new(
-            &format!("Saved page {} is ready to restore.", resume.page_index + 1),
-            Point::new(24, 236),
-            body,
-        )
-        .draw(display)?;
-        Text::new(
-            "SELECT loads the saved position.",
-            Point::new(24, 280),
-            body,
-        )
-        .draw(display)?;
-    } else {
-        Text::new("No saved book", Point::new(24, 186), heading).draw(display)?;
-        Text::new(
-            "Open Library and choose a TXT book.",
-            Point::new(24, 236),
-            body,
-        )
-        .draw(display)?;
-        Text::new(
-            "The last-read page is stored on the SD card.",
+            t(
+                locale,
+                "The last-read page is stored on the SD card.",
+                "L'ultima pagina letta è salvata sulla scheda SD.",
+            ),
             Point::new(24, 280),
             body,
         )
         .draw(display)?;
     }
-    draw_footer(display, state.display, "SELECT RESUME  BOOT BACK")
+    draw_footer(
+        display,
+        state,
+        t(locale, "SELECT RESUME", "SELECT RIPRENDI"),
+    )
 }
 
 /// Left margin of the cover grid, matching the Home dashboard grid's margin.
-const LIBRARY_GRID_LEFT: i32 = 18;
-/// Top of the first grid row, just below the shared header divider.
-const LIBRARY_GRID_TOP: i32 = 100;
-/// Last pixel row cells may occupy, leaving room for the footer divider.
-const LIBRARY_GRID_BOTTOM: i32 = 660;
+const LIBRARY_GRID_LEFT: i32 = 14;
+/// Top of the first section header. Matches the gap the Home dashboard uses
+/// right below the shared header (`home::CARD_TOP`) instead of leaving extra
+/// breathing room above the first "IN LETTURA" caption.
+const LIBRARY_GRID_TOP: i32 = 46;
+/// Last pixel row cells may occupy, leaving room for the footer's "Tieni ●
+/// Opzioni" hold-SELECT hint below it ([`draw_library_footer`]). The "more
+/// below" chevron ([`draw_library_scroll_hint`]) lives inside the scrollbar
+/// gutter at the bottom of the track, not below `LIBRARY_GRID_BOTTOM`, so it
+/// doesn't need extra room reserved for it here.
+const LIBRARY_GRID_BOTTOM: i32 = 736;
 /// Covers per row. There are no Left/Right buttons on this hardware — only
 /// Up/Down/Select — so the grid is really one linear selection index walked
-/// in raster order, the same trick the Home dashboard and Reader category
-/// grids already use: Down from the top-left cell lands on top-right (next
-/// index), not on the cell below.
+/// in raster order, the same trick the Home dashboard grid already uses:
+/// Down from the top-left cell lands on top-right (next index), not on the
+/// cell below.
 const LIBRARY_GRID_COLUMNS: usize = 2;
-/// Cell width: `LIBRARY_GRID_LEFT` on both sides plus `LIBRARY_GRID_GAP_X`
-/// between the two columns fills the full 480px logical width exactly
-/// (18 + 218 + 8 + 218 + 18 = 480).
+/// Cell width: `LIBRARY_GRID_LEFT` on the left, `LIBRARY_GRID_GAP_X` between
+/// the two columns, and a scrollbar gutter on the right fill the full 480px
+/// logical width exactly (14 + 218 + 6 + 218 = 456, leaving 24px for
+/// [`draw_library_scrollbar`]).
 const LIBRARY_CELL_WIDTH: i32 = 218;
-const LIBRARY_GRID_GAP_X: i32 = 8;
-const LIBRARY_GRID_GAP_Y: i32 = 16;
-/// Cell height, fixed regardless of content so every row of the grid lines
-/// up the same. `THUMB_HEIGHT` plus a `LIBRARY_COVER_PAD`-sized margin on
-/// top and bottom fills it; the sliver left over doubles as the fallback
-/// title band for books with no real cover.
-const LIBRARY_CELL_HEIGHT: i32 = THUMB_HEIGHT as i32 + LIBRARY_COVER_PAD * 2;
-/// Empty space kept between the cover thumbnail and the selection border on
-/// every side, so the border stays visible instead of hugging the cover art.
+const LIBRARY_GRID_GAP_X: i32 = 6;
+/// Gap kept below every row (including the last one in a section) before
+/// whatever comes next — another row or the following section's header.
+const LIBRARY_GRID_GAP_Y: i32 = 8;
+/// Empty space kept between the cover thumbnail and the cell's selection
+/// border / text column on every side.
 const LIBRARY_COVER_PAD: i32 = 5;
+/// Corner radius for a Library cell's border, matching the Home dashboard's
+/// Continue Reading tile (`CONTINUE_TILE_CORNER_RADIUS` in
+/// `screens/category.rs`) so both cards read as the same rounded style.
+const LIBRARY_CELL_CORNER_RADIUS: Size = Size::new(16, 16);
+/// Corner radius the cover thumbnail itself is masked to (see
+/// [`draw_library_cell`]) — a little smaller than
+/// `LIBRARY_CELL_CORNER_RADIUS` so the cover's curve reads as concentric
+/// with the cell border around it rather than flatter or sharper than the
+/// frame it sits inside `LIBRARY_COVER_PAD` from.
+const LIBRARY_THUMB_CORNER_RADIUS: i32 = 12;
+/// Height of just the cover-art portion of a cell; the status row sits below
+/// it (see [`library_metrics`]) — no title line any more, so a cell is just
+/// the cover plus one status row, trading "the cover art already carries the
+/// title" for a shorter cell that fits more rows on-panel.
+const LIBRARY_COVER_BLOCK_HEIGHT: i32 = THUMB_HEIGHT as i32 + LIBRARY_COVER_PAD * 2;
+/// Gap between the cover art and the status row below it.
+const LIBRARY_BAR_GAP: i32 = 6;
+/// Gap kept between the status row and the cell's bottom border, so the
+/// label's text doesn't sit flush against it.
+const LIBRARY_CELL_BOTTOM_PAD: i32 = 6;
+/// Height of the status bar/track itself, matching Home's Continue Reading
+/// card (`category::CONTINUE_TILE_PROGRESS_HEIGHT`) so the two screens'
+/// progress bars read as the same element.
+const LIBRARY_BAR_HEIGHT: i32 = 10;
+/// Horizontal gap between the bar's right edge and its label (percentage /
+/// "COMPLETATO" / "NUOVO"), which sits beside the bar on the same line
+/// rather than on a line of its own — one fewer line per cell than stacking
+/// them, freeing enough height for a second row of covers per section.
+const LIBRARY_BAR_LABEL_GAP: i32 = 8;
+/// Horizontal breathing room kept between the bar's rounded ends and the
+/// text column's own left/right margins (`left`/`right` in
+/// [`draw_library_status_row`]) — otherwise the pill-shaped bar (see
+/// [`LIBRARY_BAR_HEIGHT`]) reads as touching the cell border on the left and
+/// crowding the label on the right, both of which the flush-fit sharp
+/// rectangle this replaced never showed.
+const LIBRARY_BAR_INSET: i32 = 3;
+/// Gap between a section header's baseline and its underline.
+const LIBRARY_HEADER_UNDERLINE_GAP: i32 = 3;
+/// Gap kept below a section header's underline before the first row —
+/// deliberately more generous than the header's own internal spacing, so the
+/// underline reads as separating the caption from the books below it rather
+/// than sitting arbitrarily close to both.
+const LIBRARY_HEADER_BELOW_GAP: i32 = 10;
 
-/// Index range `[first, last)` of entries visible in the current grid page,
-/// given the selection. Shared by `render_library`'s drawing pass and
-/// [`library_visible_books`]'s background-thumbnail visibility window, so
-/// both agree on exactly what is on-panel right now.
-fn library_grid_window(entry_count: usize, selected: usize) -> (usize, usize) {
-    if entry_count == 0 {
-        return (0, 0);
-    }
-    let selected = selected.min(entry_count - 1);
-    let total_rows = entry_count.div_ceil(LIBRARY_GRID_COLUMNS);
-    let available = LIBRARY_GRID_BOTTOM - LIBRARY_GRID_TOP;
-    // Rows fit when `n * height + (n - 1) * gap <= available`, rearranged to
-    // avoid an off-by-one from a naive `available / stride` (which would
-    // wrongly assume every row, including the last, needs a trailing gap).
-    let rows_capacity = ((available + LIBRARY_GRID_GAP_Y)
-        / (LIBRARY_CELL_HEIGHT + LIBRARY_GRID_GAP_Y))
-        .max(1) as usize;
-    let rows_capacity = rows_capacity.min(total_rows.max(1));
-    let selected_row = selected / LIBRARY_GRID_COLUMNS;
-    let first_row = if selected_row < rows_capacity {
-        0
-    } else {
-        selected_row + 1 - rows_capacity
-    };
-    let first_index = first_row * LIBRARY_GRID_COLUMNS;
-    let last_index = (first_index + rows_capacity * LIBRARY_GRID_COLUMNS).min(entry_count);
-    (first_index, last_index)
+/// A cell's reading-status, driving both its status bar's fill style and the
+/// label drawn under it. `InProgress` carries the live percentage; the other
+/// two states are binary, so there's nothing left to show but the label.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LibraryCellStatus {
+    InProgress(u8),
+    Completed,
+    New,
 }
 
-/// Books currently on-panel in the Library grid, in the same raster order
+/// One book plus the reading-status its cell should draw.
+struct LibraryGridEntry {
+    book: ReaderBook,
+    status: LibraryCellStatus,
+}
+
+/// A vertical slice of the Library screen's layout: either a section header
+/// or one row of up to [`LIBRARY_GRID_COLUMNS`] book cells. `start`/`count`
+/// index into the flat entry list [`library_grid_entries`] returns.
+#[derive(Clone, Copy, Debug)]
+enum LibraryBlock {
+    Header { in_progress: bool },
+    Row { start: usize, count: usize },
+}
+
+/// Font-metric-dependent block heights, computed once per frame from the
+/// active display preferences rather than hardcoded, since line height
+/// varies with the user's chosen text size.
+struct LibraryMetrics {
+    header_height: i32,
+    row_height: i32,
+}
+
+/// Splits the Library grid's books into "Reading Now" (Recent entries with
+/// *some* real progress: 1-99%) and "Recent" (never-opened books and Recent
+/// entries still at 0%, then finished Recent entries last), in the exact
+/// order [`crate::reader::ReaderUiState::visible_entries`] walks for
+/// keyboard navigation — so `library_selected`, which indexes into that same
+/// order, always lands on the cell actually drawn at that index. A Recent
+/// entry sitting at 0% (opened once but never actually read past the first
+/// page) reads as "New" rather than "Reading Now" — a saved position record
+/// alone isn't "in progress" until it has a percentage to show for it.
+/// Within "Recent", never-opened / 0% books come first and finished ones
+/// last — a book still waiting to be started is more actionable than one
+/// already closed out, so it gets the space closer to the top instead of
+/// being pushed down by completed books.
+/// Returns the flat entry list plus how many of its leading entries are
+/// "Reading Now".
+fn library_grid_entries(reader: &crate::reader::ReaderUiState) -> (Vec<LibraryGridEntry>, usize) {
+    // Same classification and order as `ReaderUiState::visible_entries`,
+    // which `library_selected` indexes into: books outside Recent use their
+    // saved position as well, instead of always showing as "New".
+    let (recent, other) = reader.library_sections();
+    let mut in_progress = Vec::new();
+    let mut new = Vec::new();
+    let mut completed = Vec::new();
+    for entry in recent.into_iter().chain(other) {
+        let percent = entry
+            .location
+            .as_ref()
+            .map_or(0, crate::reader::ReaderLocation::reading_percent_estimate);
+        if percent >= 100 {
+            completed.push(LibraryGridEntry {
+                book: entry.book,
+                status: LibraryCellStatus::Completed,
+            });
+        } else if percent == 0 {
+            new.push(LibraryGridEntry {
+                book: entry.book,
+                status: LibraryCellStatus::New,
+            });
+        } else {
+            in_progress.push(LibraryGridEntry {
+                book: entry.book,
+                status: LibraryCellStatus::InProgress(percent),
+            });
+        }
+    }
+    let in_progress_count = in_progress.len();
+    let mut entries = in_progress;
+    entries.extend(new);
+    entries.extend(completed);
+    (entries, in_progress_count)
+}
+
+/// Lays `entry_count` entries (the first `in_progress_count` of them
+/// "Reading Now", the rest "Recent") out as a header + rows per non-empty
+/// section, skipping a section entirely when it has no entries (e.g. no book
+/// is in progress yet on a fresh library).
+fn library_blocks(entry_count: usize, in_progress_count: usize) -> Vec<LibraryBlock> {
+    let mut blocks = Vec::new();
+    if in_progress_count > 0 {
+        blocks.push(LibraryBlock::Header { in_progress: true });
+        push_library_rows(&mut blocks, 0, in_progress_count);
+    }
+    if entry_count > in_progress_count {
+        blocks.push(LibraryBlock::Header { in_progress: false });
+        push_library_rows(&mut blocks, in_progress_count, entry_count);
+    }
+    blocks
+}
+
+fn push_library_rows(blocks: &mut Vec<LibraryBlock>, start: usize, end: usize) {
+    let mut index = start;
+    while index < end {
+        let count = (end - index).min(LIBRARY_GRID_COLUMNS);
+        blocks.push(LibraryBlock::Row { start: index, count });
+        index += count;
+    }
+}
+
+fn library_metrics(state: &AppState) -> LibraryMetrics {
+    let heading_line = i32::from(state.display.heading_style().line_height());
+    let label_line = i32::from(state.display.detail_style().line_height());
+    // The bar and its label share one line; that line's height is whichever
+    // of the two is taller (in practice the label's line pitch, since
+    // `LIBRARY_BAR_HEIGHT` is deliberately shorter than a line of text).
+    let status_row_height = LIBRARY_BAR_HEIGHT.max(label_line);
+    LibraryMetrics {
+        header_height: heading_line + LIBRARY_HEADER_UNDERLINE_GAP + 1 + LIBRARY_HEADER_BELOW_GAP,
+        row_height: LIBRARY_COVER_BLOCK_HEIGHT
+            + LIBRARY_BAR_GAP
+            + status_row_height
+            + LIBRARY_CELL_BOTTOM_PAD
+            + LIBRARY_GRID_GAP_Y,
+    }
+}
+
+fn library_block_height(block: &LibraryBlock, metrics: &LibraryMetrics) -> i32 {
+    match block {
+        LibraryBlock::Header { .. } => metrics.header_height,
+        LibraryBlock::Row { .. } => metrics.row_height,
+    }
+}
+
+/// Minimal-scroll window over `blocks` that keeps the row holding `selected`
+/// on-panel — the block-based generalization of the old flat-grid
+/// `library_grid_window`, needed now that section headers take up variable
+/// vertical space alongside the book rows. Grows the window forward from the
+/// top, sliding its start forward exactly enough to keep `selected`'s row
+/// included whenever it stops fitting, then extends the end further if
+/// there's still room left after that.
+fn library_window(
+    blocks: &[LibraryBlock],
+    selected: usize,
+    metrics: &LibraryMetrics,
+    available: i32,
+) -> (usize, usize) {
+    if blocks.is_empty() {
+        return (0, 0);
+    }
+    let heights: Vec<i32> = blocks
+        .iter()
+        .map(|block| library_block_height(block, metrics))
+        .collect();
+    let total: i32 = heights.iter().sum();
+    if total <= available {
+        return (0, blocks.len());
+    }
+    let selected_block = blocks
+        .iter()
+        .position(|block| {
+            matches!(block, LibraryBlock::Row { start, count } if selected >= *start && selected < *start + *count)
+        })
+        .unwrap_or(0);
+
+    let mut first = 0usize;
+    let mut end = 0usize;
+    let mut height = 0i32;
+    for index in 0..blocks.len() {
+        height += heights[index];
+        end = index + 1;
+        while height > available && first < index {
+            height -= heights[first];
+            first += 1;
+        }
+        if index >= selected_block {
+            break;
+        }
+    }
+    while end < blocks.len() && height + heights[end] <= available {
+        height += heights[end];
+        end += 1;
+    }
+
+    // Whatever section's rows ended up on-panel, keep its header pinned in
+    // view too — otherwise scrolling a few rows into a long section drops
+    // its caption off the top and there's no longer any label telling you
+    // which section ("Reading Now" vs. "Recent") you're actually looking
+    // at. Trims rows off the *end* to make room if needed, but never past
+    // the selected one, and only when the header and the selected row can
+    // actually fit together at all — deep into a long section, pinning the
+    // header would otherwise force the window open past `available` just to
+    // span from the top of the section down to the selection, so it's
+    // skipped rather than violated in that case.
+    if matches!(blocks[first], LibraryBlock::Row { .. }) {
+        if let Some(header) = blocks[..first]
+            .iter()
+            .rposition(|block| matches!(block, LibraryBlock::Header { .. }))
+        {
+            let min_height: i32 = heights[header..=selected_block].iter().sum();
+            if min_height <= available {
+                let mut trimmed_end = end;
+                let mut trimmed_height: i32 = heights[header..trimmed_end].iter().sum();
+                while trimmed_height > available && trimmed_end > selected_block + 1 {
+                    trimmed_end -= 1;
+                    trimmed_height -= heights[trimmed_end];
+                }
+                first = header;
+                end = trimmed_end;
+            }
+        }
+    }
+
+    (first, end)
+}
+
+/// Books currently on-panel in the Library grid, in the same order
 /// `render_library` draws. Used to bound background thumbnail generation
 /// ([`crate::cover_cache::CoverCache::pump_pending`]) to what is actually
 /// visible ("generate thumbnails lazily, only for the current page").
 #[must_use]
 pub fn library_visible_books(state: &AppState) -> Vec<ReaderBook> {
     let reader = &state.reader;
-    let entries = reader.visible_entries();
-    let (first, last) = library_grid_window(entries.len(), reader.library_selected);
-    entries[first..last]
+    let (entries, in_progress_count) = library_grid_entries(reader);
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let blocks = library_blocks(entries.len(), in_progress_count);
+    let metrics = library_metrics(state);
+    let available = LIBRARY_GRID_BOTTOM - LIBRARY_GRID_TOP;
+    let (first_block, last_block) = library_window(&blocks, reader.library_selected, &metrics, available);
+    blocks[first_block..last_block]
         .iter()
-        .map(|entry| entry.book.clone())
+        .filter_map(|block| match *block {
+            LibraryBlock::Row { start, count } => Some((start, count)),
+            LibraryBlock::Header { .. } => None,
+        })
+        .flat_map(|(start, count)| entries[start..start + count].iter().map(|entry| entry.book.clone()))
         .collect()
 }
 
@@ -163,77 +454,177 @@ pub fn render_library(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let reader = &state.reader;
     let body = state.display.body_style();
-    draw_header(display, state, "LIBRARY")?;
+    draw_header(display, state, t(locale, "LIBRARY", "LIBRERIA"))?;
 
-    let entries = reader.visible_entries();
+    let (entries, in_progress_count) = library_grid_entries(reader);
     if entries.is_empty() {
-        let message = reader
-            .library_error
-            .as_deref()
-            .unwrap_or("Copy TXT or EPUB books into /RUSTMIX/BOOKS.");
+        let message = reader.library_error.as_deref().unwrap_or(t(
+            locale,
+            "Copy TXT or EPUB books into /RUSTMIX/BOOKS.",
+            "Copia libri TXT o EPUB in /RUSTMIX/BOOKS.",
+        ));
         Text::new(&truncate(message, 54), Point::new(26, 148), body).draw(display)?;
-        return draw_footer(display, state.display, "MOVE  SELECT OPEN  BOOT BACK");
+        return Ok(());
     }
 
-    let (first, last) = library_grid_window(entries.len(), reader.library_selected);
-    for (offset, entry) in entries[first..last].iter().enumerate() {
-        let index = first + offset;
-        let row = offset / LIBRARY_GRID_COLUMNS;
-        let column = offset % LIBRARY_GRID_COLUMNS;
-        let top_left = Point::new(
-            LIBRARY_GRID_LEFT + column as i32 * (LIBRARY_CELL_WIDTH + LIBRARY_GRID_GAP_X),
-            LIBRARY_GRID_TOP + row as i32 * (LIBRARY_CELL_HEIGHT + LIBRARY_GRID_GAP_Y),
-        );
-        let thumbnail = reader.library_thumbnails.get(&entry.book.path);
-        let progress_percent = reader.library_progress_percent(&entry.book);
-        draw_library_cell(
-            display,
-            state,
-            top_left,
-            index == reader.library_selected,
-            thumbnail,
-            &entry.book.title,
-            progress_percent,
-        )?;
+    let blocks = library_blocks(entries.len(), in_progress_count);
+    let metrics = library_metrics(state);
+    let available = LIBRARY_GRID_BOTTOM - LIBRARY_GRID_TOP;
+    let (first_block, last_block) = library_window(&blocks, reader.library_selected, &metrics, available);
+
+    let mut cursor_y = LIBRARY_GRID_TOP;
+    for block in &blocks[first_block..last_block] {
+        match *block {
+            LibraryBlock::Header { in_progress } => {
+                let label = if in_progress {
+                    t(locale, "READING NOW", "IN LETTURA")
+                } else {
+                    t(locale, "RECENT", "RECENTI")
+                };
+                draw_library_section_header(display, state, cursor_y, label)?;
+            }
+            LibraryBlock::Row { start, count } => {
+                for offset in 0..count {
+                    let index = start + offset;
+                    let entry = &entries[index];
+                    let top_left = Point::new(
+                        LIBRARY_GRID_LEFT + offset as i32 * (LIBRARY_CELL_WIDTH + LIBRARY_GRID_GAP_X),
+                        cursor_y,
+                    );
+                    let thumbnail = reader.library_thumbnails.get(&entry.book.path);
+                    draw_library_cell(
+                        display,
+                        state,
+                        top_left,
+                        metrics.row_height - LIBRARY_GRID_GAP_Y,
+                        index == reader.library_selected,
+                        thumbnail,
+                        entry.status,
+                    )?;
+                }
+            }
+        }
+        cursor_y += library_block_height(block, &metrics);
     }
 
-    draw_footer(display, state.display, "MOVE  SELECT OPEN  BOOT BACK")
+    let heights: Vec<i32> = blocks
+        .iter()
+        .map(|block| library_block_height(block, &metrics))
+        .collect();
+    let total_height: i32 = heights.iter().sum();
+    let visible_height: i32 = heights[first_block..last_block].iter().sum();
+    let offset_height: i32 = heights[..first_block].iter().sum();
+    let more_below = last_block < blocks.len();
+    draw_library_scrollbar(
+        display,
+        LIBRARY_GRID_TOP,
+        // The track stops short of the grid's true bottom, leaving room in
+        // the scrollbar gutter for the "more below" chevron so the two never
+        // overlap — the row grid itself still uses the full height.
+        LIBRARY_GRID_BOTTOM - LIBRARY_SCROLLBAR_CHEVRON_RESERVE,
+        offset_height,
+        visible_height,
+        total_height,
+    )?;
+    if more_below {
+        draw_library_scroll_hint(display)?;
+    }
+    draw_library_footer(display, state)?;
+
+    Ok(())
+}
+
+/// Library footer: the same round "hold SELECT" glyph the Reader page's own
+/// footer uses ([`draw_dot`]), sandwiched between "Tieni"/"Hold" and
+/// "Opzioni"/"Options" — the only way to reach the per-book actions overlay
+/// (mark completed / bookmarks) is a long SELECT press on a cover, which
+/// nothing else on this screen hints at.
+fn draw_library_footer(display: &mut OrientedFrameBuffer<'_>, state: &AppState) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let style = state.display.footer_style();
+    let color = BinaryColor::On;
+    let baseline = 782;
+
+    Rectangle::new(Point::new(14, 746), Size::new(452, 1))
+        .into_styled(PrimitiveStyle::with_fill(color))
+        .draw(display)?;
+
+    let cursor = Text::new(t(locale, "Hold", "Tieni"), Point::new(18, baseline), style).draw(display)?;
+    let dot_left = cursor.x + ICON_TEXT_GAP;
+    draw_dot(display, dot_left, baseline, color)?;
+    let text_left = dot_left + DOT_SIZE + ICON_TEXT_GAP;
+    Text::new(
+        t(locale, "Options", "Opzioni"),
+        Point::new(text_left, baseline),
+        style,
+    )
+    .draw(display)?;
+    Ok(())
+}
+
+/// Section header: an uppercase caption with a full-width underline beneath
+/// it, matching the two-section "Reading Now" / "Recent" grouping the
+/// reference redesign uses in place of one flat, undifferentiated grid.
+fn draw_library_section_header(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    top: i32,
+    label: &str,
+) -> Result<(), Infallible> {
+    let style = state.display.heading_style();
+    let baseline = top + i32::from(style.line_height());
+    Text::new(label, Point::new(LIBRARY_GRID_LEFT, baseline), style).draw(display)?;
+    let underline_top = baseline + LIBRARY_HEADER_UNDERLINE_GAP;
+    let underline_width = LIBRARY_CELL_WIDTH * 2 + LIBRARY_GRID_GAP_X;
+    Rectangle::new(
+        Point::new(LIBRARY_GRID_LEFT, underline_top),
+        Size::new(underline_width as u32, 1),
+    )
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+    .draw(display)?;
+    Ok(())
 }
 
 /// One Library grid cell: a bordered tile (selection shown purely by border
-/// weight, matching the Home dashboard grid) holding just the cover
-/// thumbnail — the cover art already carries the title, so a book with a
-/// confirmed real cover shows no text at all. A book with no usable cover
-/// (still pending generation, or genuinely placeholder because the EPUB has
-/// none / it's a TXT book) falls back to showing the title, since the
-/// generic placeholder glyph alone can't identify which book it is.
+/// weight, matching the Home dashboard grid) holding the cover thumbnail and
+/// a status bar + label reporting whether it's still being read, finished,
+/// or never opened. No title text — the cover art already carries it, and
+/// dropping the title line entirely (rather than only for books with a
+/// confirmed real cover) buys back a full text line's height per cell.
 fn draw_library_cell(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
     top_left: Point,
+    cell_height: i32,
     selected: bool,
     thumbnail: Option<&CachedThumbnail>,
-    title: &str,
-    progress_percent: Option<u8>,
+    status: LibraryCellStatus,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let border = if selected {
         PrimitiveStyle::with_stroke(BinaryColor::On, 4)
     } else {
         PrimitiveStyle::with_stroke(BinaryColor::On, 1)
     };
-    Rectangle::new(
-        top_left,
-        Size::new(LIBRARY_CELL_WIDTH as u32, LIBRARY_CELL_HEIGHT as u32),
+    RoundedRectangle::new(
+        Rectangle::new(
+            top_left,
+            Size::new(LIBRARY_CELL_WIDTH as u32, cell_height as u32),
+        ),
+        CornerRadii::new(LIBRARY_CELL_CORNER_RADIUS),
     )
     .into_styled(border)
     .draw(display)?;
 
     // Inset by `LIBRARY_COVER_PAD` on every side, so the selection border
     // stays visibly separated from the cover art instead of hugging it.
-    let thumb_point = Point::new(top_left.x + LIBRARY_COVER_PAD, top_left.y + LIBRARY_COVER_PAD);
-    let has_real_cover = thumbnail.is_some_and(|thumbnail| !thumbnail.placeholder);
+    let thumb_point = Point::new(
+        top_left.x + LIBRARY_COVER_PAD,
+        top_left.y + LIBRARY_COVER_PAD,
+    );
     if let Some(thumbnail) = thumbnail {
         if display.orientation() == DisplayOrientation::Portrait {
             // Fast path: the Library screen only ever runs in Portrait (see
@@ -262,77 +653,255 @@ fn draw_library_cell(
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
     }
+    // Whitens the cover's four corners so it reads as rounded, matching the
+    // cell border's own `LIBRARY_CELL_CORNER_RADIUS`. Done here at draw
+    // time rather than baked into the cached thumbnail bitmap: baking it in
+    // would need bumping the cache format version, which invalidates and
+    // regenerates every cover on SD (real JPEG/PNG decode work) the next
+    // time the Library is opened. This costs only a bounded handful of
+    // pixel writes per cell instead.
+    display.mask_rounded_corners(
+        thumb_point,
+        Size::new(u32::from(THUMB_WIDTH), u32::from(THUMB_HEIGHT)),
+        LIBRARY_THUMB_CORNER_RADIUS,
+    );
 
-    if !has_real_cover {
-        let detail = state.display.detail_style();
-        let baseline = top_left.y + LIBRARY_CELL_HEIGHT - 10;
-        Text::new(&truncate(title, 22), Point::new(top_left.x + 8, baseline), detail)
+    let text_left = top_left.x + LIBRARY_COVER_PAD;
+    let text_right = top_left.x + LIBRARY_CELL_WIDTH - LIBRARY_COVER_PAD;
+    let bar_row_top = top_left.y + LIBRARY_COVER_BLOCK_HEIGHT + LIBRARY_BAR_GAP;
+    let bar_row_height = cell_height - LIBRARY_COVER_BLOCK_HEIGHT - LIBRARY_BAR_GAP - LIBRARY_CELL_BOTTOM_PAD;
+    draw_library_status_row(
+        display,
+        state,
+        text_left,
+        text_right,
+        bar_row_top,
+        bar_row_height,
+        status,
+        locale,
+    )?;
+    Ok(())
+}
+
+/// The status bar and its label share one line — the label beside the bar's
+/// right end rather than stacked on a line of its own below it, saving a
+/// full text line's height per cell. Both are centered on the same
+/// horizontal axis using the label's *ink* bounds rather than its full line
+/// box (which reserves room for descenders no digit, '%', or all-caps label
+/// here ever uses) — centering on the line box instead reads as the bar
+/// sitting slightly high of the text. The look of both still comes from
+/// `status` alone: a partially filled track + live percentage while reading,
+/// a fully filled (solid) track + "COMPLETATO" once finished, and a dashed,
+/// empty track + "NUOVO" for a book never opened — a dashed outline rather
+/// than a 0%-full track, so "never started" reads differently at a glance
+/// from "just started".
+#[allow(clippy::too_many_arguments)]
+fn draw_library_status_row(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    left: i32,
+    right: i32,
+    top: i32,
+    row_height: i32,
+    status: LibraryCellStatus,
+    locale: Locale,
+) -> Result<(), Infallible> {
+    let label_style = state.display.detail_style();
+    let label = match status {
+        LibraryCellStatus::InProgress(percent) => format!("{}%", percent.min(100)),
+        LibraryCellStatus::Completed => t(locale, "DONE", "COMPLETATO").to_string(),
+        LibraryCellStatus::New => t(locale, "NEW", "NUOVO").to_string(),
+    };
+    let label_width = label_style.text_width(&label);
+    let (ink_top, ink_bottom) = label_style.text_ink_bounds(&label);
+    // The row's vertical center, in absolute display coordinates — both the
+    // label's ink and the bar are centered on this same axis.
+    let axis = top + row_height / 2;
+    let baseline = axis - (ink_top + ink_bottom) / 2;
+    let bar_top = axis - LIBRARY_BAR_HEIGHT / 2;
+
+    // Inset from the text column's own margins: flush against `left`/`right`
+    // (the sharp rectangle this replaced) reads as touching the cell border
+    // on the left and crowding the label on the right once the bar got
+    // pill-shaped rounded ends — see `LIBRARY_BAR_INSET`.
+    let bar_left = left + LIBRARY_BAR_INSET;
+    let bar_right =
+        (right - label_width - LIBRARY_BAR_LABEL_GAP - LIBRARY_BAR_INSET).max(bar_left);
+    let bar_width = (bar_right - bar_left).max(0);
+    // Pill-shaped ends, matching Home's Continue Reading progress bar
+    // (`category::draw_continue_reading_progress_bar`) so the two screens'
+    // bars read as the same element.
+    let bar_radii = CornerRadii::new(Size::new(
+        LIBRARY_BAR_HEIGHT as u32 / 2,
+        LIBRARY_BAR_HEIGHT as u32 / 2,
+    ));
+    match status {
+        LibraryCellStatus::InProgress(percent) => {
+            RoundedRectangle::new(
+                Rectangle::new(
+                    Point::new(bar_left, bar_top),
+                    Size::new(bar_width as u32, LIBRARY_BAR_HEIGHT as u32),
+                ),
+                bar_radii,
+            )
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)?;
+            let inner_width = (bar_width - 4).max(0);
+            let fill_width = inner_width * i32::from(percent.min(100)) / 100;
+            if fill_width > 0 {
+                let fill_height = (LIBRARY_BAR_HEIGHT - 4).max(0);
+                RoundedRectangle::new(
+                    Rectangle::new(
+                        Point::new(bar_left + 2, bar_top + 2),
+                        Size::new(fill_width as u32, fill_height as u32),
+                    ),
+                    CornerRadii::new(Size::new(fill_height as u32 / 2, fill_height as u32 / 2)),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+            }
+        }
+        LibraryCellStatus::Completed => {
+            RoundedRectangle::new(
+                Rectangle::new(
+                    Point::new(bar_left, bar_top),
+                    Size::new(bar_width as u32, LIBRARY_BAR_HEIGHT as u32),
+                ),
+                bar_radii,
+            )
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+        }
+        LibraryCellStatus::New => {
+            draw_dashed_rect(display, bar_left, bar_top, bar_right, bar_top + LIBRARY_BAR_HEIGHT)?;
+        }
     }
 
-    if let Some(percent) = progress_percent {
-        draw_library_progress_badge(display, state, thumb_point, percent)?;
+    Text::new(&label, Point::new(right - label_width, baseline), label_style).draw(display)?;
+    Ok(())
+}
+
+/// Dash length and gap for [`draw_dashed_rect`]'s "New" status outline.
+const LIBRARY_DASH_LEN: i32 = 4;
+const LIBRARY_DASH_GAP: i32 = 3;
+
+fn draw_dashed_hline(
+    display: &mut OrientedFrameBuffer<'_>,
+    left: i32,
+    right: i32,
+    y: i32,
+) -> Result<(), Infallible> {
+    let mut x = left;
+    while x < right {
+        let end = (x + LIBRARY_DASH_LEN).min(right);
+        Rectangle::new(Point::new(x, y), Size::new((end - x).max(0) as u32, 1))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+        x += LIBRARY_DASH_LEN + LIBRARY_DASH_GAP;
     }
     Ok(())
 }
 
-/// Gap kept between the cover's own edges and the progress badge, on both
-/// the top and the left side, so the badge reads as a pill floating just
-/// inside the corner of the art rather than flush with it.
-const LIBRARY_BADGE_EDGE_GAP: i32 = 6;
-/// Horizontal padding between the percentage text and the pill's sides.
-const LIBRARY_BADGE_PAD_X: i32 = 10;
-/// Vertical padding between the percentage text and the pill's top/bottom.
-const LIBRARY_BADGE_PAD_Y: i32 = 4;
-
-/// Reading-completion badge: a fully rounded ("pill") white tag, outlined so
-/// it stays legible over dark cover art and opaque so it always sits cleanly
-/// on top of the cover image beneath it regardless of what ink the art has
-/// there. Anchored to the cover's top-left corner with left-aligned text —
-/// centering a short, variable-width label ("7%" vs "100%") inside the pill
-/// made it look off-center from one glyph's side bearing to the next, so a
-/// fixed left inset reads as more precisely aligned than true centering did.
-fn draw_library_progress_badge(
+fn draw_dashed_vline(
     display: &mut OrientedFrameBuffer<'_>,
-    state: &AppState,
-    thumb_point: Point,
-    percent: u8,
+    x: i32,
+    top: i32,
+    bottom: i32,
 ) -> Result<(), Infallible> {
-    let style = state.display.body_style();
-    let label = format!("{}%", percent.min(100));
-    let text_width = style.text_width(&label);
-    // The pill is sized to this label's actual ink, not the font's full
-    // line pitch (`line_height`), which reserves room for descenders no
-    // digit or '%' glyph has — using it here would center the ink into the
-    // pill's top half and leave the bottom padding looking too generous.
-    let (ink_top, ink_bottom) = style.text_ink_bounds(&label);
-    let ink_height = ink_bottom - ink_top;
+    let mut y = top;
+    while y < bottom {
+        let end = (y + LIBRARY_DASH_LEN).min(bottom);
+        Rectangle::new(Point::new(x, y), Size::new(1, (end - y).max(0) as u32))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+        y += LIBRARY_DASH_LEN + LIBRARY_DASH_GAP;
+    }
+    Ok(())
+}
 
-    let badge_width = text_width + LIBRARY_BADGE_PAD_X * 2;
-    let badge_height = ink_height + LIBRARY_BADGE_PAD_Y * 2;
-    let badge_left = thumb_point.x + LIBRARY_BADGE_EDGE_GAP;
-    let badge_top = thumb_point.y + LIBRARY_BADGE_EDGE_GAP;
+fn draw_dashed_rect(
+    display: &mut OrientedFrameBuffer<'_>,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) -> Result<(), Infallible> {
+    draw_dashed_hline(display, left, right, top)?;
+    draw_dashed_hline(display, left, right, bottom - 1)?;
+    draw_dashed_vline(display, left, top, bottom)?;
+    draw_dashed_vline(display, right - 1, top, bottom)?;
+    Ok(())
+}
 
-    let badge_style = PrimitiveStyleBuilder::new()
-        .stroke_color(BinaryColor::On)
-        .stroke_width(1)
-        .fill_color(BinaryColor::Off)
-        .build();
-    let pill_radius = Size::new(badge_height as u32 / 2, badge_height as u32 / 2);
-    RoundedRectangle::new(
-        Rectangle::new(
-            Point::new(badge_left, badge_top),
-            Size::new(badge_width as u32, badge_height as u32),
-        ),
-        CornerRadii::new(pill_radius),
+/// Center x of the scrollbar track, in the gutter reserved to the right of
+/// the two-column grid (see `LIBRARY_CELL_WIDTH`'s doc comment).
+const LIBRARY_SCROLLBAR_X: i32 = 470;
+const LIBRARY_SCROLLBAR_THUMB_WIDTH: i32 = 6;
+/// Thumb never shrinks below this, so a very long library's thumb stays
+/// visible/grabbable-looking rather than shrinking to a sliver.
+const LIBRARY_SCROLLBAR_MIN_THUMB: i32 = 28;
+/// Room left below the scrollbar track, inside the same gutter column, for
+/// the "more below" chevron — so it doesn't need its own space reserved
+/// below `LIBRARY_GRID_BOTTOM` (the book grid runs to the full height; only
+/// the gutter's track/chevron split within it).
+const LIBRARY_SCROLLBAR_CHEVRON_RESERVE: i32 = 30;
+
+/// Scroll affordance for the two-section grid: a thin track spanning the
+/// full grid height plus a thumb sized to how much of the library is
+/// currently on-panel and positioned by how far into it the current page is.
+/// Drawn only when there's actually more content than fits on one screen —
+/// otherwise its mere presence would falsely suggest more to scroll to.
+fn draw_library_scrollbar(
+    display: &mut OrientedFrameBuffer<'_>,
+    track_top: i32,
+    track_bottom: i32,
+    offset: i32,
+    visible: i32,
+    total: i32,
+) -> Result<(), Infallible> {
+    let track_height = track_bottom - track_top;
+    if total <= track_height {
+        return Ok(());
+    }
+    Rectangle::new(
+        Point::new(LIBRARY_SCROLLBAR_X, track_top),
+        Size::new(1, track_height as u32),
     )
-    .into_styled(badge_style)
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
     .draw(display)?;
 
-    let text_left = badge_left + LIBRARY_BADGE_PAD_X;
-    let baseline = badge_top + LIBRARY_BADGE_PAD_Y - ink_top;
-    Text::new(&label, Point::new(text_left, baseline), style).draw(display)?;
+    let thumb_height = (visible.saturating_mul(track_height) / total)
+        .max(LIBRARY_SCROLLBAR_MIN_THUMB)
+        .min(track_height);
+    let scrollable_track = (track_height - thumb_height).max(0);
+    let scrollable_content = (total - visible).max(1);
+    let thumb_top = track_top + offset.saturating_mul(scrollable_track) / scrollable_content;
+
+    RoundedRectangle::new(
+        Rectangle::new(
+            Point::new(LIBRARY_SCROLLBAR_X - LIBRARY_SCROLLBAR_THUMB_WIDTH / 2, thumb_top),
+            Size::new(LIBRARY_SCROLLBAR_THUMB_WIDTH as u32, thumb_height as u32),
+        ),
+        CornerRadii::new(Size::new(
+            LIBRARY_SCROLLBAR_THUMB_WIDTH as u32 / 2,
+            LIBRARY_SCROLLBAR_THUMB_WIDTH as u32 / 2,
+        )),
+    )
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+    .draw(display)?;
     Ok(())
+}
+
+/// Down-chevron drawn at the bottom of the scrollbar gutter, below the track
+/// itself, only when the current page isn't the last one — the answer to
+/// "can I still scroll down for more books?" that the plain scrollbar thumb
+/// alone doesn't spell out.
+fn draw_library_scroll_hint(display: &mut OrientedFrameBuffer<'_>) -> Result<(), Infallible> {
+    draw_iconoir_icon(
+        display,
+        Point::new(LIBRARY_SCROLLBAR_X - 12, LIBRARY_GRID_BOTTOM - 24),
+        &FastArrowDownBox::new(BinaryColor::On),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -344,15 +913,20 @@ struct LibraryEntryColumns {
 fn bookmark_entry_columns(
     reader: &crate::reader::ReaderUiState,
     bookmark: &crate::reader::ReaderLocation,
+    locale: Locale,
 ) -> LibraryEntryColumns {
     if let Some(chapter) = reader.bookmark_display_chapter_page(bookmark) {
+        let badge = match locale {
+            Locale::English => format!("CH {}", chapter.chapter_number),
+            Locale::Italian => format!("CAP {}", chapter.chapter_number),
+        };
         LibraryEntryColumns {
-            badge: format!("CH {}", chapter.chapter_number),
+            badge,
             suffix: format!("P {}", chapter.page_text()),
         }
     } else {
         LibraryEntryColumns {
-            badge: "PAGE".into(),
+            badge: t(locale, "PAGE", "PAGINA").into(),
             suffix: reader.bookmark_display_page(bookmark).to_string(),
         }
     }
@@ -362,23 +936,32 @@ pub fn render_bookmarks(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    draw_header(display, state, "BOOKMARKS")?;
+    let locale = state.regional.locale;
+    draw_header(display, state, t(locale, "BOOKMARKS", "SEGNALIBRI"))?;
     let body = state.display.body_style();
     if state.reader.bookmarks.is_empty() {
         Text::new(
-            "No saved bookmarks",
+            t(locale, "No saved bookmarks", "Nessun segnalibro salvato"),
             Point::new(24, 164),
             state.display.heading_style(),
         )
         .draw(display)?;
         Text::new(
-            "Open a Reader page, choose Reader Options,",
+            t(
+                locale,
+                "Open a Reader page, choose Reader Options,",
+                "Apri una pagina, scegli Opzioni lettore,",
+            ),
             Point::new(24, 218),
             body,
         )
         .draw(display)?;
         Text::new(
-            "then select Add / Remove Bookmark.",
+            t(
+                locale,
+                "then select Add / Remove Bookmark.",
+                "poi seleziona Aggiungi/Rimuovi segnalibro.",
+            ),
             Point::new(24, 260),
             body,
         )
@@ -386,7 +969,7 @@ pub fn render_bookmarks(
     } else {
         for (index, bookmark) in state.reader.bookmarks.iter().take(8).enumerate() {
             let top = 118 + index as i32 * 64;
-            let columns = bookmark_entry_columns(&state.reader, bookmark);
+            let columns = bookmark_entry_columns(&state.reader, bookmark, locale);
             draw_row(
                 display,
                 state,
@@ -398,37 +981,160 @@ pub fn render_bookmarks(
             )?;
         }
     }
-    draw_footer(display, state.display, "MOVE  SELECT OPEN  BOOT BACK")
+    Ok(())
+}
+
+/// Book title shown under the header on the book-actions overlay and its
+/// bookmarks sub-screen — both operate on
+/// `state.reader.book_actions_target`, which is only ever unset if a route
+/// change raced the overlay closing (BOOT-button Back is instant; nothing
+/// in this app's input loop can reach either route without it set first).
+fn book_actions_target_title(state: &AppState) -> String {
+    let locale = state.regional.locale;
+    state
+        .reader
+        .book_actions_target
+        .as_ref()
+        .map_or_else(|| t(locale, "Book", "Libro").to_string(), |book| book.title.clone())
+}
+
+/// Library long-press overlay (`ScreenRoute::LibraryBookActions`): two
+/// actions for the book held on in the Library grid — mark it finished
+/// outright, or drill into its own bookmarks instead of the old flat,
+/// every-book list (see `render_library_book_bookmarks`).
+pub fn render_library_book_actions(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    draw_header(display, state, t(locale, "BOOK OPTIONS", "OPZIONI LIBRO"))?;
+    let heading = state.display.heading_style();
+    Text::new(
+        &truncate(&book_actions_target_title(state), 36),
+        Point::new(24, 106),
+        heading,
+    )
+    .draw(display)?;
+
+    for (index, action) in LibraryBookAction::ALL.iter().enumerate() {
+        let top = 168 + index as i32 * 66;
+        draw_row(
+            display,
+            state,
+            top,
+            state.reader.book_actions_selected == index,
+            action.label_i18n(locale),
+            "",
+            "",
+        )?;
+    }
+    Ok(())
+}
+
+/// One book's bookmarks (`ScreenRoute::LibraryBookBookmarks`), reached from
+/// [`render_library_book_actions`] — the chapter/page each row shows comes
+/// from the same [`bookmark_entry_columns`] helper `render_bookmarks` uses,
+/// just without a title column since every row here is already the same
+/// book.
+pub fn render_library_book_bookmarks(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    draw_header(display, state, t(locale, "BOOKMARKS", "SEGNALIBRI"))?;
+    let heading = state.display.heading_style();
+    let body = state.display.body_style();
+    Text::new(
+        &truncate(&book_actions_target_title(state), 36),
+        Point::new(24, 106),
+        heading,
+    )
+    .draw(display)?;
+
+    let bookmarks = state.reader.book_actions_bookmarks();
+    if bookmarks.is_empty() {
+        Text::new(
+            t(locale, "No saved bookmarks", "Nessun segnalibro salvato"),
+            Point::new(24, 164),
+            heading,
+        )
+        .draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "Open this book, then Reader Options,",
+                "Apri questo libro, poi Opzioni lettore,",
+            ),
+            Point::new(24, 218),
+            body,
+        )
+        .draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "then select Add / Remove Bookmark.",
+                "poi seleziona Aggiungi/Rimuovi segnalibro.",
+            ),
+            Point::new(24, 260),
+            body,
+        )
+        .draw(display)?;
+    } else {
+        for (index, bookmark) in bookmarks.iter().take(8).enumerate() {
+            let top = 164 + index as i32 * 64;
+            let columns = bookmark_entry_columns(&state.reader, bookmark, locale);
+            draw_row(
+                display,
+                state,
+                top,
+                state.reader.book_bookmarks_selected == index,
+                columns.badge.as_str(),
+                columns.suffix.as_str(),
+                "",
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub fn render_loading(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    draw_header(display, state, "OPENING BOOK")?;
+    let locale = state.regional.locale;
+    draw_header(display, state, t(locale, "OPENING BOOK", "APERTURA LIBRO"))?;
     let body = state.display.body_style();
     let heading = state.display.heading_style();
     let loading = state.reader.loading.as_ref();
-    let title = loading.map_or("Book", |value| value.book.title.as_str());
+    let title = loading.map_or(t(locale, "Book", "Libro"), |value| {
+        value.book.title.as_str()
+    });
     let stage = loading.map_or(ReaderLoadingStage::OpeningFile, |value| value.stage);
     Text::new(&truncate(title, 36), Point::new(24, 172), heading).draw(display)?;
-    Text::new(stage.label(), Point::new(24, 234), body).draw(display)?;
+    Text::new(stage.label_i18n(locale), Point::new(24, 234), body).draw(display)?;
     draw_progress(display, stage.progress())?;
-    let message = loading.map_or("Preparing reader...", |value| value.message.as_str());
+    let message = loading.map_or(
+        t(locale, "Preparing reader...", "Preparazione lettore..."),
+        |value| value.message.as_str(),
+    );
     Text::new(&truncate(message, 52), Point::new(24, 352), body).draw(display)?;
     Text::new(
-        "The current page opens before full indexing.",
+        t(
+            locale,
+            "The current page opens before full indexing.",
+            "La pagina attuale si apre prima dell'indicizzazione completa.",
+        ),
         Point::new(24, 406),
         body,
     )
     .draw(display)?;
-    draw_footer(display, state.display, "BOOT CANCEL")
+    Ok(())
 }
 
 /// Top margin above the reading-progress bar, in logical pixels.
 const PROGRESS_TOP: i32 = 12;
 /// Height of the reading-progress track, in logical pixels.
-const PROGRESS_HEIGHT: i32 = 8;
+const PROGRESS_HEIGHT: i32 = 10;
 /// Gap between the reading-progress bar and the first line of book text.
 const PROGRESS_TO_CONTENT_GAP: i32 = 14;
 
@@ -439,6 +1145,7 @@ pub fn render_page(
     let Some(session) = state.reader.session.as_ref() else {
         return render_continue_reading(display, state);
     };
+    let locale = state.regional.locale;
     let size = display.orientation().logical_size();
     let width = size.width as i32;
     let height = size.height as i32;
@@ -452,6 +1159,7 @@ pub fn render_page(
     );
 
     draw_reading_progress(display, state, session, width)?;
+    draw_reader_wheel(display, &body, body_style, &state.reader.dictionary_mode)?;
 
     if state.reader.preferences.theme == ReadingTheme::HighContrast {
         Rectangle::new(
@@ -465,6 +1173,7 @@ pub fn render_page(
     if let Some(page) = session.current_cached_page() {
         let line_step = i32::from(body_style.line_height()) + 2;
         let first_baseline = body.text.top + i32::from(body_style.line_height());
+        report_corrupted_page_text(page);
         for (index, line) in page
             .lines
             .iter()
@@ -474,6 +1183,14 @@ pub fn render_page(
             let baseline = first_baseline + index as i32 * line_step;
             if baseline >= body.text.bottom {
                 break;
+            }
+            if let Some(image) = &line.image {
+                let slot_top = baseline - i32::from(body_style.line_height());
+                let slot_height = image.slot_span as i32 * line_step;
+                draw_reader_inline_image(
+                    display, state, session, image, &body, body_style, slot_top, slot_height,
+                )?;
+                continue;
             }
             let (rendered, left) = aligned_reader_line(
                 line.text.as_str(),
@@ -489,7 +1206,7 @@ pub fn render_page(
     } else {
         let baseline = body.text.top + i32::from(body_style.line_height());
         Text::new(
-            "Preparing page...",
+            t(locale, "Preparing page...", "Preparazione pagina..."),
             Point::new(body.text.left, baseline),
             body_style,
         )
@@ -499,25 +1216,159 @@ pub fn render_page(
     draw_reader_footer(display, state, width, height, footer_line)
 }
 
+/// Diagnostic for field reports of pages that rendered fine once and later
+/// show up as `?`: pagination only ever emits printable ASCII plus the
+/// Italian accents the reader fonts carry, so any other character in an
+/// already-paginated line means that page's text changed after it was
+/// built, and the font draws each such character as `?`.
+fn report_corrupted_page_text(page: &crate::reader::ReaderCachedPage) {
+    let unexpected = |character: char| {
+        !(character == ' ' || character.is_ascii_graphic() || "àèéìòùÀÈÉÌÒÙ".contains(character))
+    };
+    for (index, line) in page.lines.iter().enumerate() {
+        let count = line.text.chars().filter(|value| unexpected(*value)).count();
+        if count > 0 {
+            let samples: Vec<String> = line
+                .text
+                .chars()
+                .filter(|value| unexpected(*value))
+                .take(8)
+                .map(|value| format!("U+{:04X}", u32::from(value)))
+                .collect();
+            log::error!(
+                "rustmix-wave=reader-page-text-corrupted page={} byte-offset={} line={index} count={count} samples={}",
+                page.page_index,
+                page.byte_offset,
+                samples.join(",")
+            );
+            return;
+        }
+    }
+}
+
+/// Look up (or, on a cache miss, synchronously decode+cache) one inline
+/// EPUB image and blit it into its reserved slot span, centered within the
+/// box, aspect-ratio-preserving rather than stretched (see
+/// `EpubImageCache::generate_bitmap`'s own doc comment). A cache miss costs
+/// one real ZIP+JPEG/PNG decode the first time a given page is shown; every
+/// redraw after that is a plain SD-cache read. This runs entirely off
+/// `&AppState` -- the SD cache file is the persistence layer, so there is
+/// nothing to write back into `AppState` for next time, unlike the Library
+/// screen's `library_thumbnails` map (which exists only to avoid a redundant
+/// SD read on every frame for a screen that redraws far more often than the
+/// Reader turns pages).
+fn draw_reader_inline_image(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    session: &crate::reader::ReaderSession,
+    image: &crate::reader::ReaderPageImage,
+    body: &ReaderBodyGeometry,
+    body_style: UiTextStyle,
+    slot_top: i32,
+    slot_height: i32,
+) -> Result<(), Infallible> {
+    // Pagination chose this box (see `crate::reader::inline_image_slots`) and
+    // the Reader's image prewarm generates the cache entry for exactly it, so
+    // a page the prewarm already reached is a plain SD-cache hit here.
+    let max_width = image.box_width;
+    let max_height = image.box_height;
+    let cache = crate::cover_cache::EpubImageCache::new(state.reader.cache_directory());
+    let bitmap = cache
+        .load_cached_bitmap(&session.book, &image.href, max_width, max_height)
+        .unwrap_or_else(|| {
+            cache.generate_bitmap(&session.book, &image.href, max_width, max_height)
+        });
+
+    if bitmap.placeholder {
+        return draw_inline_image_placeholder(
+            display, body, body_style, slot_top, slot_height, &image.alt,
+        );
+    }
+
+    let left = body.text.left + (body.text.width() - i32::from(bitmap.width)).max(0) / 2;
+    let top = slot_top + (slot_height - i32::from(bitmap.height)).max(0) / 2;
+    display.draw_packed_bitmap_opaque(
+        Point::new(left, top),
+        bitmap.width,
+        bitmap.height,
+        &bitmap.bits,
+    );
+    Ok(())
+}
+
+/// Bordered box shown when an inline image fails to extract or decode
+/// (corrupt file, unsupported format, oversized source -- see
+/// `MAX_PNG_DECODED_BUFFER_BYTES`), with its `alt` text centered inside when
+/// present. Matches the Library screen's own placeholder philosophy
+/// (`draw_library_cell`'s "not generated yet" outline) rather than silently
+/// leaving blank space where an illustration should be.
+fn draw_inline_image_placeholder(
+    display: &mut OrientedFrameBuffer<'_>,
+    body: &ReaderBodyGeometry,
+    body_style: UiTextStyle,
+    slot_top: i32,
+    slot_height: i32,
+    alt: &str,
+) -> Result<(), Infallible> {
+    let box_bounds = TextBounds::new(
+        body.text.left,
+        slot_top,
+        body.text.left + body.text.width(),
+        slot_top + slot_height,
+    );
+    Rectangle::new(
+        Point::new(box_bounds.left, box_bounds.top),
+        Size::new(
+            box_bounds.right.saturating_sub(box_bounds.left).max(0) as u32,
+            slot_height.max(0) as u32,
+        ),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+    .draw(display)?;
+    if !alt.is_empty() {
+        let label = truncate(alt, 48);
+        let label_width = body_style.text_width(&label);
+        let left = box_bounds.left + (box_bounds.right - box_bounds.left - label_width).max(0) / 2;
+        let baseline = slot_top + slot_height / 2 + i32::from(body_style.line_height()) / 2;
+        Text::new(&label, Point::new(left, baseline), body_style).draw_clipped(display, box_bounds)?;
+    }
+    Ok(())
+}
+
 /// Reading-progress row that replaces the Reader page's old title bar: a
-/// minimal track spanning the full width, filled to the current position,
-/// with the percentage printed at its right end. Keeping this the only
-/// element above the book text reclaims the header/title rows for content.
+/// rounded pill track spanning the full width, filled to the current
+/// position, with the chapter and percentage printed at its right end.
+/// Keeping this the only element above the book text reclaims the
+/// header/title rows for content.
 fn draw_reading_progress(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
     session: &crate::reader::ReaderSession,
     width: i32,
 ) -> Result<(), Infallible> {
-    let style = state.display.detail_style();
+    let style = state.display.body_style();
     let percent_label = session.reading_percent_label();
-    let percent_width = style.text_width(&percent_label);
+    // "Cap." (chapter) reads the same in English and Italian chrome, so this
+    // label does not need a locale-branched format!() -- unlike the rest of
+    // this file's UI strings.
+    let label = session.current_epub_chapter_page_label().map_or_else(
+        || percent_label.clone(),
+        |chapter| format!("Cap. {} - {percent_label}", chapter.chapter_number),
+    );
+    let label_width = style.text_width(&label);
     let track_left = 14;
-    let track_right = (width - 14 - 10 - percent_width).max(track_left + 4);
+    let track_right = (width - 14 - 10 - label_width).max(track_left + 4);
+    let track_radii = CornerRadii::new(Size::new(
+        PROGRESS_HEIGHT as u32 / 2,
+        PROGRESS_HEIGHT as u32 / 2,
+    ));
 
-    Rectangle::new(
-        Point::new(track_left, PROGRESS_TOP),
-        Size::new((track_right - track_left) as u32, PROGRESS_HEIGHT as u32),
+    RoundedRectangle::new(
+        Rectangle::new(
+            Point::new(track_left, PROGRESS_TOP),
+            Size::new((track_right - track_left) as u32, PROGRESS_HEIGHT as u32),
+        ),
+        track_radii,
     )
     .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
     .draw(display)?;
@@ -526,9 +1377,13 @@ fn draw_reading_progress(
         let inner_width = (track_right - track_left - 4).max(0);
         let fill_width = inner_width * i32::from(percent.min(100)) / 100;
         if fill_width > 0 {
-            Rectangle::new(
-                Point::new(track_left + 2, PROGRESS_TOP + 2),
-                Size::new(fill_width as u32, (PROGRESS_HEIGHT - 4).max(0) as u32),
+            let fill_height = (PROGRESS_HEIGHT - 4).max(0);
+            RoundedRectangle::new(
+                Rectangle::new(
+                    Point::new(track_left + 2, PROGRESS_TOP + 2),
+                    Size::new(fill_width as u32, fill_height as u32),
+                ),
+                CornerRadii::new(Size::new(fill_height as u32 / 2, fill_height as u32 / 2)),
             )
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
@@ -536,7 +1391,7 @@ fn draw_reading_progress(
     }
 
     Text::new(
-        &percent_label,
+        &label,
         Point::new(track_right + 10, PROGRESS_TOP + PROGRESS_HEIGHT),
         style,
     )
@@ -544,16 +1399,55 @@ fn draw_reading_progress(
     Ok(())
 }
 
-/// Line-select cursor glyph, kept a full word-space clear of the text it
-/// points at so it doesn't read as part of the line.
-const LINE_MARKER_GLYPH: &str = ">";
-/// Gap between the marker's right edge and the first character of the line.
-const LINE_MARKER_GAP: i32 = 10;
+/// Horizontal anchor for the wheel column: each shape is centered on this
+/// x, not left-aligned to it, so half of it (the half at `x < 0`) falls off
+/// the panel's left edge and is silently dropped by
+/// `FrameBuffer`'s bounds check (see `pixel_address`) -- turning the full
+/// circle into a right-facing semicircle and each triangle into a right
+/// triangle, at no extra drawing cost, while saving the half-width of
+/// horizontal space a fully on-screen icon would need.
+const WHEEL_CENTER_X: i32 = 0;
+
+/// Vertical affordance for the device's physical scroll wheel, drawn in the
+/// left margin beside the book text at the wheel's on-screen height (roughly
+/// text lines 2-5): an up arrow, a dot (the wheel's center press), and a down
+/// arrow, top to bottom, spread evenly across that span. Static furniture,
+/// not tied to the current dictionary line cursor -- it marks where the
+/// physical control sits, so its position never moves. The up/down arrows
+/// hide in `Definition` mode, mirroring `draw_reader_footer`'s existing
+/// suppression there (no per-line navigation makes sense mid-definition);
+/// the dot stays visible in every mode.
+fn draw_reader_wheel(
+    display: &mut OrientedFrameBuffer<'_>,
+    body: &ReaderBodyGeometry,
+    body_style: UiTextStyle,
+    dictionary_mode: &ReaderDictionaryMode,
+) -> Result<(), Infallible> {
+    let color = BinaryColor::On;
+    let line_step = i32::from(body_style.line_height()) + 2;
+    let first_baseline = body.text.top + i32::from(body_style.line_height());
+    let row2_baseline = first_baseline + line_step;
+    let row5_baseline = first_baseline + 4 * line_step;
+    let mid_baseline = (row2_baseline + row5_baseline) / 2;
+    let arrow_left = WHEEL_CENTER_X - ARROW_SIZE / 2;
+    let dot_left = WHEEL_CENTER_X - DOT_SIZE / 2;
+
+    let show_up_down = !matches!(dictionary_mode, ReaderDictionaryMode::Definition { .. });
+    if show_up_down {
+        draw_up_arrow(display, arrow_left, row2_baseline, color)?;
+    }
+    draw_dot(display, dot_left, mid_baseline, color)?;
+    if show_up_down {
+        draw_down_arrow(display, arrow_left, row5_baseline, color)?;
+    }
+    Ok(())
+}
 
 /// In-page dictionary lookup mode, drawn on top of the already-rendered book
-/// text: a `>` cursor next to the selected line, an underline beneath the
-/// selected word once a line is confirmed, and a compact definition panel
-/// once a word is confirmed. A hold-SELECT press toggles the whole mode; see
+/// text: the selected line's row filled and its text re-drawn inverted, an
+/// underline beneath the selected word once a line is confirmed, and a
+/// compact definition panel once a word is confirmed. A hold-SELECT press
+/// toggles the whole mode; see
 /// `AppState::apply_reader_dictionary_select_long_press`.
 fn draw_dictionary_mode_overlay(
     display: &mut OrientedFrameBuffer<'_>,
@@ -566,17 +1460,36 @@ fn draw_dictionary_mode_overlay(
     let (line_index, word_index, definition) = match &state.reader.dictionary_mode {
         ReaderDictionaryMode::Off => return Ok(()),
         ReaderDictionaryMode::LineSelect { line_index } => {
+            let Some(line) = page.lines.get(*line_index) else {
+                return Ok(());
+            };
             let line_step = i32::from(body_style.line_height()) + 2;
             let first_baseline = body.text.top + i32::from(body_style.line_height());
             let baseline = first_baseline + *line_index as i32 * line_step;
-            let marker_left =
-                body.text.left - LINE_MARKER_GAP - body_style.text_width(LINE_MARKER_GLYPH);
-            return Text::new(
-                LINE_MARKER_GLYPH,
-                Point::new(marker_left, baseline),
-                body_style,
+
+            Rectangle::new(
+                Point::new(
+                    body.text.left,
+                    baseline - i32::from(body_style.line_height()),
+                ),
+                Size::new(body.text.width() as u32, line_step as u32),
             )
-            .draw(display)
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+
+            let (rendered, left) = aligned_reader_line(
+                line.text.as_str(),
+                line.paragraph_end,
+                session.layout.paragraph_alignment,
+                body_style,
+                body.text,
+            );
+            return Text::new(
+                rendered.as_str(),
+                Point::new(left, baseline),
+                body_style.with_color(BinaryColor::Off),
+            )
+            .draw_clipped(display, body.text)
             .map(|_| ());
         }
         ReaderDictionaryMode::WordSelect {
@@ -703,10 +1616,12 @@ fn wrap_definition_lines(value: &str, max_chars: usize, max_lines: usize) -> Vec
     lines
 }
 
-/// Reader page footer: compact button hints (an up/down arrow glyph for
-/// page turns, a dot glyph for the options shortcut) on the left, freeing up
-/// room to show battery and clock — both dropped from the old header — on
-/// the right. Wi-Fi and the date are not shown while reading.
+/// Reader page footer: a dot glyph for the options/select shortcut and its
+/// contextual label on the left (page-turn hints now live in the wheel
+/// column beside the text instead, see `draw_reader_wheel`), and the clock
+/// plus battery icon — no percentage text — on the right, matching the clock
+/// every other screen's footer now shows. Wi-Fi and the date are not shown
+/// while reading.
 fn draw_reader_footer(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
@@ -714,7 +1629,8 @@ fn draw_reader_footer(
     height: i32,
     footer_line: i32,
 ) -> Result<(), Infallible> {
-    let style = state.display.detail_style();
+    let locale = state.regional.locale;
+    let style = state.display.body_style();
     let color = BinaryColor::On;
     let baseline = height - 18;
 
@@ -725,64 +1641,55 @@ fn draw_reader_footer(
     .into_styled(PrimitiveStyle::with_fill(color))
     .draw(display)?;
 
-    let (up_label, down_label, select_label, hold_label) = match &state.reader.dictionary_mode {
-        ReaderDictionaryMode::Off => ("Prev", "Next", "Options", "Hold:Dict"),
-        ReaderDictionaryMode::LineSelect { .. } => ("Line", "Line", "Pick line", "Hold:Exit"),
-        ReaderDictionaryMode::WordSelect { .. } => ("Word", "Word", "Look up", "Hold:Exit"),
-        ReaderDictionaryMode::Definition { .. } => ("", "", "Next word", "Hold:Exit"),
+    let (select_label, hold_label) = match &state.reader.dictionary_mode {
+        ReaderDictionaryMode::Off => (
+            t(locale, "Options", "Opzioni"),
+            t(locale, "Hold:Dict", "Tieni:Diz."),
+        ),
+        ReaderDictionaryMode::LineSelect { .. } => (
+            t(locale, "Pick line", "Scegli riga"),
+            t(locale, "Hold:Exit", "Tieni:Esci"),
+        ),
+        ReaderDictionaryMode::WordSelect { .. } => (
+            t(locale, "Look up", "Cerca"),
+            t(locale, "Hold:Exit", "Tieni:Esci"),
+        ),
+        ReaderDictionaryMode::Definition { .. } => (
+            t(locale, "Next word", "Prossima parola"),
+            t(locale, "Hold:Exit", "Tieni:Esci"),
+        ),
     };
 
     let mut cursor_x = 18;
-    if !up_label.is_empty() {
-        draw_up_arrow(display, cursor_x, baseline, color)?;
-        cursor_x += ARROW_SIZE + ICON_TEXT_GAP;
-        let cursor = Text::new(up_label, Point::new(cursor_x, baseline), style).draw(display)?;
-        cursor_x = cursor.x + FOOTER_GROUP_GAP;
-    }
-
-    if !down_label.is_empty() {
-        draw_down_arrow(display, cursor_x, baseline, color)?;
-        cursor_x += ARROW_SIZE + ICON_TEXT_GAP;
-        let cursor = Text::new(down_label, Point::new(cursor_x, baseline), style).draw(display)?;
-        cursor_x = cursor.x + FOOTER_GROUP_GAP;
-    }
-
     draw_dot(display, cursor_x, baseline, color)?;
     cursor_x += DOT_SIZE + ICON_TEXT_GAP;
     let cursor = Text::new(select_label, Point::new(cursor_x, baseline), style).draw(display)?;
     cursor_x = cursor.x + FOOTER_GROUP_GAP;
     Text::new(hold_label, Point::new(cursor_x, baseline), style).draw(display)?;
 
-    let time_label = state.status_time_label();
-    let battery_percent = state.battery_percent();
-    let battery_label =
-        battery_percent.map_or_else(|| "--".to_string(), |percent| format!("{percent}%"));
-
-    let mut right_x = width - 18 - style.text_width(&time_label);
-    Text::new(&time_label, Point::new(right_x, baseline), style).draw(display)?;
-
-    right_x -= 10 + style.text_width(&battery_label);
-    Text::new(&battery_label, Point::new(right_x, baseline), style).draw(display)?;
-
-    right_x -= 6 + BATTERY_SIZE.width as i32;
+    let mut right_x = width - 18 - BATTERY_SIZE.width as i32;
     draw_battery_icon(
         display,
         Point::new(right_x, baseline - BATTERY_SIZE.height as i32 + 3),
-        battery_percent,
+        state.battery_percent(),
         color,
     )?;
+
+    let time_label = state.status_time_label();
+    right_x -= 10 + style.text_width(&time_label);
+    Text::new(&time_label, Point::new(right_x, baseline), style).draw(display)?;
 
     Ok(())
 }
 
 /// Side length of the triangular up/down page-turn glyphs in the footer.
-const ARROW_SIZE: i32 = 9;
+const ARROW_SIZE: i32 = 13;
 /// Diameter of the round "options" glyph in the footer.
-const DOT_SIZE: i32 = 8;
+const DOT_SIZE: i32 = 12;
 /// Gap between a footer glyph and the label that follows it.
-const ICON_TEXT_GAP: i32 = 6;
+const ICON_TEXT_GAP: i32 = 8;
 /// Gap between one footer hint group and the next.
-const FOOTER_GROUP_GAP: i32 = 16;
+const FOOTER_GROUP_GAP: i32 = 24;
 
 /// Upward-pointing triangle (page-turn "previous") sitting on `baseline`.
 fn draw_up_arrow(
@@ -882,91 +1789,483 @@ pub fn render_options(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    draw_header(display, state, "READER OPTIONS")?;
+    let locale = state.regional.locale;
+    draw_header(
+        display,
+        state,
+        t(locale, "READER OPTIONS", "OPZIONI LETTORE"),
+    )?;
     for (index, option) in ReaderOption::ALL.iter().copied().enumerate() {
         let badge = match option {
-            ReaderOption::Bookmark if state.reader.current_page_is_bookmarked() => "REMOVE",
-            ReaderOption::Bookmark => "ADD",
-            ReaderOption::Bookmarks => "LIST",
-            ReaderOption::TableOfContents if state.reader.has_structured_toc() => "LIST",
-            _ => option.badge(),
+            ReaderOption::Bookmark if state.reader.current_page_is_bookmarked() => {
+                t(locale, "REMOVE", "RIMUOVI")
+            }
+            ReaderOption::Bookmark => t(locale, "ADD", "AGGIUNGI"),
+            ReaderOption::Bookmarks => t(locale, "LIST", "ELENCO"),
+            ReaderOption::TableOfContents if state.reader.has_structured_toc() => {
+                t(locale, "LIST", "ELENCO")
+            }
+            _ => option.badge_i18n(locale),
         };
         draw_row(
             display,
             state,
             142 + index as i32 * 66,
             state.reader.options_selected == index,
-            option.label(),
-            badge,
-            "",
-        )?;
-    }
-    draw_footer(display, state.display, "MOVE  SELECT ACTIVATE  BOOT BACK")
-}
-
-pub fn render_preferences(
-    display: &mut OrientedFrameBuffer<'_>,
-    state: &AppState,
-) -> Result<(), Infallible> {
-    draw_header(display, state, "READING PREFERENCES")?;
-    for (index, preference) in ReadingPreference::ALL.iter().copied().enumerate() {
-        let badge = match preference {
-            ReadingPreference::ReadingTheme => state.reader.preferences.theme.label(),
-            ReadingPreference::Orientation => state.reader.preferences.orientation.label(),
-            ReadingPreference::BookFontSize => state.reader.preferences.font_size.label(),
-            ReadingPreference::BookFont => state.reader.preferences.book_font.label(),
-            ReadingPreference::ParagraphAlignment => {
-                state.reader.preferences.paragraph_alignment.label()
-            }
-            ReadingPreference::ShowProgress if state.reader.preferences.show_progress => "On",
-            ReadingPreference::ShowProgress => "Off",
-        };
-        draw_row(
-            display,
-            state,
-            152 + index as i32 * 78,
-            state.reader.preferences_selected == index,
-            preference.label(),
+            option.label_i18n(locale),
             badge,
             "",
         )?;
     }
     draw_footer(
         display,
-        state.display,
-        "UP/DOWN MOVE  SELECT CHANGE  BOOT BACK",
+        state,
+        t(locale, "SELECT ACTIVATE", "SELECT ATTIVA"),
     )
+}
+
+/// Reading Preferences screen: the flat list of rows, or (once SELECT opens
+/// one) that row's editor. See `ReaderUiState::preference_edit`.
+pub fn render_preferences(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+) -> Result<(), Infallible> {
+    match state.reader.preference_edit {
+        Some(candidate) => render_preference_editor(display, state, candidate),
+        None => render_preference_list(display, state),
+    }
+}
+
+fn render_preference_list(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    draw_header(
+        display,
+        state,
+        t(locale, "READING PREFERENCES", "PREFERENZE DI LETTURA"),
+    )?;
+    for (index, preference) in ReadingPreference::ALL.iter().copied().enumerate() {
+        let badge = match preference {
+            ReadingPreference::ReadingTheme => state.reader.preferences.theme.label_i18n(locale),
+            ReadingPreference::Orientation => {
+                state.reader.preferences.orientation.label_i18n(locale)
+            }
+            ReadingPreference::BookFontSize => {
+                state.reader.preferences.font_size.label_i18n(locale)
+            }
+            ReadingPreference::BookFont => state.reader.preferences.book_font.label_i18n(locale),
+            ReadingPreference::ParagraphAlignment => state
+                .reader
+                .preferences
+                .paragraph_alignment
+                .label_i18n(locale),
+            ReadingPreference::ShowProgress if state.reader.preferences.show_progress => {
+                t(locale, "On", "Attivo")
+            }
+            ReadingPreference::ShowProgress => t(locale, "Off", "Non attivo"),
+            ReadingPreference::TapPageTurn if state.reader.preferences.tap_page_turn_enabled => {
+                t(locale, "On", "Attivo")
+            }
+            ReadingPreference::TapPageTurn => t(locale, "Off", "Non attivo"),
+        };
+        draw_row(
+            display,
+            state,
+            152 + index as i32 * 78,
+            state.reader.preferences_selected == index,
+            preference.label_i18n(locale),
+            badge,
+            "",
+        )?;
+    }
+    draw_footer(display, state, t(locale, "SELECT EDIT", "SELECT MODIFICA"))
+}
+
+/// Fixed sample paragraph shown while previewing Paragraph Alignment —
+/// long enough that Justified visibly stretches its non-final lines.
+const ALIGNMENT_SAMPLE_EN: [&str; 2] = [
+    "The quick brown fox jumps over the lazy dog while",
+    "reading is a quiet pleasure.",
+];
+/// Italian counterpart of [`ALIGNMENT_SAMPLE_EN`], kept to a similar length
+/// and line break so the alignment preview looks the same either way.
+const ALIGNMENT_SAMPLE_IT: [&str; 2] = [
+    "La volpe marrone salta veloce sopra il cane pigro",
+    "mentre la lettura è un piacere tranquillo.",
+];
+
+/// One row's editor: SELECT on the list opens this with `candidate` seeded
+/// from the current `preferences`; UP/DOWN browse `candidate` further
+/// (`state.reader` is only ever consulted for `selected_preference()` here —
+/// the value being previewed is always `candidate`, never `state.reader.preferences`).
+fn render_preference_editor(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    candidate: ReaderPreferences,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let preference = state.reader.selected_preference();
+    draw_header(display, state, preference.label_i18n(locale))?;
+    match preference {
+        ReadingPreference::Orientation => render_orientation_editor(display, state, candidate)?,
+        ReadingPreference::ParagraphAlignment => {
+            render_alignment_editor(display, state, candidate)?
+        }
+        ReadingPreference::BookFontSize => render_font_size_editor(display, state, candidate)?,
+        ReadingPreference::BookFont => render_font_editor(display, state, candidate)?,
+        ReadingPreference::ReadingTheme => render_theme_editor(display, state, candidate)?,
+        ReadingPreference::ShowProgress => {
+            render_toggle_editor(display, state, candidate.show_progress)?
+        }
+        ReadingPreference::TapPageTurn => {
+            render_toggle_editor(display, state, candidate.tap_page_turn_enabled)?
+        }
+    }
+    draw_footer(
+        display,
+        state,
+        t(locale, "SELECT CONFIRM", "SELECT CONFERMA"),
+    )
+}
+
+/// Row footprint shared by every icon-option row (Orientation, Paragraph
+/// Alignment): same 440-wide box as the plain-text list rows (`draw_row`),
+/// just with a small `size24px` glyph inset on the left before the label.
+const ICON_ROW_HEIGHT: i32 = 50;
+const ICON_ROW_ICON_SIZE: i32 = 24;
+const ICON_ROW_ICON_LEFT: i32 = 32;
+const ICON_ROW_LABEL_LEFT: i32 = 74;
+
+/// Draw one icon+label option row. `icon` is a different concrete
+/// `embedded-iconoir` type per call site, so callers pass it in already
+/// constructed rather than this function selecting it generically.
+fn draw_icon_option_row<I>(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    top: i32,
+    selected: bool,
+    icon: &I,
+    label: &str,
+) -> Result<(), Infallible>
+where
+    I: embedded_graphics::image::ImageDrawable<Color = BinaryColor>,
+{
+    let body = state.display.body_style();
+    let style = if selected {
+        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
+    } else {
+        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
+    };
+    Rectangle::new(Point::new(20, top), Size::new(440, ICON_ROW_HEIGHT as u32))
+        .into_styled(style)
+        .draw(display)?;
+    draw_iconoir_icon(
+        display,
+        Point::new(
+            ICON_ROW_ICON_LEFT,
+            top + (ICON_ROW_HEIGHT - ICON_ROW_ICON_SIZE) / 2,
+        ),
+        icon,
+    )?;
+    Text::new(label, Point::new(ICON_ROW_LABEL_LEFT, top + 32), body).draw(display)?;
+    Ok(())
+}
+
+const EDITOR_ROW_TOP: i32 = 150;
+const EDITOR_ROW_STEP: i32 = 66;
+
+fn render_orientation_editor(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    candidate: ReaderPreferences,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    for (index, orientation) in [ReaderOrientation::Portrait, ReaderOrientation::Landscape]
+        .into_iter()
+        .enumerate()
+    {
+        let top = EDITOR_ROW_TOP + index as i32 * EDITOR_ROW_STEP;
+        let selected = orientation == candidate.orientation;
+        match orientation {
+            ReaderOrientation::Portrait => draw_icon_option_row(
+                display,
+                state,
+                top,
+                selected,
+                &FastArrowDownBox::new(BinaryColor::On),
+                orientation.label_i18n(locale),
+            )?,
+            ReaderOrientation::Landscape => draw_icon_option_row(
+                display,
+                state,
+                top,
+                selected,
+                &FastArrowRightBox::new(BinaryColor::On),
+                orientation.label_i18n(locale),
+            )?,
+        }
+    }
+    Ok(())
+}
+
+/// Two-row On/Off editor shared by Show Progress and Tap Page-Turn: neither
+/// preference has a multi-value list worth an icon, so this just highlights
+/// whichever row matches `enabled` the way the icon editors highlight the
+/// row matching `candidate`.
+fn render_toggle_editor(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    enabled: bool,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    for (index, value) in [true, false].into_iter().enumerate() {
+        let top = EDITOR_ROW_TOP + index as i32 * EDITOR_ROW_STEP;
+        let label = if value {
+            t(locale, "On", "Attivo")
+        } else {
+            t(locale, "Off", "Non attivo")
+        };
+        draw_row(display, state, top, value == enabled, label, "", "")?;
+    }
+    Ok(())
+}
+
+fn render_alignment_editor(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    candidate: ReaderPreferences,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let alignments = [
+        ParagraphAlignment::Left,
+        ParagraphAlignment::Center,
+        ParagraphAlignment::Right,
+        ParagraphAlignment::Justified,
+    ];
+    for (index, alignment) in alignments.into_iter().enumerate() {
+        let top = EDITOR_ROW_TOP + index as i32 * EDITOR_ROW_STEP;
+        let selected = alignment == candidate.paragraph_alignment;
+        match alignment {
+            ParagraphAlignment::Left => draw_icon_option_row(
+                display,
+                state,
+                top,
+                selected,
+                &AlignLeft::new(BinaryColor::On),
+                alignment.label_i18n(locale),
+            )?,
+            ParagraphAlignment::Center => draw_icon_option_row(
+                display,
+                state,
+                top,
+                selected,
+                &AlignCenter::new(BinaryColor::On),
+                alignment.label_i18n(locale),
+            )?,
+            ParagraphAlignment::Right => draw_icon_option_row(
+                display,
+                state,
+                top,
+                selected,
+                &AlignRight::new(BinaryColor::On),
+                alignment.label_i18n(locale),
+            )?,
+            ParagraphAlignment::Justified => draw_icon_option_row(
+                display,
+                state,
+                top,
+                selected,
+                &AlignJustify::new(BinaryColor::On),
+                alignment.label_i18n(locale),
+            )?,
+        }
+    }
+
+    let body_style = reader_body_style(candidate.book_font, candidate.font_size, candidate.theme);
+    let sample_top = EDITOR_ROW_TOP + alignments.len() as i32 * EDITOR_ROW_STEP + 20;
+    let bounds = TextBounds::new(24, sample_top, 456, sample_top + 110);
+    let line_step = i32::from(body_style.line_height()) + 2;
+    let alignment_sample = match locale {
+        Locale::English => ALIGNMENT_SAMPLE_EN,
+        Locale::Italian => ALIGNMENT_SAMPLE_IT,
+    };
+    for (index, line) in alignment_sample.iter().enumerate() {
+        let paragraph_end = index + 1 == alignment_sample.len();
+        let (rendered, left) = aligned_reader_line(
+            line,
+            paragraph_end,
+            candidate.paragraph_alignment,
+            body_style,
+            bounds,
+        );
+        let baseline = bounds.top + i32::from(body_style.line_height()) + index as i32 * line_step;
+        Text::new(rendered.as_str(), Point::new(left, baseline), body_style)
+            .draw_clipped(display, bounds)?;
+    }
+    Ok(())
+}
+
+/// One text-sample row per candidate, used by both Book Font Size and Book
+/// Font: a real specimen rendered with `reader_body_style`, not a mockup, so
+/// what's previewed is exactly what the page will look like.
+fn draw_specimen_row(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    top: i32,
+    selected: bool,
+    label: &str,
+    specimen_style: UiTextStyle,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let ui_body = state.display.body_style();
+    let style = if selected {
+        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
+    } else {
+        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
+    };
+    Rectangle::new(Point::new(20, top), Size::new(440, 64))
+        .into_styled(style)
+        .draw(display)?;
+    Text::new(label, Point::new(36, top + 26), ui_body).draw(display)?;
+    Text::new(
+        t(locale, "Aa Reading sample", "Aa Esempio di lettura"),
+        Point::new(36, top + 52),
+        specimen_style,
+    )
+    .draw_clipped(display, TextBounds::new(36, top, 448, top + 64))?;
+    Ok(())
+}
+
+fn render_font_size_editor(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    candidate: ReaderPreferences,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let sizes = [
+        BookFontSize::Large,
+        BookFontSize::XLarge,
+        BookFontSize::XXLarge,
+        BookFontSize::XXXLarge,
+    ];
+    for (index, size) in sizes.into_iter().enumerate() {
+        let specimen_style = reader_body_style(candidate.book_font, size, candidate.theme);
+        draw_specimen_row(
+            display,
+            state,
+            150 + index as i32 * 78,
+            size == candidate.font_size,
+            size.label_i18n(locale),
+            specimen_style,
+        )?;
+    }
+    Ok(())
+}
+
+fn render_font_editor(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    candidate: ReaderPreferences,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let fonts = [
+        BookFont::Inter,
+        BookFont::AtkinsonHyperlegible,
+        BookFont::Serif,
+        BookFont::Literata,
+    ];
+    for (index, font) in fonts.into_iter().enumerate() {
+        let specimen_style = reader_body_style(font, candidate.font_size, candidate.theme);
+        draw_specimen_row(
+            display,
+            state,
+            150 + index as i32 * 78,
+            font == candidate.book_font,
+            font.label_i18n(locale),
+            specimen_style,
+        )?;
+    }
+    Ok(())
+}
+
+fn render_theme_editor(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    candidate: ReaderPreferences,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let themes = [ReadingTheme::Classic, ReadingTheme::HighContrast];
+    for (index, theme) in themes.into_iter().enumerate() {
+        let top = 150 + index as i32 * 78;
+        let specimen_style = reader_body_style(candidate.book_font, candidate.font_size, theme);
+        draw_specimen_row(
+            display,
+            state,
+            top,
+            theme == candidate.theme,
+            theme.label_i18n(locale),
+            specimen_style,
+        )?;
+        // Same border `render_page` draws around the body for HighContrast
+        // ([render_page]), reused here unchanged so the preview matches.
+        if theme == ReadingTheme::HighContrast {
+            Rectangle::new(Point::new(28, top + 6), Size::new(424, 52))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
+                .draw(display)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn render_toc(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    draw_header(display, state, "TABLE OF CONTENTS")?;
+    let locale = state.regional.locale;
+    draw_header(display, state, t(locale, "TABLE OF CONTENTS", "INDICE"))?;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let toc = state.reader.toc_entries();
     if toc.is_empty() {
-        Text::new("No structured TOC", Point::new(24, 196), heading).draw(display)?;
         Text::new(
-            "Ordinary TXT files do not provide a formal",
+            t(locale, "No structured TOC", "Nessun indice strutturato"),
+            Point::new(24, 196),
+            heading,
+        )
+        .draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "Ordinary TXT files do not provide a formal",
+                "I file TXT normali non hanno un indice",
+            ),
             Point::new(24, 254),
             body,
         )
         .draw(display)?;
         Text::new(
-            "table of contents. EPUB books expose their",
+            t(
+                locale,
+                "table of contents. EPUB books expose their",
+                "formale. I libri EPUB mostrano qui le loro",
+            ),
             Point::new(24, 296),
             body,
         )
         .draw(display)?;
         Text::new(
-            "navigation entries on this screen.",
+            t(
+                locale,
+                "navigation entries on this screen.",
+                "voci di navigazione.",
+            ),
             Point::new(24, 338),
             body,
         )
         .draw(display)?;
-        return draw_footer(display, state.display, "BOOT BACK");
+        return Ok(());
     }
 
     let first = state.reader.toc_selected.saturating_sub(7);
@@ -978,11 +2277,11 @@ pub fn render_toc(
             120 + row as i32 * 64,
             state.reader.toc_selected == index,
             &truncate(&entry.label, 27),
-            "CH",
-            &(entry.spine_index + 1).to_string(),
+            t(locale, "CH", "CAP"),
+            &(index + 1).to_string(),
         )?;
     }
-    draw_footer(display, state.display, "MOVE  SELECT OPEN  BOOT BACK")
+    Ok(())
 }
 
 fn aligned_reader_line(
@@ -1083,9 +2382,11 @@ fn truncate(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        aligned_reader_line, bookmark_entry_columns, library_visible_books, render_bookmarks,
-        render_continue_reading, render_library, render_loading, render_options,
-        render_preferences, render_toc, ReaderBodyGeometry,
+        aligned_reader_line, bookmark_entry_columns, library_grid_entries, library_visible_books,
+        reader_body_style, render_bookmarks, render_continue_reading, render_library,
+        render_library_book_actions, render_library_book_bookmarks, render_loading,
+        render_options, render_preferences, render_toc, LibraryCellStatus, ReaderBodyGeometry,
+        PROGRESS_HEIGHT, PROGRESS_TOP, PROGRESS_TO_CONTENT_GAP,
     };
     use crate::{
         app::AppState,
@@ -1093,9 +2394,11 @@ mod tests {
         framebuffer::FrameBuffer,
         orientation::OrientedFrameBuffer,
         reader::{
-            BookFormat, ParagraphAlignment, PendingReaderOpen, ReaderBook, ReaderChapterPageLabel,
-            ReaderLoadingStage, ReaderLocation,
+            BookFont, BookFontSize, BookFormat, ParagraphAlignment, PendingReaderOpen, ReaderBook,
+            ReaderChapterPageLabel, ReaderLoadingStage, ReaderLocation, ReaderOrientation,
+            ReaderPreferences, ReadingPreference, ReadingTheme,
         },
+        regional::Locale,
     };
 
     #[test]
@@ -1128,9 +2431,16 @@ mod tests {
         };
         let reader = crate::reader::ReaderUiState::default();
         assert_eq!(
-            bookmark_entry_columns(&reader, &bookmark),
+            bookmark_entry_columns(&reader, &bookmark, Locale::English),
             super::LibraryEntryColumns {
                 badge: "CH 4".into(),
+                suffix: "P 3/12".into(),
+            }
+        );
+        assert_eq!(
+            bookmark_entry_columns(&reader, &bookmark, Locale::Italian),
+            super::LibraryEntryColumns {
+                badge: "CAP 4".into(),
                 suffix: "P 3/12".into(),
             }
         );
@@ -1144,8 +2454,24 @@ mod tests {
         render_continue_reading(&mut display, &state).unwrap();
         render_library(&mut display, &state).unwrap();
         render_bookmarks(&mut display, &state).unwrap();
+        render_library_book_actions(&mut display, &state).unwrap();
+        state.reader.open_book_actions(ReaderBook {
+            path: "a.txt".into(),
+            title: "A".into(),
+            format: BookFormat::Text,
+            size_bytes: 1,
+            modified_seconds: 0,
+        });
+        render_library_book_actions(&mut display, &state).unwrap();
+        render_library_book_bookmarks(&mut display, &state).unwrap();
         render_options(&mut display, &state).unwrap();
         render_preferences(&mut display, &state).unwrap();
+        for (index, _preference) in ReadingPreference::ALL.iter().enumerate() {
+            state.reader.preferences_selected = index;
+            state.reader.open_preference_editor();
+            render_preferences(&mut display, &state).unwrap();
+        }
+        state.reader.preference_edit = None;
         render_toc(&mut display, &state).unwrap();
         state.reader.loading = Some(PendingReaderOpen {
             book: ReaderBook {
@@ -1191,9 +2517,7 @@ mod tests {
         // pulling every other book along with it.
         state.reader.library_selected = state.reader.books.len() - 1;
         let visible_at_end = library_visible_books(&state);
-        assert!(visible_at_end
-            .iter()
-            .any(|book| book.path == "book19.epub"));
+        assert!(visible_at_end.iter().any(|book| book.path == "book19.epub"));
         assert!(visible_at_end.len() < state.reader.books.len());
     }
 
@@ -1245,5 +2569,126 @@ mod tests {
             bounds,
         );
         assert!(justified.len() > "one two three".len());
+    }
+
+    /// For every real on-device orientation/font/size combination, the last
+    /// line `ReaderPreferences::layout()` says fits on a page
+    /// (`lines_per_page`) must actually clear `render_page`'s own
+    /// `if baseline >= body.text.bottom { break; }` guard. If a calibrated
+    /// `lines_per_page` and the render geometry ever disagree by even one
+    /// pixel, that guard silently drops the page's last line -- paginated,
+    /// but never drawn -- which reads exactly like "a line goes missing
+    /// between page turns" despite the underlying text data being complete.
+    /// Portrait/XLarge caught exactly this (line 20 landed baseline-on-edge)
+    /// before `layout()` was corrected to 19; this guards against that class
+    /// of drift recurring for any future font/size addition.
+    #[test]
+    fn every_reader_layout_clears_its_own_render_clip_guard() {
+        let orientations = [ReaderOrientation::Portrait, ReaderOrientation::Landscape];
+        let sizes = [
+            BookFontSize::Large,
+            BookFontSize::XLarge,
+            BookFontSize::XXLarge,
+            BookFontSize::XXXLarge,
+        ];
+        let fonts = [
+            BookFont::Inter,
+            BookFont::AtkinsonHyperlegible,
+            BookFont::Serif,
+            BookFont::Literata,
+        ];
+
+        let mut failures = Vec::new();
+        for &orientation in &orientations {
+            for &font_size in &sizes {
+                for &book_font in &fonts {
+                    let preferences = ReaderPreferences {
+                        theme: ReadingTheme::Classic,
+                        orientation,
+                        font_size,
+                        book_font,
+                        paragraph_alignment: ParagraphAlignment::Left,
+                        show_progress: true,
+                        tap_page_turn_enabled: true,
+                    };
+                    let layout = preferences.layout();
+                    let display_orientation = match orientation {
+                        ReaderOrientation::Portrait => {
+                            crate::orientation::DisplayOrientation::Portrait
+                        }
+                        ReaderOrientation::Landscape => {
+                            crate::orientation::DisplayOrientation::Landscape
+                        }
+                    };
+                    let size = display_orientation.logical_size();
+                    let width = size.width as i32;
+                    let height = size.height as i32;
+                    let content_top = PROGRESS_TOP + PROGRESS_HEIGHT + PROGRESS_TO_CONTENT_GAP;
+                    let footer_line = height - 54;
+                    let body = ReaderBodyGeometry::new(width, content_top, footer_line);
+                    let body_style = reader_body_style(book_font, font_size, ReadingTheme::Classic);
+                    let line_step = i32::from(body_style.line_height()) + 2;
+                    let first_baseline = body.text.top + i32::from(body_style.line_height());
+                    let last_index = layout.lines_per_page - 1;
+                    let last_baseline = first_baseline + last_index as i32 * line_step;
+                    if last_baseline >= body.text.bottom {
+                        failures.push(format!(
+                            "orientation={orientation:?} font_size={font_size:?} book_font={book_font:?}: \
+                             lines_per_page={} last_baseline={last_baseline} body.text.bottom={} \
+                             (line_height={})",
+                            layout.lines_per_page,
+                            body.text.bottom,
+                            body_style.line_height(),
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "the following configurations drop their last calibrated line at render time:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn marking_a_book_completed_moves_it_from_new_to_completed_in_recent() {
+        let mut state = AppState::default();
+        state.reader.books = vec![epub_book(0)];
+
+        let (entries, in_progress_count) = library_grid_entries(&state.reader);
+        assert_eq!(in_progress_count, 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, LibraryCellStatus::New);
+
+        state.reader.open_book_actions(entries[0].book.clone());
+        assert!(state.reader.mark_book_actions_target_completed());
+
+        let (entries, in_progress_count) = library_grid_entries(&state.reader);
+        assert_eq!(in_progress_count, 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, LibraryCellStatus::Completed);
+    }
+
+    #[test]
+    fn a_book_stuck_at_zero_percent_is_new_not_reading_now() {
+        let mut state = AppState::default();
+        state.reader.books = vec![epub_book(0)];
+        state.reader.recent = vec![ReaderLocation {
+            path: "book0.epub".into(),
+            title: "Book 0".into(),
+            format: BookFormat::Epub,
+            size_bytes: 10,
+            modified_seconds: 1,
+            page_index: 0,
+            byte_offset: 0,
+            epub_chapter: None,
+            reading_percent: Some(0),
+        }];
+
+        let (entries, in_progress_count) = library_grid_entries(&state.reader);
+        assert_eq!(in_progress_count, 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, LibraryCellStatus::New);
     }
 }

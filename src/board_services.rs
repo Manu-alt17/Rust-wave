@@ -7,9 +7,9 @@ use log::warn;
 
 use crate::{
     environment::{EnvironmentReading, Shtc3},
-    imu::{ImuReading, Qmi8658},
+    imu::{ImuReading, Qmi8658, TapConfig, TapStatus},
     ntp::rtc_storage_wall_clock_from_utc,
-    power::{Axp2101, PowerSnapshot},
+    power::{Axp2101, BatteryPercentFilter, PowerSnapshot},
     power_key::PowerKeyEvent,
     regional::{RegionalPreferences, TemperatureUnit},
     rtc::{Pcf85063, RtcDateTime},
@@ -83,6 +83,8 @@ pub struct BoardInitReport {
     pub environment_available: bool,
     pub power_monitoring_available: bool,
     pub imu_available: bool,
+    /// Diagnostic-phase QMI8658 tap-detection engine (see `imu_tap_diagnostics`).
+    pub tap_diagnostics_available: bool,
     pub rtc_clock_integrity_was_lost: bool,
     pub environment_sensor_id: Option<u16>,
     pub imu_address: Option<u8>,
@@ -96,6 +98,10 @@ pub struct BoardServices<I2C> {
     power: Axp2101<SharedI2cBus<I2C>>,
     imu: Qmi8658<SharedI2cBus<I2C>>,
     init_report: BoardInitReport,
+    /// Smooths out lone AXP2101 fuel-gauge glitches (see
+    /// [`BatteryPercentFilter`]) across every [`Self::sample_power`] call,
+    /// including the frequent per-button-press [`Self::read_light_snapshot`].
+    battery_percent_filter: BatteryPercentFilter,
 }
 
 impl<I2C> BoardServices<I2C>
@@ -111,6 +117,7 @@ where
             power: Axp2101::new(bus.clone()),
             imu: Qmi8658::new(bus),
             init_report: BoardInitReport::default(),
+            battery_percent_filter: BatteryPercentFilter::default(),
         }
     }
 
@@ -145,6 +152,20 @@ where
                 self.init_report.imu_revision = Some(report.revision);
             }
             Err(error) => warn!("sample-services: QMI8658 init unavailable: {error:#}"),
+        }
+
+        if self.init_report.imu_available {
+            match self.imu.configure_tap_detection(TapConfig::default(), delay) {
+                Ok(()) => match self.imu.enable_tap_detection() {
+                    Ok(()) => self.init_report.tap_diagnostics_available = true,
+                    Err(error) => {
+                        warn!("sample-services: QMI8658 tap-detection enable unavailable: {error:#}")
+                    }
+                },
+                Err(error) => {
+                    warn!("sample-services: QMI8658 tap-detection configuration unavailable: {error:#}")
+                }
+            }
         }
 
         self.init_report
@@ -197,7 +218,7 @@ where
         Ok(asserted)
     }
 
-    /// Enable PMIC short-menu and long-sleep Power-key event polling.
+    /// Enable PMIC short-sleep and long-menu Power-key event polling.
     pub fn initialize_power_key_events(&mut self) -> anyhow::Result<()> {
         self.power.initialize_power_key_events()
     }
@@ -214,6 +235,17 @@ where
             anyhow::bail!("QMI8658 service unavailable");
         }
         self.imu.read_motion()
+    }
+
+    /// Poll for a new QMI8658 hardware tap-detection engine event (edge on
+    /// `STATUS1.TAP_EVENT`, not a raw `TAP_STATUS` comparison -- see
+    /// [`crate::imu::Qmi8658::poll_tap_event`]). Diagnostic-phase only; see
+    /// `imu_tap_diagnostics`.
+    pub fn poll_tap_event(&mut self) -> anyhow::Result<Option<TapStatus>> {
+        if !self.init_report.tap_diagnostics_available {
+            anyhow::bail!("QMI8658 tap-detection service unavailable");
+        }
+        self.imu.poll_tap_event()
     }
 
     /// Disable QMI8658 accelerometer/gyroscope sampling before MCU deep
@@ -235,42 +267,81 @@ where
         self.imu.wake()
     }
 
-    /// Capture a best-effort status snapshot. Each optional field remains
-    /// independent so one absent sensor cannot blank unrelated status values.
-    pub fn read_snapshot<D: DelayNs>(&mut self, delay: &mut D) -> BoardSnapshot {
-        let rtc = match self.rtc.read_datetime() {
+    /// Drop the QMI8658 to its accelerometer-only, 21 Hz low-power profile
+    /// while a screen that doesn't need the gyroscope (Reader today) is
+    /// active. A no-op when the IMU never initialized.
+    pub fn imu_enter_low_power_orientation_mode(&mut self) -> anyhow::Result<()> {
+        if !self.init_report.imu_available {
+            return Ok(());
+        }
+        self.imu.enter_low_power_orientation_mode()
+    }
+
+    /// Restore the QMI8658's full accelerometer+gyroscope sample profile
+    /// after [`Self::imu_enter_low_power_orientation_mode`]. A no-op when
+    /// the IMU never initialized.
+    pub fn imu_wake_full_rate(&mut self) -> anyhow::Result<()> {
+        if !self.init_report.imu_available {
+            return Ok(());
+        }
+        self.imu.wake_full_rate()
+    }
+
+    fn sample_rtc(&mut self) -> Option<RtcDateTime> {
+        match self.rtc.read_datetime() {
             Ok(value) => Some(value),
             Err(error) => {
                 warn!("sample-services: RTC read unavailable: {error:#}");
                 None
             }
-        };
-        let environment = match self.environment.read_environment(delay) {
+        }
+    }
+
+    fn sample_power(&mut self) -> Option<PowerSnapshot> {
+        match self.power.read_power_snapshot() {
+            Ok(mut value) => {
+                value.battery_percent = value
+                    .battery_percent
+                    .map(|raw| self.battery_percent_filter.apply(raw));
+                Some(value)
+            }
+            Err(error) => {
+                warn!("sample-services: AXP2101 status unavailable: {error:#}");
+                None
+            }
+        }
+    }
+
+    fn sample_imu(&mut self) -> Option<ImuReading> {
+        if !self.init_report.imu_available {
+            return None;
+        }
+        match self.imu.read_motion() {
+            Ok(value) => Some(value),
+            Err(error) => {
+                warn!("sample-services: QMI8658 read unavailable: {error:#}");
+                None
+            }
+        }
+    }
+
+    fn sample_environment<D: DelayNs>(&mut self, delay: &mut D) -> Option<EnvironmentReading> {
+        match self.environment.read_environment(delay) {
             Ok(value) => Some(value),
             Err(error) => {
                 warn!("sample-services: SHTC3 read unavailable: {error:#}");
                 None
             }
-        };
-        let power = match self.power.read_power_snapshot() {
-            Ok(value) => Some(value),
-            Err(error) => {
-                warn!("sample-services: AXP2101 status unavailable: {error:#}");
-                None
-            }
-        };
-        let imu = if self.init_report.imu_available {
-            match self.imu.read_motion() {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    warn!("sample-services: QMI8658 read unavailable: {error:#}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        }
+    }
 
+    fn assemble_snapshot(
+        &self,
+        rtc: Option<RtcDateTime>,
+        environment: Option<EnvironmentReading>,
+        power: Option<PowerSnapshot>,
+        imu: Option<ImuReading>,
+    ) -> BoardSnapshot {
         BoardSnapshot {
             rtc,
             environment,
@@ -281,6 +352,42 @@ where
             imu_address: self.init_report.imu_address,
             imu_revision: self.init_report.imu_revision,
         }
+    }
+
+    /// Capture a best-effort status snapshot. Each optional field remains
+    /// independent so one absent sensor cannot blank unrelated status values.
+    pub fn read_snapshot<D: DelayNs>(&mut self, delay: &mut D) -> BoardSnapshot {
+        let rtc = self.sample_rtc();
+        let environment = self.sample_environment(delay);
+        let power = self.sample_power();
+        let imu = self.sample_imu();
+        self.assemble_snapshot(rtc, environment, power, imu)
+    }
+
+    /// Cheap per-interaction refresh: RTC (header clock, plus several
+    /// screens' business logic that timestamps "now") and PMIC status
+    /// (header battery glyph), plus the IMU (a couple of I2C bursts with no
+    /// forced delay). Skips the SHTC3 measurement, whose wake/measure/sleep
+    /// cycle blocks for a mandatory ~20ms — wasted on every button press for
+    /// the many routes that never display temperature/humidity. Callers on
+    /// a route that does need it (Clock, Environment) must follow up with
+    /// [`Self::refresh_environment_into`] once the resulting route is known.
+    pub fn read_light_snapshot(&mut self) -> BoardSnapshot {
+        let rtc = self.sample_rtc();
+        let power = self.sample_power();
+        let imu = self.sample_imu();
+        self.assemble_snapshot(rtc, None, power, imu)
+    }
+
+    /// Fill in a fresh SHTC3 reading on an existing snapshot, leaving every
+    /// other field untouched. Pairs with [`Self::read_light_snapshot`] for
+    /// routes that display temperature/humidity.
+    pub fn refresh_environment_into<D: DelayNs>(
+        &mut self,
+        delay: &mut D,
+        snapshot: &mut BoardSnapshot,
+    ) {
+        snapshot.environment = self.sample_environment(delay);
     }
 }
 

@@ -10,11 +10,13 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
     },
     orientation::OrientedFrameBuffer,
+    regional::Locale,
     unit_converter::{format_milli, ConversionResult, ConverterField},
 };
 
@@ -23,36 +25,44 @@ pub fn render_unit_converter(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let converter = state.unit_converter;
     let body = state.display.body_style();
     let heading = state.display.heading_style();
-    let result = result_label(converter.result(), converter.to_unit().symbol());
+    let result = result_label(locale, converter.result(), converter.to_unit().symbol());
     let value = format_milli(converter.value_milli);
     let step = format_milli(converter.step_milli());
 
-    draw_header(display, state, "UNIT CONVERTER")?;
+    // "Conv" reads the same in English and Italian chrome, so this header
+    // does not need a locale-branched `t()` call.
+    draw_header(display, state, "CONV")?;
 
-    Text::new("Conversion", Point::new(22, 112), heading).draw(display)?;
+    Text::new(
+        t(locale, "Conversion", "Conversione"),
+        Point::new(22, 112),
+        heading,
+    )
+    .draw(display)?;
     draw_field(
         display,
         138,
-        "Category",
-        converter.category.label(),
+        t(locale, "Category", "Categoria"),
+        converter.category.label_i18n(locale),
         converter.active_field == ConverterField::Category,
         body,
     )?;
     draw_field(
         display,
         200,
-        "From",
-        converter.from_unit().label(),
+        t(locale, "From", "Da"),
+        converter.from_unit().label_i18n(locale),
         converter.active_field == ConverterField::FromUnit,
         body,
     )?;
     draw_field(
         display,
         262,
-        "Value",
+        t(locale, "Value", "Valore"),
         &value,
         converter.active_field == ConverterField::Value,
         body,
@@ -60,15 +70,15 @@ pub fn render_unit_converter(
     draw_field(
         display,
         324,
-        "To",
-        converter.to_unit().label(),
+        t(locale, "To", "A"),
+        converter.to_unit().label_i18n(locale),
         converter.active_field == ConverterField::ToUnit,
         body,
     )?;
     draw_field(
         display,
         386,
-        "Step",
+        t(locale, "Step", "Passo"),
         &step,
         converter.active_field == ConverterField::StepSize,
         body,
@@ -77,10 +87,10 @@ pub fn render_unit_converter(
     Rectangle::new(Point::new(22, 474), Size::new(436, 152))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
-    Text::new("RESULT", Point::new(42, 514), body).draw(display)?;
+    Text::new(t(locale, "RESULT", "RISULTATO"), Point::new(42, 514), body).draw(display)?;
     Text::new(&result, Point::new(42, 578), state.display.large_style()).draw(display)?;
 
-    draw_footer(display, state.display, "UP/DOWN  SELECT NEXT  BOOT BACK")?;
+    draw_footer(display, state, t(locale, "SELECT NEXT", "SELECT AVANTI"))?;
     Ok(())
 }
 
@@ -111,11 +121,11 @@ fn draw_field(
     Ok(())
 }
 
-fn result_label(result: ConversionResult, symbol: &str) -> String {
+fn result_label(locale: Locale, result: ConversionResult, symbol: &str) -> String {
     match result {
         ConversionResult::Value(value) => format!("{} {symbol}", format_milli(value)),
-        ConversionResult::OverRange => "OVER RANGE".into(),
-        ConversionResult::Invalid => "INVALID".into(),
+        ConversionResult::OverRange => t(locale, "OVER RANGE", "FUORI INTERVALLO").into(),
+        ConversionResult::Invalid => t(locale, "INVALID", "NON VALIDO").into(),
     }
 }
 

@@ -3,6 +3,7 @@
 //! JSON parsing and cache retention are hardware-independent. ESP-IDF HTTPS
 //! wiring lives below `cfg(target_os = "espidf")`.
 
+use crate::regional::Locale;
 use crate::weather_config::{WeatherConfig, WEATHER_CONFIG_PATH};
 use anyhow::{bail, Context, Result};
 
@@ -118,6 +119,14 @@ impl CurrentConditions {
     pub const fn condition_label(&self) -> &'static str {
         condition_label(self.weather_code)
     }
+
+    /// Locale-aware sibling of [`Self::condition_label`]. `condition_label`
+    /// itself is left untouched because `src/main.rs`'s serial diagnostics
+    /// logging depends on its English output staying stable.
+    #[must_use]
+    pub const fn condition_label_i18n(&self, locale: Locale) -> &'static str {
+        condition_label_i18n(self.weather_code, locale)
+    }
 }
 
 /// One daily forecast row.
@@ -134,6 +143,14 @@ impl DailyForecast {
     #[must_use]
     pub const fn condition_label(&self) -> &'static str {
         condition_label(self.weather_code)
+    }
+
+    /// Locale-aware sibling of [`Self::condition_label`]. `condition_label`
+    /// itself is left untouched because `src/main.rs`'s serial diagnostics
+    /// logging depends on its English output staying stable.
+    #[must_use]
+    pub const fn condition_label_i18n(&self, locale: Locale) -> &'static str {
+        condition_label_i18n(self.weather_code, locale)
     }
 
     #[must_use]
@@ -259,6 +276,18 @@ impl WeatherSnapshot {
         self.last_success.as_deref().unwrap_or("not fetched")
     }
 
+    /// Locale-aware sibling of [`Self::last_success_label`].
+    /// `last_success_label` itself is left untouched because `src/main.rs`'s
+    /// serial diagnostics logging depends on its English output staying
+    /// stable.
+    #[must_use]
+    pub fn last_success_label_i18n(&self, locale: Locale) -> &str {
+        self.last_success.as_deref().unwrap_or(match locale {
+            Locale::English => "not fetched",
+            Locale::Italian => "mai recuperato",
+        })
+    }
+
     #[must_use]
     pub const fn config_path() -> &'static str {
         WEATHER_CONFIG_PATH
@@ -360,6 +389,30 @@ pub const fn condition_label(code: u16) -> &'static str {
         95 => "Thunderstorm",
         96 | 99 => "Thunder + hail",
         _ => "Unknown",
+    }
+}
+
+/// Locale-aware sibling of [`condition_label`]. `condition_label` itself is
+/// left untouched because `src/main.rs`'s serial diagnostics logging depends
+/// on its English output staying stable.
+#[must_use]
+pub const fn condition_label_i18n(code: u16, locale: Locale) -> &'static str {
+    match locale {
+        Locale::English => condition_label(code),
+        Locale::Italian => match code {
+            0 => "Sereno",
+            1 | 2 => "Poco nuvoloso",
+            3 => "Coperto",
+            45 | 48 => "Nebbia",
+            51 | 53 | 55 | 56 | 57 => "Pioviggine",
+            61 | 63 | 65 | 66 | 67 => "Pioggia",
+            71 | 73 | 75 | 77 => "Neve",
+            80 | 81 | 82 => "Rovesci",
+            85 | 86 => "Rovesci di neve",
+            95 => "Temporale",
+            96 | 99 => "Temporale con grandine",
+            _ => "Sconosciuto",
+        },
     }
 }
 
@@ -656,7 +709,7 @@ fn parse_decimal_tenths(value: &str, field: &str) -> Result<i64> {
 
 #[cfg(target_os = "espidf")]
 pub mod espidf {
-    use std::{str, time::Duration};
+    use std::{str, sync::mpsc::Receiver, time::Duration};
 
     use embedded_svc::{
         http::{client::Client as HttpClient, Method},
@@ -668,7 +721,7 @@ pub mod espidf {
     };
 
     use crate::{
-        runtime_worker::{run_named_worker, NamedWorkerError},
+        runtime_worker::{poll_named_worker, run_named_worker, spawn_named_worker, NamedWorkerError},
         weather::{
             parse_open_meteo_response, WeatherData, WeatherFetchError, MAX_WEATHER_RESPONSE_BYTES,
             WEATHER_HTTP_TIMEOUT_SECONDS,
@@ -719,6 +772,69 @@ pub mod espidf {
             ),
         }
         result
+    }
+
+    /// Non-blocking counterpart to [`fetch_open_meteo_on_worker`]: starts the
+    /// same bounded HTTPS fetch on a short-lived dedicated worker but returns
+    /// immediately with a [`Receiver`] instead of waiting for the result.
+    /// Poll it with [`poll_open_meteo_fetch`] from the main hardware loop so
+    /// that loop keeps draining input and redrawing while the request (DNS +
+    /// TLS handshake + response) is in flight, instead of stalling on it --
+    /// a synchronous wait here was observed to freeze button handling for a
+    /// few seconds every time Wi-Fi finished connecting, since the automatic
+    /// "network-ready" weather fetch used to fire, and block, before the
+    /// same loop iteration ever reached the input-queue drain.
+    pub fn spawn_open_meteo_fetch(
+        config: &WeatherConfig,
+    ) -> Result<Receiver<Result<WeatherData, WeatherFetchError>>, WeatherFetchError> {
+        let config = config.clone();
+        log::info!(
+            "rustmix-wave=weather-fetch-worker status=starting stack-bytes={}",
+            WEATHER_FETCH_WORKER_STACK_BYTES
+        );
+        spawn_named_worker(
+            "weather-fetch",
+            WEATHER_FETCH_WORKER_STACK_BYTES,
+            move || fetch_open_meteo(&config),
+        )
+        .map_err(|error| {
+            let error =
+                WeatherFetchError::Transport(format!("weather fetch worker spawn failed: {error}"));
+            log::warn!("rustmix-wave=weather-fetch-worker status=boundary-failed error={error}");
+            error
+        })
+    }
+
+    /// Non-blocking poll for a fetch started with [`spawn_open_meteo_fetch`].
+    /// Returns `None` while the request is still in flight -- call again on
+    /// a later main-loop iteration.
+    pub fn poll_open_meteo_fetch(
+        receiver: &Receiver<Result<WeatherData, WeatherFetchError>>,
+    ) -> Option<Result<WeatherData, WeatherFetchError>> {
+        let result = poll_named_worker("weather-fetch", receiver)?;
+        Some(match result {
+            Ok(data) => {
+                log::info!(
+                    "rustmix-wave=weather-fetch-worker status=completed forecast-days={}",
+                    data.forecast.len()
+                );
+                Ok(data)
+            }
+            Err(NamedWorkerError::Operation(error)) => {
+                log::warn!(
+                    "rustmix-wave=weather-fetch-worker status=failed classification={} error={error}",
+                    error.category()
+                );
+                Err(error)
+            }
+            Err(error) => {
+                let error = WeatherFetchError::Transport(format!("weather fetch worker {error}"));
+                log::warn!(
+                    "rustmix-wave=weather-fetch-worker status=boundary-failed error={error}"
+                );
+                Err(error)
+            }
+        })
     }
 
     /// Fetch one bounded HTTPS weather payload. A new client is constructed per

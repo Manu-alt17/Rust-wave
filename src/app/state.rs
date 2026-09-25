@@ -13,13 +13,15 @@ use crate::{
     lua_runtime::LuaRuntimeUiState,
     magic_tokens::{MagicRowAction, MagicUiState},
     network::NetworkSnapshot,
-    network_provision::{NetworkProvisionSnapshot, NetworkProvisionUiRequest},
     network_saved::NetworkSavedUiState,
     orientation::DisplayOrientation,
+    ota::{OtaCheckState, OtaUiRequest},
     power_key_menu::{PowerKeyMenuOutcome, PowerKeyMenuUiState},
     reader::{
-        ReaderDictionaryMode, ReaderOption, ReaderOrientation, ReaderTickOutcome, ReaderUiState,
+        LibraryBookAction, ReaderDictionaryMode, ReaderLocation, ReaderOption, ReaderOrientation,
+        ReaderSession, ReaderTickOutcome, ReaderUiState,
     },
+    reading_stats::ReadingStatsSnapshot,
     regional::RegionalPreferences,
     storage::StorageSnapshot,
     unit_converter::UnitConverterUiState,
@@ -30,7 +32,7 @@ use crate::{
 
 use super::{
     display::DisplayPreferences,
-    menu::{category_entries, category_index, home_entries, CATEGORY_COUNT},
+    menu::{category_entries, category_index, home_entries, CATEGORY_COUNT, MAIN_CATEGORY_COUNT},
     router::{ScreenRoute, ScreenRouter},
 };
 
@@ -104,14 +106,12 @@ pub struct AppState {
     /// Selected Network action: configure via phone, saved networks or
     /// provisioning details.
     pub network_action_selected: usize,
-    /// Compact LAN portal lifecycle snapshot.
+    /// Unified portal lifecycle snapshot: file transfer plus (when reached
+    /// via the bootstrap hotspot instead of an already-joined LAN) Wi-Fi
+    /// provisioning, replacing the old on-device rotary-keyboard credential
+    /// editor.
     pub wifi_transfer: WifiTransferSnapshot,
     wifi_transfer_request: Option<WifiTransferUiRequest>,
-    /// Phone Wi-Fi provisioning portal lifecycle snapshot (hotspot + HTTP
-    /// portal), replacing the old on-device rotary-keyboard credential
-    /// editor.
-    pub network_provision: NetworkProvisionSnapshot,
-    network_provision_request: Option<NetworkProvisionUiRequest>,
     /// Read-only saved-network list and rotary selection for the "Saved
     /// networks" screen. Adding or changing a password only happens through
     /// the phone portal.
@@ -119,17 +119,44 @@ pub struct AppState {
     network_saved_forget_request: Option<String>,
     /// SD-backed PCM WAV voice-note catalog and recorder UI snapshot.
     pub voice_notes: VoiceNotesUiState,
-    /// Global display-maintenance menu opened by a physical Power short press.
+    /// Global display-maintenance menu opened by a physical Power long press.
     pub power_key_menu: PowerKeyMenuUiState,
     power_key_menu_return_route: ScreenRoute,
     power_key_manual_refresh_requested: bool,
     weather_refresh_requested: bool,
+    /// GitHub-release OTA check/install lifecycle, shown on the Software
+    /// Update screen.
+    pub ota: OtaCheckState,
+    ota_request: Option<OtaUiRequest>,
+    /// Lazily-aggregated reading time/speed/streak snapshot, refreshed by
+    /// the runtime owner in main.rs when the Reading Stats screen is opened
+    /// (see [`Self::take_reading_stats_refresh_request`]).
+    pub reading_stats: ReadingStatsSnapshot,
+    reading_stats_refresh_requested: bool,
+    /// Set whenever a Reader page turn actually moves the current position,
+    /// regardless of source (IMU tap, physical button or BLE remote --
+    /// every one of them funnels through [`Self::apply_reader`]). Taken by
+    /// the runtime owner in main.rs, which owns the wall clock and SD
+    /// access the reading-stats session tracker needs.
+    reader_page_turn_event: Option<ReaderLocation>,
+    /// Screen a `ReaderLoading`/`ReaderPage` session returns to once BACK
+    /// steps out of the reader entirely: `Home` when opened from the Home
+    /// dashboard's Continue Reading card, `Library` when opened by picking a
+    /// book on the Library screen. Nested reader screens (Options, TOC,
+    /// Bookmarks, Preferences...) still use `ScreenRoute::parent()`'s static
+    /// hierarchy -- only the exit point needs to remember where the session
+    /// started (see `Self::back`).
+    reader_return_route: ScreenRoute,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            home_selected: 0,
+            // Continue Reading (the trailing `HOME_ENTRIES` slot — see its
+            // own doc comment in `menu.rs`) is the most likely first action
+            // on a fresh boot, so it starts pre-selected rather than
+            // whichever tile happens to sit at index 0.
+            home_selected: MAIN_CATEGORY_COUNT - 1,
             category_selected: [0; CATEGORY_COUNT],
             display_action_selected: 0,
             display: DisplayPreferences::default(),
@@ -161,8 +188,6 @@ impl Default for AppState {
             network_action_selected: 0,
             wifi_transfer: WifiTransferSnapshot::default(),
             wifi_transfer_request: None,
-            network_provision: NetworkProvisionSnapshot::default(),
-            network_provision_request: None,
             network_saved: NetworkSavedUiState::default(),
             network_saved_forget_request: None,
             voice_notes: VoiceNotesUiState::default(),
@@ -170,6 +195,12 @@ impl Default for AppState {
             power_key_menu_return_route: ScreenRoute::Home,
             power_key_manual_refresh_requested: false,
             weather_refresh_requested: false,
+            ota: OtaCheckState::default(),
+            ota_request: None,
+            reading_stats: ReadingStatsSnapshot::default(),
+            reading_stats_refresh_requested: false,
+            reader_page_turn_event: None,
+            reader_return_route: ScreenRoute::Library,
         }
     }
 }
@@ -206,6 +237,25 @@ impl AppState {
             .and_then(|snapshot| snapshot.battery_percent)
     }
 
+    /// Whether the persistent header should show its charging glyph.
+    ///
+    /// Deliberately `charging || vbus_present` rather than `charging` alone:
+    /// the AXP2101's charger state machine reports `charging` only while
+    /// actively pushing current (trickle/pre-charge/constant-current/
+    /// constant-voltage) and switches to charge-done once the battery tops
+    /// off, even though USB power is still connected. Gating the icon on
+    /// `charging` alone made it disappear as soon as the battery finished
+    /// charging while the cable stayed plugged in, which read as a bug
+    /// ("the cable is connected and it's charging") rather than the correct
+    /// "fully charged, still on external power" state. `vbus_present` keeps
+    /// the glyph up for as long as the cable is actually attached.
+    #[must_use]
+    pub fn battery_charging(&self) -> bool {
+        self.board
+            .power
+            .is_some_and(|snapshot| snapshot.charging || snapshot.vbus_present)
+    }
+
     /// Apply one debounced button event to routes whose behavior is fully
     /// hardware-independent. Files, Alarms and Audio remain delegated to their
     /// existing owners from main.rs.
@@ -217,6 +267,8 @@ impl AppState {
             self.apply_category(route, event);
         } else if route == ScreenRoute::Display {
             self.apply_display(event);
+        } else if route == ScreenRoute::Language {
+            self.apply_language(event);
         } else if route == ScreenRoute::PowerKeyMenu {
             self.apply_power_key_menu(event);
         } else if route == ScreenRoute::Calendar {
@@ -255,7 +307,8 @@ impl AppState {
             route,
             ScreenRoute::ContinueReading
                 | ScreenRoute::Library
-                | ScreenRoute::Bookmarks
+                | ScreenRoute::LibraryBookActions
+                | ScreenRoute::LibraryBookBookmarks
                 | ScreenRoute::ReaderBookmarks
                 | ScreenRoute::ReaderLoading
                 | ScreenRoute::ReaderPage
@@ -328,17 +381,12 @@ impl AppState {
                     self.note_select_press();
                     match self.network_action_selected {
                         0 => {
-                            self.request_network_provision_start();
-                            self.router.navigate_to(ScreenRoute::NetworkProvision);
+                            self.request_wifi_transfer_start();
+                            self.router.navigate_to(ScreenRoute::WifiTransfer);
                         }
                         1 => self.router.navigate_to(ScreenRoute::NetworkSaved),
                         _ => self.router.navigate_to(ScreenRoute::NetworkDetails),
                     }
-                }
-                (ScreenRoute::NetworkProvision, ButtonEvent::Select) => {
-                    self.note_select_press();
-                    self.request_network_provision_stop();
-                    self.router.navigate_to(ScreenRoute::Network);
                 }
                 (ScreenRoute::NetworkSaved, ButtonEvent::Up) => {
                     self.network_saved.move_previous();
@@ -359,6 +407,26 @@ impl AppState {
                     self.note_select_press();
                     self.router.navigate_to(ScreenRoute::DeviceInfoBoard);
                 }
+                (ScreenRoute::OtaUpdate, ButtonEvent::Select) => {
+                    self.note_select_press();
+                    match &self.ota {
+                        OtaCheckState::UpdateAvailable {
+                            version,
+                            download_url,
+                        } => {
+                            self.ota_request = Some(OtaUiRequest::InstallNow {
+                                version: version.clone(),
+                                download_url: download_url.clone(),
+                            });
+                            self.ota = OtaCheckState::Installing;
+                        }
+                        state if state.can_check() => {
+                            self.ota_request = Some(OtaUiRequest::CheckNow);
+                            self.ota = OtaCheckState::Checking;
+                        }
+                        _ => {}
+                    }
+                }
                 (ScreenRoute::DeviceInfoBoard, ButtonEvent::Select) => {
                     self.note_select_press();
                     self.router.navigate_to(ScreenRoute::DeviceInfoRuntime);
@@ -377,13 +445,15 @@ impl AppState {
                     | ScreenRoute::EnvironmentDetails
                     | ScreenRoute::MotionDetails
                     | ScreenRoute::NetworkDetails
-                    | ScreenRoute::NetworkProvision
                     | ScreenRoute::WifiTransfer
                     | ScreenRoute::WeatherDetails,
                     _,
                 )
                 | (
-                    ScreenRoute::Files | ScreenRoute::Alarms | ScreenRoute::Audio | ScreenRoute::MagicView,
+                    ScreenRoute::Files
+                    | ScreenRoute::Alarms
+                    | ScreenRoute::Audio
+                    | ScreenRoute::MagicView,
                     _,
                 ) => {}
                 _ => {}
@@ -405,9 +475,48 @@ impl AppState {
                     if entry.route == ScreenRoute::WifiTransfer {
                         self.request_wifi_transfer_start();
                     }
-                    self.router.navigate_to(entry.route);
+                    if entry.route == ScreenRoute::ReadingStats {
+                        self.reading_stats_refresh_requested = true;
+                    }
+                    if entry.route == ScreenRoute::Library {
+                        self.reader.refresh_library();
+                    }
+                    if entry.route == ScreenRoute::ContinueReading {
+                        self.activate_continue_reading();
+                    } else {
+                        self.router.navigate_to(entry.route);
+                    }
                 }
             }
+        }
+    }
+
+    /// Resume the saved book directly instead of routing through the old
+    /// Continue Reading summary screen (`ScreenRoute::ContinueReading`
+    /// itself) — used by the Home dashboard's card (`apply_home`).
+    fn activate_continue_reading(&mut self) {
+        // Opened from Home, so BACK out of the reader session must return to
+        // Home rather than `ReaderPage`/`ReaderLoading`'s static Library
+        // parent (see `reader_return_route`). Harmless when this falls
+        // through to the no-saved-book Library branch below, since opening a
+        // book from there re-sets it to `Library` anyway.
+        self.reader_return_route = ScreenRoute::Home;
+        if self.reader.session.is_some() {
+            self.router.navigate_to(ScreenRoute::ReaderPage);
+        } else if self.reader.request_continue() {
+            // A cache hit (`promote_cached_session`) leaves `loading` at
+            // `None` and lands the book straight in `session`, same as the
+            // already-open case above; only an actual reload routes through
+            // the loading screen.
+            let target = if self.reader.loading.is_some() {
+                ScreenRoute::ReaderLoading
+            } else {
+                ScreenRoute::ReaderPage
+            };
+            self.router.navigate_to(target);
+        } else {
+            self.reader.refresh_library();
+            self.router.navigate_to(ScreenRoute::Library);
         }
     }
 
@@ -427,6 +536,18 @@ impl AppState {
                 self.note_select_press();
                 if target == ScreenRoute::Weather {
                     self.weather_action_selected = 0;
+                    // Weather used to be fetched automatically as soon as
+                    // Wi-Fi connected, regardless of which screen was on
+                    // display -- the worker dispatch itself doesn't block,
+                    // but the screen refresh it triggers on completion could
+                    // land mid-scroll on Home and read as a stutter. Fetch on
+                    // first visit to this screen instead, when there is
+                    // nothing to show yet.
+                    if self.weather.current.is_none()
+                        && self.weather.state != crate::weather::WeatherFetchState::Fetching
+                    {
+                        self.weather_refresh_requested = true;
+                    }
                 }
                 if target == ScreenRoute::Audio {
                     self.audio_action_selected = 0;
@@ -437,9 +558,6 @@ impl AppState {
                 if target == ScreenRoute::Calendar {
                     self.initialize_calendar_if_needed();
                     self.calendar.refresh_events();
-                }
-                if target == ScreenRoute::Library {
-                    self.reader.refresh_library();
                 }
                 if target == ScreenRoute::LuaApps {
                     self.lua_runtime.refresh_catalog(true);
@@ -453,11 +571,10 @@ impl AppState {
                 if target == ScreenRoute::Dictionary {
                     self.dictionary.refresh_pack_status();
                 }
-                if target == ScreenRoute::ContinueReading && self.reader.session.is_some() {
-                    self.router.navigate_to(ScreenRoute::ReaderPage);
-                } else {
-                    self.router.navigate_to(target);
+                if target == ScreenRoute::OtaUpdate {
+                    self.request_ota_check_if_idle();
                 }
+                self.router.navigate_to(target);
             }
         }
     }
@@ -579,6 +696,41 @@ impl AppState {
     ) -> Option<ImuDetectedEvent> {
         self.board.imu = Some(reading);
         self.imu_events.process(reading, now_ms)
+    }
+
+    /// Record a Reader page turn that actually moved the current position,
+    /// for the reading-stats session tracker in main.rs to pick up (see
+    /// [`Self::take_reader_page_turn_event`]). `before` is the location
+    /// captured immediately prior to the `next_page`/`previous_page` call;
+    /// a turn that hits a book boundary and doesn't move is not recorded.
+    fn note_reader_page_turn(&mut self, before: Option<ReaderLocation>) {
+        let Some(session) = self.reader.session.as_ref() else {
+            return;
+        };
+        let after = session.current_location();
+        if before.map(|location| location.byte_offset) == Some(after.byte_offset) {
+            return;
+        }
+        self.reader_page_turn_event = Some(after);
+    }
+
+    /// Taken by the runtime owner in main.rs after every `apply()` call, so
+    /// it can feed the reading-stats session tracker (which owns the wall
+    /// clock and SD access `AppState` deliberately does not).
+    #[must_use]
+    pub fn take_reader_page_turn_event(&mut self) -> Option<ReaderLocation> {
+        self.reader_page_turn_event.take()
+    }
+
+    /// The Reading Stats screen was just opened; the runtime owner in
+    /// main.rs should recompute [`Self::reading_stats`] from SD.
+    #[must_use]
+    pub fn take_reading_stats_refresh_request(&mut self) -> bool {
+        core::mem::take(&mut self.reading_stats_refresh_requested)
+    }
+
+    pub fn update_reading_stats_snapshot(&mut self, snapshot: ReadingStatsSnapshot) {
+        self.reading_stats = snapshot;
     }
 
     fn initialize_calendar_if_needed(&mut self) {
@@ -794,6 +946,26 @@ impl AppState {
         }
     }
 
+    /// Held SELECT on the Library grid opens the "book actions" overlay
+    /// (mark as completed / bookmarks) for whichever cover is currently
+    /// selected.
+    pub fn apply_library_select_long_press(&mut self) -> bool {
+        if self.router.current() != ScreenRoute::Library {
+            return false;
+        }
+        let Some(entry) = self
+            .reader
+            .visible_entries()
+            .get(self.reader.library_selected)
+            .cloned()
+        else {
+            return false;
+        };
+        self.reader.open_book_actions(entry.book);
+        self.router.navigate_to(ScreenRoute::LibraryBookActions);
+        true
+    }
+
     #[must_use]
     pub fn lua_game_needs_imu_events(&self) -> bool {
         self.router.current() == ScreenRoute::LuaGame && self.lua_runtime.needs_imu_events()
@@ -817,10 +989,16 @@ impl AppState {
             ScreenRoute::ContinueReading => {
                 if event == ButtonEvent::Select {
                     self.note_select_press();
+                    self.reader_return_route = ScreenRoute::Home;
                     if self.reader.session.is_some() {
                         self.router.navigate_to(ScreenRoute::ReaderPage);
                     } else if self.reader.request_continue() {
-                        self.router.navigate_to(ScreenRoute::ReaderLoading);
+                        let target = if self.reader.loading.is_some() {
+                            ScreenRoute::ReaderLoading
+                        } else {
+                            ScreenRoute::ReaderPage
+                        };
+                        self.router.navigate_to(target);
                     } else {
                         self.reader.refresh_library();
                         self.router.navigate_to(ScreenRoute::Library);
@@ -832,14 +1010,51 @@ impl AppState {
                     self.note_select_press();
                 }
                 if self.reader.apply_library_button(event) {
-                    self.router.navigate_to(ScreenRoute::ReaderLoading);
+                    // Opened from Library, so BACK out of the session should
+                    // return here rather than Home (see `reader_return_route`).
+                    self.reader_return_route = ScreenRoute::Library;
+                    // Reopening the book already in `self.reader.session`
+                    // (see `request_open_visible`) leaves `loading` at
+                    // `None`, so go straight to `ReaderPage` instead of
+                    // routing through the reload screen for no reason.
+                    let target = if self.reader.loading.is_some() {
+                        ScreenRoute::ReaderLoading
+                    } else {
+                        ScreenRoute::ReaderPage
+                    };
+                    self.router.navigate_to(target);
                 }
             }
-            ScreenRoute::Bookmarks | ScreenRoute::ReaderBookmarks => {
+            ScreenRoute::ReaderBookmarks => {
                 if event == ButtonEvent::Select {
                     self.note_select_press();
                 }
                 if self.reader.apply_bookmarks_button(event) {
+                    self.router.navigate_to(ScreenRoute::ReaderLoading);
+                }
+            }
+            ScreenRoute::LibraryBookActions => match event {
+                ButtonEvent::Up => self.reader.cycle_book_action_previous(),
+                ButtonEvent::Down => self.reader.cycle_book_action_next(),
+                ButtonEvent::Select => {
+                    self.note_select_press();
+                    match self.reader.selected_book_action() {
+                        LibraryBookAction::MarkCompleted => {
+                            self.reader.mark_book_actions_target_completed();
+                            self.router.navigate_to(ScreenRoute::Library);
+                        }
+                        LibraryBookAction::Bookmarks => {
+                            self.reader.book_bookmarks_selected = 0;
+                            self.router.navigate_to(ScreenRoute::LibraryBookBookmarks);
+                        }
+                    }
+                }
+            },
+            ScreenRoute::LibraryBookBookmarks => {
+                if event == ButtonEvent::Select {
+                    self.note_select_press();
+                }
+                if self.reader.apply_book_bookmarks_button(event) {
                     self.router.navigate_to(ScreenRoute::ReaderLoading);
                 }
             }
@@ -853,8 +1068,24 @@ impl AppState {
             }
             ScreenRoute::ReaderLoading => {}
             ScreenRoute::ReaderPage => match (self.reader.dictionary_mode.clone(), event) {
-                (ReaderDictionaryMode::Off, ButtonEvent::Up) => self.reader.previous_page(),
-                (ReaderDictionaryMode::Off, ButtonEvent::Down) => self.reader.next_page(),
+                (ReaderDictionaryMode::Off, ButtonEvent::Up) => {
+                    let before = self
+                        .reader
+                        .session
+                        .as_ref()
+                        .map(ReaderSession::current_location);
+                    self.reader.previous_page();
+                    self.note_reader_page_turn(before);
+                }
+                (ReaderDictionaryMode::Off, ButtonEvent::Down) => {
+                    let before = self
+                        .reader
+                        .session
+                        .as_ref()
+                        .map(ReaderSession::current_location);
+                    self.reader.next_page();
+                    self.note_reader_page_turn(before);
+                }
                 (ReaderDictionaryMode::Off, ButtonEvent::Select) => {
                     self.note_select_press();
                     self.reader.options_selected = 0;
@@ -914,14 +1145,24 @@ impl AppState {
                     }
                 }
             },
+            ScreenRoute::ReaderPreferences if self.reader.preference_edit.is_some() => {
+                match event {
+                    ButtonEvent::Up => self.reader.cycle_preference_editor_previous(),
+                    ButtonEvent::Down => self.reader.cycle_preference_editor_next(),
+                    ButtonEvent::Select => {
+                        self.note_select_press();
+                        if self.reader.commit_preference_edit() {
+                            self.router.navigate_to(ScreenRoute::ReaderLoading);
+                        }
+                    }
+                }
+            }
             ScreenRoute::ReaderPreferences => match event {
                 ButtonEvent::Up => self.reader.cycle_preference_previous(),
                 ButtonEvent::Down => self.reader.cycle_preference_next(),
                 ButtonEvent::Select => {
                     self.note_select_press();
-                    if self.reader.activate_selected_preference() {
-                        self.router.navigate_to(ScreenRoute::ReaderLoading);
-                    }
+                    self.reader.open_preference_editor();
                 }
             },
             _ => {}
@@ -1011,6 +1252,15 @@ impl AppState {
         }
     }
 
+    /// Apply one Language-settings event: Select cycles between the
+    /// supported on-device languages. A single row needs no selection cursor.
+    fn apply_language(&mut self, event: ButtonEvent) {
+        if event == ButtonEvent::Select {
+            self.note_select_press();
+            self.regional.locale = self.regional.locale.next();
+        }
+    }
+
     /// Apply one Audio-overview event. Hardware requests are returned to
     /// main.rs so this product state remains independent of ESP-IDF handles.
     pub fn apply_audio_button(&mut self, event: ButtonEvent) -> Option<AudioUiRequest> {
@@ -1078,9 +1328,6 @@ impl AppState {
         if self.router.current() == ScreenRoute::WifiTransfer {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
         }
-        if self.router.current() == ScreenRoute::NetworkProvision {
-            self.request_network_provision_stop();
-        }
         if self.router.current() == ScreenRoute::VoiceNoteRecording {
             self.voice_notes.request_cancel_recording();
         }
@@ -1106,13 +1353,35 @@ impl AppState {
             self.reader.cancel_loading();
         }
         if self.router.current() == ScreenRoute::ReaderPreferences {
-            if self.reader.finish_preferences_edit() {
-                self.router.navigate_to(ScreenRoute::ReaderLoading);
-            } else {
+            // BACK steps out one level at a time: from an open row editor it
+            // discards the candidate and returns to the flat list; only from
+            // the flat list itself does it leave for Reader Options.
+            if !self.reader.cancel_preference_edit() {
                 self.router.navigate_to(ScreenRoute::ReaderOptions);
             }
+        } else if matches!(
+            self.router.current(),
+            ScreenRoute::ReaderLoading | ScreenRoute::ReaderPage
+        ) {
+            // Unlike `ScreenRoute::parent()`'s static hierarchy (which always
+            // sends these two to `Library`), exiting the reader entirely
+            // returns to wherever this session was opened from -- Home's
+            // Continue Reading card or the Library screen.
+            self.router.navigate_to(self.reader_return_route);
         } else {
             self.router.back();
+        }
+        if self.router.current() == ScreenRoute::Home {
+            // Home shows the Continue Reading card, remaining-time clause
+            // included (see `screens::category::draw_continue_reading_tile`,
+            // drawn from `screens::home`). Forward navigation into it
+            // already requests a refresh (see `apply_home` above); stepping
+            // BACK into it — e.g. out of an active reading session — needs
+            // the same trigger, or the remaining-time line keeps showing
+            // whatever was true before that session, lagging behind the
+            // title/cover/percent the card already reads straight from
+            // `state.reader`.
+            self.reading_stats_refresh_requested = true;
         }
         self.sync_orientation_for_active_route();
     }
@@ -1181,29 +1450,6 @@ impl AppState {
         self.calendar.take_request()
     }
 
-    pub fn update_network_provision_snapshot(&mut self, snapshot: NetworkProvisionSnapshot) {
-        self.network_provision = snapshot;
-    }
-
-    #[must_use]
-    pub fn take_network_provision_request(&mut self) -> Option<NetworkProvisionUiRequest> {
-        self.network_provision_request.take()
-    }
-
-    /// Start the phone provisioning portal (hotspot + HTTP portal) from the
-    /// Network screen's "Configure via phone" action.
-    pub fn request_network_provision_start(&mut self) {
-        if !self.network_provision.is_active() {
-            self.network_provision_request = Some(NetworkProvisionUiRequest::Start);
-        }
-    }
-
-    pub fn request_network_provision_stop(&mut self) {
-        if self.network_provision.is_active() {
-            self.network_provision_request = Some(NetworkProvisionUiRequest::Stop);
-        }
-    }
-
     /// Refresh the "Saved networks" screen list, as read from `WIFI.TXT` by
     /// the main loop.
     pub fn set_saved_networks(&mut self, networks: Vec<crate::network_saved::SavedNetworkEntry>) {
@@ -1241,6 +1487,40 @@ impl AppState {
     #[must_use]
     pub fn take_weather_refresh_request(&mut self) -> bool {
         core::mem::take(&mut self.weather_refresh_requested)
+    }
+
+    #[must_use]
+    pub fn take_ota_request(&mut self) -> Option<OtaUiRequest> {
+        self.ota_request.take()
+    }
+
+    /// Runtime owner in main.rs reports a completed check or install here.
+    pub fn update_ota_state(&mut self, state: OtaCheckState) {
+        self.ota = state;
+    }
+
+    /// Kick off a background check the first time the Software Update
+    /// screen is opened this boot. Subsequent visits just show the last
+    /// result; press SELECT to check again explicitly.
+    fn request_ota_check_if_idle(&mut self) {
+        if self.ota == OtaCheckState::Idle {
+            self.ota_request = Some(OtaUiRequest::CheckNow);
+            self.ota = OtaCheckState::Checking;
+        }
+    }
+
+    /// Background periodic check from the main loop, distinct from the
+    /// button-driven request above: only starts one when nothing is already
+    /// in flight, and never overwrites an update the user hasn't acted on
+    /// yet or an install already underway.
+    pub fn request_ota_background_check(&mut self) {
+        if matches!(
+            self.ota,
+            OtaCheckState::Idle | OtaCheckState::UpToDate | OtaCheckState::CheckFailed(_)
+        ) {
+            self.ota_request = Some(OtaUiRequest::CheckNow);
+            self.ota = OtaCheckState::Checking;
+        }
     }
 
     /// Take a manually edited local wall-clock value, already converted into
@@ -1328,12 +1608,12 @@ mod tests {
     #[test]
     fn home_categories_wrap_and_open() {
         let mut state = AppState::default();
-        state.apply(ButtonEvent::Up);
-        assert_eq!(state.home_selected, 5);
+        // Continue Reading starts pre-selected (see `AppState::default`).
+        assert_eq!(state.home_selected, 6);
         state.apply(ButtonEvent::Down);
-        assert_eq!(state.home_selected, 0);
+        assert_eq!(state.home_selected, 0); // wraps to the first grid tile (Library).
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Reader);
+        assert_eq!(state.active_route(), ScreenRoute::Library);
     }
 
     #[test]
@@ -1341,9 +1621,12 @@ mod tests {
         use crate::calendar::CalendarNavigationMode;
 
         let mut state = AppState::default();
-        state.home_selected = 1;
+        state.home_selected = 4; // Tools: Files, Dictionary, Unit Converter, Calendar, Voice Notes.
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Productivity);
+        assert_eq!(state.active_route(), ScreenRoute::Tools);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Calendar);
         assert_eq!(state.calendar.mode, CalendarNavigationMode::Day);
@@ -1408,6 +1691,7 @@ mod tests {
                     .map(|text| ReaderPageLine {
                         text: (*text).to_string(),
                         paragraph_end: true,
+                        image: None,
                     })
                     .collect(),
             }],
@@ -1515,7 +1799,7 @@ mod tests {
             code: Some("123456".into()),
             last_action: "Portal ready".into(),
             last_bytes: 0,
-            error: None,
+            ..Default::default()
         });
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Home);
@@ -1526,47 +1810,19 @@ mod tests {
     }
 
     #[test]
-    fn network_configure_via_phone_action_requests_provisioning_start() {
+    fn network_configure_via_phone_action_requests_the_same_portal_as_the_home_tile() {
         let mut state = AppState::default();
         state.router.navigate_to(ScreenRoute::Network);
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::NetworkProvision);
+        assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
         assert_eq!(
-            state.take_network_provision_request(),
-            Some(crate::network_provision::NetworkProvisionUiRequest::Start)
+            state.take_wifi_transfer_request(),
+            Some(crate::wifi_transfer::WifiTransferUiRequest::Start)
         );
         // A second request while already active/starting is suppressed.
-        state.network_provision = crate::network_provision::NetworkProvisionSnapshot::starting();
-        state.request_network_provision_start();
-        assert_eq!(state.take_network_provision_request(), None);
-    }
-
-    #[test]
-    fn network_provision_select_stops_the_portal_and_returns_to_network() {
-        let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::NetworkProvision);
-        state.network_provision.state =
-            crate::network_provision::NetworkProvisionState::Ready;
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Network);
-        assert_eq!(
-            state.take_network_provision_request(),
-            Some(crate::network_provision::NetworkProvisionUiRequest::Stop)
-        );
-    }
-
-    #[test]
-    fn network_provision_back_also_stops_the_portal() {
-        let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::NetworkProvision);
-        state.network_provision.state =
-            crate::network_provision::NetworkProvisionState::Ready;
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Network);
-        assert_eq!(
-            state.take_network_provision_request(),
-            Some(crate::network_provision::NetworkProvisionUiRequest::Stop)
-        );
+        state.wifi_transfer = crate::wifi_transfer::WifiTransferSnapshot::starting();
+        state.request_wifi_transfer_start();
+        assert_eq!(state.take_wifi_transfer_request(), None);
     }
 
     #[test]
@@ -1640,6 +1896,46 @@ mod tests {
         }]);
         assert!(!state.apply_network_saved_select_long_press());
         assert!(!state.network_saved.confirming_forget);
+    }
+
+    #[test]
+    fn library_held_select_opens_book_actions_for_the_selected_book() {
+        let mut state = AppState::default();
+        state.reader.books = vec![ReaderBook {
+            path: "a.txt".into(),
+            title: "A".into(),
+            format: BookFormat::Text,
+            size_bytes: 1,
+            modified_seconds: 0,
+        }];
+        state.router.navigate_to(ScreenRoute::Library);
+        state.reader.library_selected = 0;
+
+        assert!(state.apply_library_select_long_press());
+        assert_eq!(state.active_route(), ScreenRoute::LibraryBookActions);
+        assert_eq!(
+            state
+                .reader
+                .book_actions_target
+                .as_ref()
+                .map(|book| book.path.as_str()),
+            Some("a.txt")
+        );
+    }
+
+    #[test]
+    fn library_held_select_is_a_no_op_off_route() {
+        let mut state = AppState::default();
+        state.reader.books = vec![ReaderBook {
+            path: "a.txt".into(),
+            title: "A".into(),
+            format: BookFormat::Text,
+            size_bytes: 1,
+            modified_seconds: 0,
+        }];
+        assert!(!state.apply_library_select_long_press());
+        assert!(state.reader.book_actions_target.is_none());
+        assert_eq!(state.active_route(), ScreenRoute::Home);
     }
 
     #[test]
@@ -1857,19 +2153,74 @@ mod tests {
     }
 
     #[test]
-    fn reader_continue_shell_routes_to_library_when_no_session() {
+    fn home_continue_reading_card_starts_selected_and_routes_straight_to_library() {
+        // Continue Reading starts pre-selected (see `AppState::default`) —
+        // it's the most likely first action on a fresh boot. SELECT on it
+        // resumes (or, with nothing saved, falls through to Library)
+        // immediately instead of stopping on the old intermediate Reader
+        // category / summary screen, neither of which exists any more.
         let mut state = AppState::default();
-        state.apply(ButtonEvent::Select);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::ContinueReading);
+        assert_eq!(state.home_selected, 6);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Library);
         state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Reader);
+        assert_eq!(state.active_route(), ScreenRoute::Home);
     }
 
     #[test]
-    fn reader_preferences_use_settings_style_move_then_select_change() {
+    fn resuming_from_home_continue_reading_card_returns_home_on_back() {
+        // Opening the reader from Home's Continue Reading card must send
+        // BACK to Home, not to Library -- `ScreenRoute::ReaderPage`'s static
+        // `parent()` always points at Library, so this only works because
+        // `activate_continue_reading` records the entry point separately
+        // (see `reader_return_route`).
+        let mut state = AppState::default();
+        state.reader.session = Some(reader_session_with_lines(&["Line"]));
+        assert_eq!(state.home_selected, 6); // Continue Reading, pre-selected.
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Home);
+    }
+
+    #[test]
+    fn opening_a_book_from_library_returns_to_library_on_back() {
+        // The counterpart to the Home card above: opening a book from the
+        // Library screen must send BACK to Library.
+        let mut state = AppState::default();
+        let session = reader_session_with_lines(&["Line"]);
+        state.reader.books = vec![session.book.clone()];
+        state.reader.session = Some(session);
+        state.router.navigate_to(ScreenRoute::Library);
+        state.reader.library_selected = 0;
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Library);
+    }
+
+    #[test]
+    fn stepping_back_into_home_requests_a_reading_stats_refresh() {
+        // The remaining-time clause on Home's Continue Reading card (see
+        // `screens::category::draw_continue_reading_tile`) comes from
+        // `reading_stats`, refreshed only on request rather than every tick
+        // (it costs an SD read). Forward navigation into Statistics already
+        // requests one; stepping BACK into Home -- e.g. out of an active
+        // reading session -- must too, or the clause lags behind the
+        // title/cover/percent the card reads straight from `state.reader`.
+        let mut state = AppState::default();
+        state.home_selected = 1; // Statistics.
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::ReadingStats);
+        assert!(state.take_reading_stats_refresh_request());
+
+        state.back(); // ReadingStats -> Home.
+        assert_eq!(state.active_route(), ScreenRoute::Home);
+        assert!(state.take_reading_stats_refresh_request());
+    }
+
+    #[test]
+    fn reader_preferences_open_editor_preview_then_commit_or_cancel() {
         use crate::reader::{ReadingPreference, ReadingTheme};
 
         let mut state = AppState::default();
@@ -1879,29 +2230,62 @@ mod tests {
             ReadingPreference::ReadingTheme
         );
         let initial_theme = state.reader.preferences.theme;
+
+        // Moving the flat-list selection never opens an editor or touches
+        // the real preferences.
         state.apply(ButtonEvent::Down);
         assert_eq!(
             state.reader.selected_preference(),
             ReadingPreference::Orientation
         );
-        assert_eq!(state.reader.preferences.theme, initial_theme);
+        assert!(state.reader.preference_edit.is_none());
         state.apply(ButtonEvent::Up);
         assert_eq!(
             state.reader.selected_preference(),
             ReadingPreference::ReadingTheme
         );
+        assert_eq!(state.reader.preferences.theme, initial_theme);
+
+        // SELECT opens the row's editor; browsing candidates previews but
+        // does not commit.
         state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::ReaderPreferences);
+        assert_eq!(state.reader.preference_edit, Some(state.reader.preferences));
+        state.apply(ButtonEvent::Down);
+        assert_eq!(
+            state.reader.preference_edit.unwrap().theme,
+            ReadingTheme::HighContrast
+        );
+        assert_eq!(state.reader.preferences.theme, initial_theme);
+
+        // BACK from an open editor discards the previewed candidate and
+        // steps back to the flat list — it does not leave the screen.
+        state.back();
+        assert!(state.reader.preference_edit.is_none());
+        assert_eq!(state.reader.preferences.theme, initial_theme);
+        assert_eq!(state.active_route(), ScreenRoute::ReaderPreferences);
+
+        // Re-opening and committing with SELECT applies the browsed value.
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert!(state.reader.preference_edit.is_none());
         assert_eq!(state.reader.preferences.theme, ReadingTheme::HighContrast);
         assert_eq!(state.active_route(), ScreenRoute::ReaderPreferences);
+
+        // BACK on the flat list (no editor open) leaves for Reader Options.
         state.back();
         assert_eq!(state.active_route(), ScreenRoute::ReaderOptions);
     }
     #[test]
     fn productivity_voice_notes_opens_recording_route_and_queues_start() {
         let mut state = AppState::default();
-        state.home_selected = 1;
+        state.home_selected = 4; // Tools: Files, Dictionary, Unit Converter, Calendar, Voice Notes.
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Productivity);
+        assert_eq!(state.active_route(), ScreenRoute::Tools);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::VoiceNotes);

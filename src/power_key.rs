@@ -3,7 +3,7 @@
 //! The Waveshare board routes the physical power button through the AXP2101
 //! PMIC rather than through one of the three application-button GPIOs. The
 //! register-level I2C access remains in [`crate::power`]; this module keeps the
-//! short-press menu and long-press sleep product policy host-testable and
+//! short-press sleep and long-press menu product policy host-testable and
 //! separate from PMIC transport.
 
 /// Polling cadence for PMIC power-key status bits.
@@ -83,12 +83,47 @@ impl SleepWakeGuard {
     }
 }
 
+/// Minimum time after boot before a PMIC Power-key event is acted on. The
+/// physical press that just powered the board back on can still be latched
+/// (or physically ongoing) when the event loop starts; `initialize_power_key_events`
+/// already clears any stale `INTSTS2` bits before the loop begins, but this
+/// guard is defense in depth against a fresh event landing in that same
+/// narrow window and immediately shutting the board back down.
+pub const POWER_KEY_BOOT_GUARD_QUIET_MS: u64 = 900;
+
+/// Suppresses PMIC Power-key events for [`POWER_KEY_BOOT_GUARD_QUIET_MS`]
+/// after boot. Unlike [`SleepWakeGuard`] (armed on entry into sleep, reset on
+/// wake), this guard only ever needs to open once per boot and then stays
+/// open, so it carries no re-arming state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BootPowerKeyGuard {
+    armed: bool,
+}
+
+impl BootPowerKeyGuard {
+    /// True while a Power-key event landing right now should be ignored.
+    /// Once `elapsed_since_boot_ms` first reaches the quiet window the guard
+    /// opens permanently, so later calls never need to keep re-checking the
+    /// clock.
+    #[must_use]
+    pub fn should_ignore(&mut self, elapsed_since_boot_ms: u64) -> bool {
+        if self.armed {
+            false
+        } else if elapsed_since_boot_ms < POWER_KEY_BOOT_GUARD_QUIET_MS {
+            true
+        } else {
+            self.armed = true;
+            false
+        }
+    }
+}
+
 /// Product-facing physical Power-key events.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PowerKeyEvent {
-    /// Open the global display-maintenance menu while awake.
-    ShortPress,
     /// Enter the accepted sleep-image path while awake.
+    ShortPress,
+    /// Open the global display-maintenance menu while awake.
     LongPress,
 }
 
@@ -103,7 +138,8 @@ impl PowerKeyEvent {
 }
 
 /// Interpret one AXP2101 `INTSTS2` byte. Long press wins when both sticky bits
-/// are present so one held Power action cannot open the short-press menu first.
+/// are present so one held Power action cannot trigger the short-press sleep
+/// transition first.
 #[must_use]
 pub const fn power_key_event_from_irq_status(status2: u8) -> Option<PowerKeyEvent> {
     if status2 & POWER_KEY_LONG_PRESS_MASK != 0 {
@@ -118,9 +154,9 @@ pub const fn power_key_event_from_irq_status(status2: u8) -> Option<PowerKeyEven
 #[cfg(test)]
 mod tests {
     use super::{
-        power_key_event_from_irq_status, PowerKeyEvent, SleepWakeGuard, SleepWakeGuardDecision,
-        POWER_KEY_EVENT_MASK, POWER_KEY_LONG_PRESS_MASK, POWER_KEY_SHORT_PRESS_MASK,
-        POWER_KEY_WAKE_GUARD_QUIET_MS,
+        power_key_event_from_irq_status, BootPowerKeyGuard, PowerKeyEvent, SleepWakeGuard,
+        SleepWakeGuardDecision, POWER_KEY_BOOT_GUARD_QUIET_MS, POWER_KEY_EVENT_MASK,
+        POWER_KEY_LONG_PRESS_MASK, POWER_KEY_SHORT_PRESS_MASK, POWER_KEY_WAKE_GUARD_QUIET_MS,
     };
 
     #[test]
@@ -178,5 +214,23 @@ mod tests {
             guard.on_power_press(0),
             SleepWakeGuardDecision::SuppressStalePress
         );
+    }
+
+    #[test]
+    fn boot_guard_suppresses_events_until_quiet_window_then_stays_open() {
+        let mut guard = BootPowerKeyGuard::default();
+        assert_eq!(POWER_KEY_BOOT_GUARD_QUIET_MS, 900);
+        assert!(guard.should_ignore(0));
+        assert!(guard.should_ignore(899));
+        assert!(!guard.should_ignore(900));
+        // Once open, stays open even if later polled with a smaller elapsed
+        // value than the quiet window (defensive against clock jitter).
+        assert!(!guard.should_ignore(0));
+    }
+
+    #[test]
+    fn boot_guard_allows_events_immediately_when_constructed_past_the_quiet_window() {
+        let mut guard = BootPowerKeyGuard::default();
+        assert!(!guard.should_ignore(1_500));
     }
 }

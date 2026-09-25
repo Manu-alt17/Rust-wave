@@ -9,16 +9,19 @@ use embedded_graphics::{
 };
 
 use crate::{
-    app::{display::DisplayPreferences, typography::Text},
+    app::{state::AppState, typography::Text},
     orientation::OrientedFrameBuffer,
 };
 
-/// Draw a footer separator and one-line button hint.
+/// Draw a footer separator and the one-line button hint. The clock now
+/// lives in the header instead (see `widgets::header::draw_header`), so
+/// every screen's footer row is free for the hint alone.
 pub fn draw_footer(
     display: &mut OrientedFrameBuffer<'_>,
-    preferences: DisplayPreferences,
+    state: &AppState,
     hint: &str,
 ) -> Result<(), Infallible> {
+    let preferences = state.display;
     let line = PrimitiveStyle::with_fill(BinaryColor::On);
     let body = preferences.footer_style();
 

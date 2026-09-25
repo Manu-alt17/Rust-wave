@@ -1,6 +1,4 @@
-//! Sleep-image discovery and strict native-panel BMP decoding, plus a tiny
-//! wake marker file (the only write this module does) recording which image
-//! was last shown.
+//! Sleep-image discovery and strict native-panel BMP decoding.
 //!
 //! Sleep assets live below `/sdcard/RUSTMIX/SLEEP`. They are deliberately
 //! decoded into the panel's native 800 × 480, 1-bpp framebuffer rather than
@@ -18,12 +16,6 @@ use crate::framebuffer::{FrameBuffer, FRAMEBUFFER_SIZE, HEIGHT, ROW_BYTES, WIDTH
 
 /// Runtime directory containing removable-SD sleep images.
 pub const SLEEP_IMAGE_DIRECTORY: &str = "/sdcard/RUSTMIX/SLEEP";
-/// Marker file recording the file name of the last sleep image shown. Real
-/// hardware deep sleep is a full MCU reboot, so nothing in RAM survives a
-/// SELECT-key wake; this tiny file lets the fresh boot reload the exact same
-/// frame and draw the wake-in-progress overlay on top of it before the rest
-/// of boot has run. Ignored by the BMP-only directory scan above.
-pub const WAKE_MARKER_FILE: &str = "LASTWAKE.TXT";
 /// Bounded number of files examined on each entry to sleep mode.
 pub const MAX_SLEEP_IMAGE_CANDIDATES: usize = 32;
 const BMP_FILE_HEADER_BYTES: usize = 14;
@@ -141,34 +133,6 @@ impl SleepImageCatalog {
                 Some(format!("directory scan failed: {error}")),
             ),
         }
-    }
-
-    /// Persist the file name of the image just shown so a real hardware
-    /// deep-sleep wake can reload it. Best-effort: the caller logs failures
-    /// and keeps going either way, the same as the other sleep-entry
-    /// teardown steps around it.
-    pub fn record_wake_marker(&self, file_name: &str) -> io::Result<()> {
-        fs::write(self.directory.join(WAKE_MARKER_FILE), file_name)
-    }
-
-    /// Reload the frame recorded by [`Self::record_wake_marker`] for drawing
-    /// behind the wake overlay right after a real hardware deep-sleep
-    /// reboot. Falls back to the built-in frame when there is no marker, or
-    /// the recorded file is missing, invalid, or no longer decodes cleanly.
-    #[must_use]
-    pub fn load_wake_marker_frame(&self) -> FrameBuffer {
-        self.read_wake_marker()
-            .and_then(|file_name| decode_sleep_bmp_file(&self.directory.join(file_name)).ok())
-            .unwrap_or_else(built_in_sleep_frame)
-    }
-
-    fn read_wake_marker(&self) -> Option<String> {
-        let raw = fs::read_to_string(self.directory.join(WAKE_MARKER_FILE)).ok()?;
-        let file_name = raw.trim();
-        if file_name.is_empty() || file_name.contains(['/', '\\']) {
-            return None;
-        }
-        has_bmp_extension(Path::new(file_name)).then(|| file_name.to_string())
     }
 
     fn scan_valid_images(&self) -> io::Result<(Vec<PathBuf>, SleepImageScanStats)> {
@@ -437,9 +401,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{
-        decode_sleep_bmp, SleepImageCatalog, BMP_INFO_HEADER_BYTES, BMP_MIN_PIXEL_OFFSET,
-    };
+    use super::{decode_sleep_bmp, SleepImageCatalog, BMP_INFO_HEADER_BYTES, BMP_MIN_PIXEL_OFFSET};
     use crate::framebuffer::{FRAMEBUFFER_SIZE, HEIGHT, ROW_BYTES, WIDTH};
 
     fn fixture() -> Vec<u8> {
@@ -550,50 +512,6 @@ mod tests {
             selection.frame.as_bytes().len(),
             (WIDTH as usize / 8) * HEIGHT as usize
         );
-    }
-
-    #[test]
-    fn wake_marker_round_trips_the_exact_recorded_frame() {
-        let root = unique_temp_dir("wake-marker-roundtrip");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("SLEEP.BMP"), fixture()).unwrap();
-        let catalog = SleepImageCatalog::new(&root);
-        catalog.record_wake_marker("SLEEP.BMP").unwrap();
-        let frame = catalog.load_wake_marker_frame();
-        assert_eq!(frame, decode_sleep_bmp(&fixture()).unwrap());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn wake_marker_falls_back_to_built_in_frame_without_a_marker() {
-        let root = unique_temp_dir("wake-marker-missing");
-        fs::create_dir_all(&root).unwrap();
-        let catalog = SleepImageCatalog::new(&root);
-        let frame = catalog.load_wake_marker_frame();
-        assert_eq!(
-            frame.as_bytes().len(),
-            (WIDTH as usize / 8) * HEIGHT as usize
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn wake_marker_rejects_path_traversal_and_missing_extension() {
-        let root = unique_temp_dir("wake-marker-hostile");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("SLEEP.BMP"), fixture()).unwrap();
-        let catalog = SleepImageCatalog::new(&root);
-
-        fs::write(root.join(super::WAKE_MARKER_FILE), "../SLEEP.BMP").unwrap();
-        assert!(catalog.read_wake_marker().is_none());
-
-        fs::write(root.join(super::WAKE_MARKER_FILE), "SLEEP.TXT").unwrap();
-        assert!(catalog.read_wake_marker().is_none());
-
-        fs::write(root.join(super::WAKE_MARKER_FILE), "SLEEP.BMP\n").unwrap();
-        assert_eq!(catalog.read_wake_marker().as_deref(), Some("SLEEP.BMP"));
-
-        let _ = fs::remove_dir_all(root);
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

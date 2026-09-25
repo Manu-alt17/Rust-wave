@@ -11,6 +11,7 @@ use embedded_graphics::{
 use crate::{
     app::{display::DisplayPreferences, menu::MenuEntry, typography::Text},
     orientation::OrientedFrameBuffer,
+    regional::Locale,
 };
 
 pub fn draw_menu_row(
@@ -19,6 +20,7 @@ pub fn draw_menu_row(
     entry: MenuEntry,
     selected: bool,
     preferences: DisplayPreferences,
+    locale: Locale,
 ) -> Result<(), Infallible> {
     let border = if selected {
         PrimitiveStyle::with_stroke(BinaryColor::On, 4)
@@ -31,8 +33,8 @@ pub fn draw_menu_row(
     Rectangle::new(Point::new(22, top), Size::new(436, 76))
         .into_styled(border)
         .draw(display)?;
-    Text::new(entry.label, Point::new(34, top + 31), heading).draw(display)?;
-    Text::new(entry.subtitle, Point::new(34, top + 62), body).draw(display)?;
-    Text::new(entry.badge, Point::new(398, top + 62), body).draw(display)?;
+    Text::new(entry.label(locale), Point::new(34, top + 31), heading).draw(display)?;
+    Text::new(entry.subtitle(locale), Point::new(34, top + 62), body).draw(display)?;
+    Text::new(entry.badge(locale), Point::new(398, top + 62), body).draw(display)?;
     Ok(())
 }

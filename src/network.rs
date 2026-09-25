@@ -2,6 +2,7 @@
 
 use crate::{
     network_config::{NetworkConfig, WIFI_CONFIG_PATH},
+    regional::Locale,
     rtc::RtcDateTime,
 };
 
@@ -25,6 +26,23 @@ impl WifiConnectionState {
             Self::Connecting => "CONNECTING",
             Self::Connected => "CONNECTED",
             Self::Failed => "FAILED",
+        }
+    }
+
+    /// Locale-aware sibling of [`Self::label`]. `label` itself is left
+    /// untouched because `src/main.rs`'s serial diagnostics logging depends
+    /// on its English output staying stable.
+    #[must_use]
+    pub const fn label_i18n(self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => self.label(),
+            Locale::Italian => match self {
+                Self::Disabled => "DISABILITATO",
+                Self::ConfigurationMissing => "CONFIG MANCANTE",
+                Self::Connecting => "CONNESSIONE",
+                Self::Connected => "CONNESSO",
+                Self::Failed => "FALLITO",
+            },
         }
     }
 }
@@ -195,8 +213,8 @@ pub mod espidf {
     };
     use esp_idf_svc::{
         eventloop::EspSystemEventLoop,
-        handle::RawHandle,
         hal::modem::WifiModemPeripheral,
+        handle::RawHandle,
         nvs::EspDefaultNvsPartition,
         sntp::{EspSntp, SntpConf},
         sys,
@@ -229,6 +247,12 @@ pub mod espidf {
     const WIFI_SCAN_TIMEOUT: Duration = Duration::from_secs(4);
     /// Bound the scan result buffer to protect the main-task stack/heap.
     const WIFI_SCAN_MAX_RESULTS: usize = 24;
+    /// Minimum gap between a candidate that failed *immediately* (a
+    /// synchronous association error, not an association that timed out --
+    /// see `WifiBootPhase::CandidateCooldown`) and the next saved network's
+    /// `connect()` attempt, so several saved networks that are all
+    /// unreachable don't hammer the radio with back-to-back connect calls.
+    const CANDIDATE_RETRY_COOLDOWN: Duration = Duration::from_millis(300);
     /// The AP netif's fixed gateway address under ESP-IDF's default SoftAP
     /// `NetifConfiguration::wifi_default_router()`. `EspWifi` applies this
     /// automatically whenever `Configuration::Mixed`/`AccessPoint` is set
@@ -261,11 +285,25 @@ pub mod espidf {
     /// on it.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum WifiBootPhase {
+        /// Waiting for the boot-time scan kicked off by [`NetworkRuntime::connect`]
+        /// to settle, so `candidates` can be reordered to try any saved
+        /// network the scan actually saw in range before ones it didn't,
+        /// strongest (closest) signal first.
+        Scanning,
         /// Waiting for `esp_wifi_start()` to finish bringing the driver up.
         Starting,
         /// Driver started and `esp_wifi_connect()` requested; waiting for
         /// association and DHCP to complete.
         Connecting,
+        /// A `Connecting`-phase candidate failed *immediately* (a synchronous
+        /// association error rather than a timeout) and another saved
+        /// network is queued; waiting out `CANDIDATE_RETRY_COOLDOWN` before
+        /// issuing its `connect()` instead of doing so on the same tick.
+        /// Never blocks: `tick` just no-ops here until the cooldown elapses,
+        /// same as every other phase. An association that times out instead
+        /// already has a natural multi-second gap from `WIFI_BOOT_TIMEOUT`
+        /// and moves to the next candidate immediately, skipping this phase.
+        CandidateCooldown,
     }
 
     /// Own Wi-Fi and SNTP services for as long as the firmware is running.
@@ -277,6 +315,9 @@ pub mod espidf {
         suspended: bool,
         boot_phase: Option<WifiBootPhase>,
         boot_started_at: Option<Instant>,
+        /// Set while `boot_phase` is `CandidateCooldown`, consumed by
+        /// `advance_boot_phase` once `CANDIDATE_RETRY_COOLDOWN` elapses.
+        candidate_cooldown_started_at: Option<Instant>,
         /// Whether `esp_wifi_start()` has been requested on `wifi` yet. Set
         /// eagerly by [`Self::connect`]/[`Self::start_provisioning`]; left
         /// `false` by [`Self::provision`] so a driver held only for
@@ -316,6 +357,7 @@ pub mod espidf {
                 suspended: false,
                 boot_phase: None,
                 boot_started_at: None,
+                candidate_cooldown_started_at: None,
                 driver_started: false,
                 scan_started_at: None,
                 candidates: Vec::new(),
@@ -346,6 +388,7 @@ pub mod espidf {
                 suspended: false,
                 boot_phase: None,
                 boot_started_at: None,
+                candidate_cooldown_started_at: None,
                 driver_started: false,
                 scan_started_at: None,
                 candidates: Vec::new(),
@@ -374,6 +417,7 @@ pub mod espidf {
                 suspended: false,
                 boot_phase: None,
                 boot_started_at: None,
+                candidate_cooldown_started_at: None,
                 driver_started: false,
                 scan_started_at: None,
                 candidates: Vec::new(),
@@ -402,13 +446,30 @@ pub mod espidf {
                 .networks
                 .first()
                 .context("at least one saved network is required")?;
-            wifi.set_configuration(&Configuration::Client(client_configuration(first)?))?;
             // Non-blocking: `EspWifi::start` (reached through `wifi_mut`,
             // bypassing `BlockingWifi`'s waiting wrapper) only queues
             // `esp_wifi_start()` and returns. `tick`/`advance_boot_phase`
             // observes the driver reaching "started" and then requests
             // `esp_wifi_connect()` itself.
             wifi.wifi_mut().start()?;
+            // Scan before committing to a candidate: with more than one
+            // saved network, blindly trying `WIFI.TXT`'s order wastes the
+            // full `WIFI_BOOT_TIMEOUT` on an out-of-range network before
+            // ever reaching one that would have associated immediately.
+            // `advance_boot_phase`'s `Scanning` arm reorders `candidates`
+            // once the scan settles, trying any saved SSID actually seen in
+            // range first, and only then requests the real connection. If
+            // the scan itself fails to start, fall back to the previous
+            // behavior (try saved order, starting from `first`) rather than
+            // blocking boot on a driver problem the boot sequence can't fix.
+            let scan_started =
+                unsafe { sys::esp_wifi_scan_start(core::ptr::null(), false) } == sys::ESP_OK;
+            if !scan_started {
+                warn!(
+                    "rustmix-wave=wifi-boot-scan status=failed-to-start falling-back=saved-order"
+                );
+                wifi.set_configuration(&Configuration::Client(client_configuration(first)?))?;
+            }
 
             Ok(Self {
                 wifi: Some(wifi),
@@ -427,10 +488,15 @@ pub mod espidf {
                 },
                 ntp_reported: false,
                 suspended: false,
-                boot_phase: Some(WifiBootPhase::Starting),
+                boot_phase: Some(if scan_started {
+                    WifiBootPhase::Scanning
+                } else {
+                    WifiBootPhase::Starting
+                }),
                 boot_started_at: Some(Instant::now()),
+                candidate_cooldown_started_at: None,
                 driver_started: true,
-                scan_started_at: None,
+                scan_started_at: scan_started.then(Instant::now),
                 candidates: config.networks.clone(),
                 candidate_index: 0,
                 provisioning: false,
@@ -471,63 +537,72 @@ pub mod espidf {
             self.suspended = true;
             self.boot_phase = None;
             self.boot_started_at = None;
+            self.candidate_cooldown_started_at = None;
             Ok(())
         }
 
         /// Restart Wi-Fi association and SNTP after the wake frame is already
-        /// visible, failing over through `config.networks` in order. Failed
-        /// recovery is non-fatal and remains visible in the product-facing
-        /// network snapshot.
+        /// visible. Non-blocking, same shape as [`Self::connect`]/
+        /// [`Self::stop_provisioning`]: this only requests
+        /// `esp_wifi_start()`, applies the first candidate's configuration
+        /// and arms a `WifiBootPhase::Starting` handshake for
+        /// `tick`/`advance_boot_phase` to carry to completion across
+        /// subsequent main-loop iterations. An earlier version blocked here
+        /// on `wifi.connect()` and DHCP directly, freezing button/panel
+        /// handling for however long association and DHCP took -- several
+        /// seconds even to an in-range AP, more than twenty if a saved
+        /// network ahead of it in `config.networks` was out of range -- since
+        /// this runs inline in the main loop, unlike `connect`'s boot-time
+        /// callers which are naturally idle. `advance_boot_phase`'s existing
+        /// fail-over already tries the rest of `config.networks` in order if
+        /// the first candidate fails, so failure here stays non-fatal and
+        /// visible in the product-facing network snapshot exactly as before.
+        ///
+        /// The network that was connected before suspending is tried first,
+        /// ahead of `config.networks`' saved order, since it is by far the
+        /// most likely to still be in range.
         pub fn resume(&mut self, config: &NetworkConfig) -> Result<()> {
+            self.suspended = false;
             self.boot_phase = None;
             self.boot_started_at = None;
+            self.candidate_cooldown_started_at = None;
+            self.sntp = None;
+            let preferred_ssid = self
+                .candidates
+                .get(self.candidate_index)
+                .map(|network| network.ssid.clone());
             self.candidates = config.networks.clone();
             self.candidate_index = 0;
-            let wifi = self.wifi.as_mut().context("Wi-Fi runtime is unavailable")?;
-            wifi.start()?;
-            let mut last_error = None;
-            let mut connected_ssid = None;
-            for (index, network) in self.candidates.iter().enumerate() {
-                wifi.set_configuration(&Configuration::Client(client_configuration(network)?))?;
-                match wifi.connect().and_then(|()| wifi.wait_netif_up()) {
-                    Ok(()) => {
-                        self.candidate_index = index;
-                        connected_ssid = Some(network.ssid.clone());
-                        break;
-                    }
-                    Err(error) => {
-                        let _ = wifi.disconnect();
-                        last_error = Some(error);
-                    }
+            if let Some(ssid) = preferred_ssid {
+                if let Some(position) = self
+                    .candidates
+                    .iter()
+                    .position(|network| network.ssid == ssid)
+                {
+                    let preferred = self.candidates.remove(position);
+                    self.candidates.insert(0, preferred);
                 }
             }
-            let Some(ssid) = connected_ssid else {
-                return Err(last_error.map_or_else(
-                    || anyhow!("no saved network is available"),
-                    anyhow::Error::from,
-                ));
-            };
-            let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
-            // Drop any still-held SNTP session before requesting a new one:
-            // it is a process-wide singleton, so a leftover instance makes
-            // `EspSntp::new` below fail with `ESP_ERR_INVALID_STATE` even
-            // though the reassociation above genuinely succeeded.
-            self.sntp = None;
-            let mut conf = SntpConf::default();
-            conf.servers[0] = config.ntp_server.as_str();
-            self.sntp = Some(EspSntp::new(&conf)?);
-            apply_background_power_save();
-            self.snapshot.wifi_state = WifiConnectionState::Connected;
-            self.snapshot.ntp_state = NtpSyncState::Synchronizing;
-            self.snapshot.ssid = Some(ssid);
-            self.snapshot.ipv4_address = Some(format!("{}", ip_info.ip));
-            self.snapshot.rssi_dbm = read_rssi_dbm();
+            let first = self
+                .candidates
+                .first()
+                .cloned()
+                .context("at least one saved network is required")?;
+            let wifi = self.wifi.as_mut().context("Wi-Fi runtime is unavailable")?;
+            wifi.wifi_mut().start()?;
+            wifi.set_configuration(&Configuration::Client(client_configuration(&first)?))?;
+            self.snapshot.wifi_state = WifiConnectionState::Connecting;
+            self.snapshot.ntp_state = NtpSyncState::WaitingForWifi;
+            self.snapshot.ssid = Some(first.ssid);
+            self.snapshot.ipv4_address = None;
+            self.snapshot.rssi_dbm = None;
             self.snapshot.timezone_name = config.timezone.clone();
             self.snapshot.ntp_server = config.ntp_server.clone();
             self.snapshot.saved_network_count = config.networks.len();
             self.snapshot.error = None;
             self.ntp_reported = false;
-            self.suspended = false;
+            self.boot_phase = Some(WifiBootPhase::Starting);
+            self.boot_started_at = Some(Instant::now());
             Ok(())
         }
 
@@ -582,32 +657,7 @@ pub mod espidf {
                 return None;
             }
             self.scan_started_at = None;
-
-            let mut count: u16 = 0;
-            let status = unsafe { sys::esp_wifi_scan_get_ap_num(&mut count) };
-            if status != sys::ESP_OK {
-                return Some(Err(format!("esp_wifi_scan_get_ap_num failed: {status}")));
-            }
-
-            let capped = (count as usize).min(WIFI_SCAN_MAX_RESULTS);
-            let mut records = vec![unsafe { core::mem::zeroed::<sys::wifi_ap_record_t>() }; capped];
-            let mut fetched = capped as u16;
-            let status =
-                unsafe { sys::esp_wifi_scan_get_ap_records(&mut fetched, records.as_mut_ptr()) };
-            if status != sys::ESP_OK {
-                return Some(Err(format!(
-                    "esp_wifi_scan_get_ap_records failed: {status}"
-                )));
-            }
-            records.truncate(fetched as usize);
-
-            Some(Ok(records
-                .iter()
-                .map(|record| WifiScanEntry {
-                    ssid: ap_record_ssid(record),
-                    rssi_dbm: i32::from(record.rssi),
-                })
-                .collect()))
+            Some(fetch_scan_results())
         }
 
         /// Switch the driver into `Configuration::Mixed` (AP + STA), so the
@@ -621,6 +671,7 @@ pub mod espidf {
             self.sntp = None;
             self.boot_phase = None;
             self.boot_started_at = None;
+            self.candidate_cooldown_started_at = None;
             self.candidates.clear();
             self.candidate_index = 0;
             let ap_ssid = format!("RUSTMIX-{:04}", unsafe { sys::esp_random() } % 10_000);
@@ -669,24 +720,53 @@ pub mod espidf {
             // landing correctly at all.
             let captive_portal_uri = std::ffi::CString::new(format!("http://{PROVISIONING_AP_IP}"))
                 .context("provisioning captive-portal URI contains an interior NUL byte")?;
+            // ESP-IDF rejects DHCP server option changes while the server is
+            // running (`ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED`), which it
+            // already is whenever the driver was started earlier (e.g. by a
+            // failed boot-time connect attempt). Stop it around the change
+            // and restart it only if it was running, as ESP-IDF's
+            // `captive_portal` example does.
+            let ap_netif = wifi.wifi_mut().ap_netif().handle();
+            let mut dhcps_status = sys::esp_netif_dhcp_status_t_ESP_NETIF_DHCP_INIT;
+            let dhcps_was_started = unsafe {
+                sys::esp_netif_dhcps_get_status(ap_netif, &mut dhcps_status) == sys::ESP_OK
+                    && dhcps_status == sys::esp_netif_dhcp_status_t_ESP_NETIF_DHCP_STARTED
+            };
+            if dhcps_was_started {
+                let status = unsafe { sys::esp_netif_dhcps_stop(ap_netif) };
+                if status != sys::ESP_OK {
+                    return Err(anyhow!(
+                        "esp_netif_dhcps_stop before setting CAPTIVEPORTAL_URI failed: {status}"
+                    ));
+                }
+            }
             let status = unsafe {
                 sys::esp_netif_dhcps_option(
-                    wifi.wifi_mut().ap_netif().handle(),
+                    ap_netif,
                     sys::esp_netif_dhcp_option_mode_t_ESP_NETIF_OP_SET,
                     sys::esp_netif_dhcp_option_id_t_ESP_NETIF_CAPTIVEPORTAL_URI,
                     captive_portal_uri.as_ptr() as *mut core::ffi::c_void,
                     captive_portal_uri.as_bytes().len() as u32,
                 )
             };
-            if status != sys::ESP_OK {
-                return Err(anyhow!(
-                    "esp_netif_dhcps_option(CAPTIVEPORTAL_URI) failed: {status}"
-                ));
+            if dhcps_was_started {
+                let restart_status = unsafe { sys::esp_netif_dhcps_start(ap_netif) };
+                if restart_status != sys::ESP_OK {
+                    return Err(anyhow!(
+                        "esp_netif_dhcps_start after setting CAPTIVEPORTAL_URI failed: {restart_status}"
+                    ));
+                }
             }
-            // `esp_netif_dhcps_option` stored the raw pointer above, not a
-            // copy; keep the backing `CString` alive for as long as the
-            // hotspot might still be up.
-            self.captive_portal_uri = Some(captive_portal_uri);
+            // Option 114 is an extra signal on top of the DNS/HTTP redirect,
+            // not a requirement: a failure here must not take the portal down.
+            if status == sys::ESP_OK {
+                // `esp_netif_dhcps_option` stored the raw pointer above, not
+                // a copy; keep the backing `CString` alive for as long as the
+                // hotspot might still be up.
+                self.captive_portal_uri = Some(captive_portal_uri);
+            } else {
+                warn!("rustmix-wave=provisioning-captive-uri status=failed error-code={status}");
+            }
 
             wifi.set_configuration(&Configuration::Mixed(
                 ClientConfiguration::default(),
@@ -721,12 +801,19 @@ pub mod espidf {
             })
         }
 
-        /// Attempt one candidate network over the STA side of the AP+STA
-        /// pair started by [`Self::start_provisioning`], without dropping
-        /// the hotspot. Non-blocking; poll [`Self::snapshot`] for the
-        /// outcome (`Connected`/`Failed`) the way the boot sequence does.
-        /// Used by the provisioning portal's "validate before save" step:
-        /// only a confirmed `Connected` snapshot should be persisted.
+        /// Attempt one candidate network. While the AP+STA pair started by
+        /// [`Self::start_provisioning`] is up, switches to `Mixed` so the
+        /// hotspot keeps broadcasting (used by the portal's hotspot-bootstrap
+        /// "validate before save" step). Otherwise -- a device already
+        /// joined to a LAN, trying a *different* saved network from the
+        /// portal's Wi-Fi tab -- there is no AP to protect, so this switches
+        /// straight to the candidate, dropping the current connection
+        /// immediately; the caller is responsible for reconnecting to the
+        /// existing saved-network list (e.g. via [`Self::stop_provisioning`])
+        /// if the candidate then fails, so the device is not left stranded.
+        /// Non-blocking either way; poll [`Self::snapshot`] for the outcome
+        /// (`Connected`/`Failed`) the way the boot sequence does. Only a
+        /// confirmed `Connected` snapshot should be persisted.
         pub fn try_join_candidate(&mut self, ssid: String, password: String) -> Result<()> {
             let wifi = self
                 .wifi
@@ -734,10 +821,12 @@ pub mod espidf {
                 .context("Wi-Fi driver was never started")?;
             let candidate = SavedNetwork { ssid, password };
             let _ = wifi.disconnect();
-            wifi.set_configuration(&Configuration::Mixed(
-                client_configuration(&candidate)?,
-                ap_configuration_in_use(wifi)?,
-            ))?;
+            let client_conf = client_configuration(&candidate)?;
+            let configuration = match ap_configuration_in_use(wifi) {
+                Ok(ap_conf) => Configuration::Mixed(client_conf, ap_conf),
+                Err(_) => Configuration::Client(client_conf),
+            };
+            wifi.set_configuration(&configuration)?;
             wifi.wifi_mut().connect()?;
             self.snapshot.wifi_state = WifiConnectionState::Connecting;
             self.snapshot.ssid = Some(candidate.ssid.clone());
@@ -762,6 +851,7 @@ pub mod espidf {
             self.sntp = None;
             self.boot_phase = None;
             self.boot_started_at = None;
+            self.candidate_cooldown_started_at = None;
             self.candidates.clear();
             self.candidate_index = 0;
             let wifi = self
@@ -818,6 +908,7 @@ pub mod espidf {
             if self.suspended {
                 return None;
             }
+            let was_connected = matches!(self.snapshot.wifi_state, WifiConnectionState::Connected);
             self.advance_boot_phase();
             // Only meaningful -- and only safe to call -- while actually
             // associated to an AP. Calling `esp_wifi_sta_get_ap_info` with no
@@ -828,7 +919,14 @@ pub mod espidf {
             // also disrupts the AP side sharing its radio -- resetting a
             // joined phone's in-flight requests, including the
             // captive-portal probe the single-QR-code join flow depends on.
-            if matches!(self.snapshot.wifi_state, WifiConnectionState::Connected) {
+            //
+            // Gated on `was_connected` (state on *entry*, before
+            // `advance_boot_phase` ran) so the tick that freshly transitions
+            // into `Connected` doesn't immediately re-read RSSI a second
+            // time: `advance_boot_phase`'s `Connecting` arm already sampled
+            // it once for that same transition.
+            if was_connected && matches!(self.snapshot.wifi_state, WifiConnectionState::Connected)
+            {
                 self.snapshot.rssi_dbm = read_rssi_dbm();
             }
             if self.ntp_reported || self.sntp.is_none() {
@@ -857,9 +955,32 @@ pub mod espidf {
             let Some(phase) = self.boot_phase else {
                 return;
             };
+
+            // Handled before `wifi` is borrowed below: `try_next_candidate`
+            // re-borrows `self.wifi` itself (see its doc comment), so this
+            // must run with no outstanding borrow of `self.wifi` in scope.
+            if matches!(phase, WifiBootPhase::CandidateCooldown) {
+                let elapsed = self
+                    .candidate_cooldown_started_at
+                    .is_some_and(|started| started.elapsed() >= CANDIDATE_RETRY_COOLDOWN);
+                if !elapsed {
+                    return;
+                }
+                self.candidate_cooldown_started_at = None;
+                if !self.try_next_candidate() {
+                    self.snapshot.wifi_state = WifiConnectionState::Failed;
+                    self.snapshot.ntp_state = NtpSyncState::Failed;
+                    self.snapshot.error = Some("no further saved network candidates".into());
+                    self.boot_phase = None;
+                    self.boot_started_at = None;
+                }
+                return;
+            }
+
             let Some(wifi) = self.wifi.as_mut() else {
                 self.boot_phase = None;
                 self.boot_started_at = None;
+                self.candidate_cooldown_started_at = None;
                 return;
             };
 
@@ -867,11 +988,60 @@ pub mod espidf {
             let mut advanced = false;
 
             match phase {
+                WifiBootPhase::Scanning => {
+                    let settled = self
+                        .boot_started_at
+                        .is_some_and(|started| started.elapsed() >= WIFI_SCAN_TIMEOUT);
+                    if settled {
+                        self.scan_started_at = None;
+                        match fetch_scan_results() {
+                            Ok(entries) => {
+                                self.candidates = reorder_candidates_by_scan(
+                                    std::mem::take(&mut self.candidates),
+                                    &entries,
+                                );
+                            }
+                            Err(error) => {
+                                warn!("rustmix-wave=wifi-boot-scan status=failed error={error}");
+                            }
+                        }
+                        match self.candidates.first().cloned() {
+                            Some(winner) => {
+                                let outcome = client_configuration(&winner).and_then(|conf| {
+                                    wifi.set_configuration(&Configuration::Client(conf))?;
+                                    wifi.wifi_mut().connect()?;
+                                    Ok(())
+                                });
+                                match outcome {
+                                    Ok(()) => {
+                                        self.snapshot.ssid = Some(winner.ssid);
+                                        self.boot_phase = Some(WifiBootPhase::Connecting);
+                                        self.boot_started_at = Some(Instant::now());
+                                        advanced = true;
+                                        // OTA-worker internal-RAM fragmentation
+                                        // investigation: heap right as
+                                        // association is requested, before
+                                        // DHCP/SNTP traffic -- see the matching
+                                        // trace at Wi-Fi-connected-and-synced.
+                                        crate::runtime_memory::log_runtime_memory(
+                                            "wifi-association-requested",
+                                        );
+                                    }
+                                    Err(error) => failure = Some(format!("{error:?}")),
+                                }
+                            }
+                            None => failure = Some("no saved network is available".into()),
+                        }
+                    }
+                }
                 WifiBootPhase::Starting => match wifi.is_started() {
                     Ok(true) => match wifi.wifi_mut().connect() {
                         Ok(()) => {
                             self.boot_phase = Some(WifiBootPhase::Connecting);
                             advanced = true;
+                            crate::runtime_memory::log_runtime_memory(
+                                "wifi-association-requested",
+                            );
                         }
                         Err(error) => failure = Some(format!("{error:?}")),
                     },
@@ -914,11 +1084,24 @@ pub mod espidf {
                     Ok(false) => {}
                     Err(error) => failure = Some(format!("{error:?}")),
                 },
+                WifiBootPhase::CandidateCooldown => {
+                    unreachable!("handled and returned above before `wifi` was borrowed")
+                }
             }
 
             if let Some(error) = failure {
                 warn!("rustmix-wave=wifi-boot status=failed phase={phase:?} error={error}");
-                if matches!(phase, WifiBootPhase::Connecting) && self.try_next_candidate() {
+                // An immediate (synchronous) failure, as opposed to an
+                // association that timed out below: defer the next
+                // candidate's `connect()` by `CANDIDATE_RETRY_COOLDOWN`
+                // instead of issuing it on this same tick, so several saved
+                // networks that are all immediately unreachable don't
+                // hammer the radio back-to-back.
+                if matches!(phase, WifiBootPhase::Connecting)
+                    && self.candidate_index + 1 < self.candidates.len()
+                {
+                    self.boot_phase = Some(WifiBootPhase::CandidateCooldown);
+                    self.candidate_cooldown_started_at = Some(Instant::now());
                     return;
                 }
                 self.snapshot.wifi_state = WifiConnectionState::Failed;
@@ -1005,7 +1188,9 @@ pub mod espidf {
     /// `Configuration::Mixed` is active for provisioning (the AP side is
     /// always up once started; only the STA side reflects an in-progress
     /// candidate attempt).
-    fn sta_ready(wifi: &BlockingWifi<EspWifi<'static>>) -> Result<bool, esp_idf_svc::sys::EspError> {
+    fn sta_ready(
+        wifi: &BlockingWifi<EspWifi<'static>>,
+    ) -> Result<bool, esp_idf_svc::sys::EspError> {
         Ok(wifi.is_connected()? && wifi.wifi().sta_netif().is_up()?)
     }
 
@@ -1062,11 +1247,128 @@ pub mod espidf {
         (status == sys::ESP_OK).then_some(i32::from(record.rssi))
     }
 
+    /// Read back results from a scan already known to have settled (started
+    /// by [`NetworkRuntime::start_scan`] or the boot-time scan in
+    /// [`NetworkRuntime::connect`]). Shared so both call sites report
+    /// failures the same way.
+    fn fetch_scan_results() -> std::result::Result<Vec<WifiScanEntry>, String> {
+        let mut count: u16 = 0;
+        let status = unsafe { sys::esp_wifi_scan_get_ap_num(&mut count) };
+        if status != sys::ESP_OK {
+            return Err(format!("esp_wifi_scan_get_ap_num failed: {status}"));
+        }
+
+        let capped = (count as usize).min(WIFI_SCAN_MAX_RESULTS);
+        let mut records = vec![unsafe { core::mem::zeroed::<sys::wifi_ap_record_t>() }; capped];
+        let mut fetched = capped as u16;
+        let status =
+            unsafe { sys::esp_wifi_scan_get_ap_records(&mut fetched, records.as_mut_ptr()) };
+        if status != sys::ESP_OK {
+            return Err(format!("esp_wifi_scan_get_ap_records failed: {status}"));
+        }
+        records.truncate(fetched as usize);
+
+        Ok(records
+            .iter()
+            .map(|record| WifiScanEntry {
+                ssid: ap_record_ssid(record),
+                rssi_dbm: i32::from(record.rssi),
+            })
+            .collect())
+    }
+
+    /// Reorder boot candidates so any saved SSID the just-completed scan
+    /// actually saw in range is tried before ones it didn't, strongest
+    /// signal (closest access point) first, without disturbing the
+    /// out-of-range group's original saved-priority order. This is what
+    /// stops a saved-but-out-of-range network listed first in `WIFI.TXT`
+    /// from eating the full `WIFI_BOOT_TIMEOUT` before an in-range saved
+    /// network further down the list ever gets a turn, and what prefers the
+    /// nearest of several in-range saved networks (e.g. an AP advertising on
+    /// multiple channels, or two saved networks both in range) instead of
+    /// just the one listed first in `WIFI.TXT`.
+    fn reorder_candidates_by_scan(
+        candidates: Vec<SavedNetwork>,
+        scan: &[WifiScanEntry],
+    ) -> Vec<SavedNetwork> {
+        let strongest_rssi = |ssid: &str| -> Option<i32> {
+            scan.iter()
+                .filter(|entry| entry.ssid == ssid)
+                .map(|entry| entry.rssi_dbm)
+                .max()
+        };
+        let (mut in_range, out_of_range): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .partition(|network| strongest_rssi(&network.ssid).is_some());
+        in_range.sort_by(|a, b| strongest_rssi(&b.ssid).cmp(&strongest_rssi(&a.ssid)));
+        in_range.into_iter().chain(out_of_range).collect()
+    }
+
     /// Decode a scan record's null-terminated SSID byte array.
     fn ap_record_ssid(record: &sys::wifi_ap_record_t) -> String {
         let bytes = &record.ssid[..];
         let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         String::from_utf8_lossy(&bytes[..len]).into_owned()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{reorder_candidates_by_scan, WifiScanEntry};
+        use crate::network_config::SavedNetwork;
+
+        fn network(ssid: &str) -> SavedNetwork {
+            SavedNetwork {
+                ssid: ssid.into(),
+                password: String::new(),
+            }
+        }
+
+        fn seen(ssid: &str, rssi_dbm: i32) -> WifiScanEntry {
+            WifiScanEntry {
+                ssid: ssid.into(),
+                rssi_dbm,
+            }
+        }
+
+        #[test]
+        fn in_range_candidates_are_tried_strongest_signal_first() {
+            let candidates = vec![network("Far"), network("Near"), network("Medium")];
+            // Saved order lists "Far" first, but the scan sees "Near" much
+            // closer; it must be tried before "Far" and "Medium" despite
+            // being listed second in `WIFI.TXT`.
+            let scan = vec![seen("Far", -80), seen("Near", -30), seen("Medium", -55)];
+            let reordered = reorder_candidates_by_scan(candidates, &scan);
+            assert_eq!(
+                reordered.iter().map(|n| n.ssid.as_str()).collect::<Vec<_>>(),
+                vec!["Near", "Medium", "Far"]
+            );
+        }
+
+        #[test]
+        fn out_of_range_candidates_keep_saved_order_after_in_range_ones() {
+            let candidates = vec![network("Unseen"), network("Home"), network("AlsoUnseen")];
+            let scan = vec![seen("Home", -50)];
+            let reordered = reorder_candidates_by_scan(candidates, &scan);
+            assert_eq!(
+                reordered.iter().map(|n| n.ssid.as_str()).collect::<Vec<_>>(),
+                vec!["Home", "Unseen", "AlsoUnseen"]
+            );
+        }
+
+        #[test]
+        fn a_saved_network_seen_on_multiple_channels_uses_its_strongest_reading() {
+            let candidates = vec![network("Weak"), network("MultiChannel")];
+            let scan = vec![
+                seen("Weak", -60),
+                seen("MultiChannel", -70),
+                seen("MultiChannel", -40),
+            ];
+            let reordered = reorder_candidates_by_scan(candidates, &scan);
+            assert_eq!(
+                reordered.iter().map(|n| n.ssid.as_str()).collect::<Vec<_>>(),
+                vec!["MultiChannel", "Weak"]
+            );
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 //! Hardware-independent Power-key menu state.
 //!
-//! A physical Power short press opens a compact global display-maintenance
-//! menu. A physical Power long press is handled by the AXP2101 runtime and
+//! A physical Power long press opens a compact global display-maintenance
+//! menu. A physical Power short press is handled by the AXP2101 runtime and
 //! enters the existing sleep-image path without routing through this menu.
 
 use crate::buttons::ButtonEvent;

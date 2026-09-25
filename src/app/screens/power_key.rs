@@ -10,6 +10,7 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
@@ -21,14 +22,24 @@ pub fn render_power_key_menu(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
 
-    draw_header(display, state, "POWER KEY")?;
+    draw_header(display, state, t(locale, "POWER KEY", "TASTO ACCENSIONE"))?;
 
-    Text::new("Screen refresh", Point::new(22, 128), heading).draw(display)?;
     Text::new(
-        "Run a clean global refresh to clear e-paper ghosting.",
+        t(locale, "Screen refresh", "Aggiornamento schermo"),
+        Point::new(22, 128),
+        heading,
+    )
+    .draw(display)?;
+    Text::new(
+        t(
+            locale,
+            "Run a clean global refresh to clear e-paper ghosting.",
+            "Esegui un aggiornamento completo per eliminare gli aloni dell'e-paper.",
+        ),
         Point::new(22, 174),
         body,
     )
@@ -37,14 +48,14 @@ pub fn render_power_key_menu(
     draw_action(
         display,
         246,
-        "Clear ghosting now",
+        t(locale, "Clear ghosting now", "Elimina aloni ora"),
         state.power_key_menu.selected == 0,
         body,
     )?;
     draw_action(
         display,
         326,
-        "Cancel",
+        t(locale, "Cancel", "Annulla"),
         state.power_key_menu.selected == 1,
         body,
     )?;
@@ -52,10 +63,24 @@ pub fn render_power_key_menu(
     Rectangle::new(Point::new(22, 454), Size::new(436, 104))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
-    Text::new("Long Power press", Point::new(44, 500), heading).draw(display)?;
-    Text::new("Enter sleep-image mode", Point::new(44, 534), body).draw(display)?;
+    Text::new(
+        t(locale, "Long Power press", "Pressione lunga tasto"),
+        Point::new(44, 500),
+        heading,
+    )
+    .draw(display)?;
+    Text::new(
+        t(
+            locale,
+            "Enter sleep-image mode",
+            "Attiva modalità immagine sospensione",
+        ),
+        Point::new(44, 534),
+        body,
+    )
+    .draw(display)?;
 
-    draw_footer(display, state.display, "MOVE  SELECT RUN  BOOT BACK")?;
+    draw_footer(display, state, t(locale, "SELECT RUN", "SELECT ESEGUI"))?;
     Ok(())
 }
 

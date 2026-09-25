@@ -643,7 +643,15 @@ impl CalendarUiState {
 
     #[must_use]
     pub fn agenda_visible_range(&self) -> Range<usize> {
-        let len = self.selected_day_event_count();
+        self.agenda_visible_range_for_len(self.selected_day_event_count())
+    }
+
+    /// Same as [`Self::agenda_visible_range`], but takes an already-known
+    /// day event count instead of re-filtering the catalog for it -- for a
+    /// caller (like the agenda screen render) that already has the day's
+    /// events in hand.
+    #[must_use]
+    pub fn agenda_visible_range_for_len(&self, len: usize) -> Range<usize> {
         if len <= CALENDAR_AGENDA_VISIBLE_ROWS {
             return 0..len;
         }

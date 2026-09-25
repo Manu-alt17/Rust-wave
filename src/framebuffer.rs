@@ -81,6 +81,56 @@ impl FrameBuffer {
         }
     }
 
+    /// Set a native pixel already known to be inside the panel. Hot drawing
+    /// loops use this after clipping once per primitive instead of per
+    /// pixel; an out-of-range point still panics on the slice index rather
+    /// than writing anywhere else.
+    #[inline]
+    pub(crate) fn set_native_black_in_bounds(&mut self, x: usize, y: usize, black: bool) {
+        debug_assert!(x < WIDTH as usize && y < HEIGHT as usize);
+        let byte_index = y * ROW_BYTES + x / 8;
+        let mask = 0x80 >> (x % 8);
+        if black {
+            self.bytes[byte_index] &= !mask;
+        } else {
+            self.bytes[byte_index] |= mask;
+        }
+    }
+
+    /// Fill the native half-open rectangle `[x0, x1) x [y0, y1)`, clamped to
+    /// the panel, a byte at a time instead of a pixel at a time.
+    pub(crate) fn fill_native_rect(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, black: bool) {
+        let x0 = x0.clamp(0, WIDTH as i32) as usize;
+        let x1 = x1.clamp(0, WIDTH as i32) as usize;
+        let y0 = y0.clamp(0, HEIGHT as i32) as usize;
+        let y1 = y1.clamp(0, HEIGHT as i32) as usize;
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let first_byte = x0 / 8;
+        let last_byte = (x1 - 1) / 8;
+        // Bits covered in the first and last byte (MSB = leftmost pixel).
+        let head_mask = 0xFF_u8 >> (x0 % 8);
+        let tail_mask = 0xFF_u8 << (7 - (x1 - 1) % 8);
+        let apply = |byte: &mut u8, mask: u8| {
+            if black {
+                *byte &= !mask;
+            } else {
+                *byte |= mask;
+            }
+        };
+        for y in y0..y1 {
+            let row = &mut self.bytes[y * ROW_BYTES..(y + 1) * ROW_BYTES];
+            if first_byte == last_byte {
+                apply(&mut row[first_byte], head_mask & tail_mask);
+                continue;
+            }
+            apply(&mut row[first_byte], head_mask);
+            row[first_byte + 1..last_byte].fill(if black { 0x00 } else { 0xFF });
+            apply(&mut row[last_byte], tail_mask);
+        }
+    }
+
     /// Direct mutable access to the packed bytes. Only for fast blit paths
     /// (see [`crate::orientation::OrientedFrameBuffer::blit_packed_bitmap_portrait`])
     /// that bypass the per-pixel `set_native_black` path for throughput.

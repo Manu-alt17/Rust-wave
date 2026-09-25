@@ -10,6 +10,7 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::{Text, UiTextStyle},
         widgets::{footer::draw_footer, header::draw_header},
@@ -17,6 +18,7 @@ use crate::{
     imu::{format_tenths, Axis3Tenths},
     imu_events::{ImuEventBridge, IMU_EVENT_CONTROL_COUNT},
     orientation::OrientedFrameBuffer,
+    regional::Locale,
 };
 
 /// Draw QMI8658 accelerometer and gyroscope readings.
@@ -24,34 +26,74 @@ pub fn render_motion(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let outline = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
-    draw_header(display, state, "MOTION")?;
+    draw_header(display, state, t(locale, "MOTION", "MOVIMENTO"))?;
 
-    Text::new("Accelerometer", Point::new(22, 108), heading).draw(display)?;
+    Text::new(
+        t(locale, "Accelerometer", "Accelerometro"),
+        Point::new(22, 108),
+        heading,
+    )
+    .draw(display)?;
     Rectangle::new(Point::new(22, 138), Size::new(436, 144))
         .into_styled(outline)
         .draw(display)?;
     if let Some(reading) = state.board.imu {
-        draw_axis_lines(display, 180, reading.acceleration_mg_tenths, "mg", body)?;
+        draw_axis_lines(
+            display,
+            180,
+            reading.acceleration_mg_tenths,
+            "mg",
+            body,
+            locale,
+        )?;
     } else {
-        Text::new("QMI8658 unavailable", Point::new(42, 206), body).draw(display)?;
+        Text::new(
+            t(locale, "QMI8658 unavailable", "QMI8658 non disponibile"),
+            Point::new(42, 206),
+            body,
+        )
+        .draw(display)?;
     }
 
-    Text::new("Gyroscope", Point::new(22, 326), heading).draw(display)?;
+    Text::new(
+        t(locale, "Gyroscope", "Giroscopio"),
+        Point::new(22, 326),
+        heading,
+    )
+    .draw(display)?;
     Rectangle::new(Point::new(22, 356), Size::new(436, 144))
         .into_styled(outline)
         .draw(display)?;
     if let Some(reading) = state.board.imu {
-        draw_axis_lines(display, 398, reading.gyroscope_dps_tenths, "dps", body)?;
+        draw_axis_lines(
+            display,
+            398,
+            reading.gyroscope_dps_tenths,
+            "dps",
+            body,
+            locale,
+        )?;
     } else {
-        Text::new("QMI8658 unavailable", Point::new(42, 424), body).draw(display)?;
+        Text::new(
+            t(locale, "QMI8658 unavailable", "QMI8658 non disponibile"),
+            Point::new(42, 424),
+            body,
+        )
+        .draw(display)?;
     }
 
-    draw_action(display, 594, "Motion event bridge", body)?;
-    draw_footer(display, state.display, "SELECT EVENTS  BOOT BACK")?;
+    draw_action(
+        display,
+        594,
+        t(locale, "Motion event bridge", "Bridge eventi movimento"),
+        body,
+    )?;
+    draw_footer(display, state, t(locale, "SELECT EVENTS", "SELECT EVENTI"))?;
     Ok(())
 }
 
@@ -60,19 +102,33 @@ pub fn render_motion_events(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
     let latest = state.imu_events.latest_label();
 
-    draw_header(display, state, "MOTION EVENTS")?;
+    draw_header(
+        display,
+        state,
+        t(locale, "MOTION EVENTS", "EVENTI DI MOVIMENTO"),
+    )?;
 
-    Text::new("Native event diagnostics", Point::new(22, 100), heading).draw(display)?;
-    line(display, 146, "Latest", &latest, body)?;
+    Text::new(
+        t(
+            locale,
+            "Native event diagnostics",
+            "Diagnostica eventi nativi",
+        ),
+        Point::new(22, 100),
+        heading,
+    )
+    .draw(display)?;
+    line(display, 146, t(locale, "Latest", "Ultimo"), &latest, body)?;
     line(
         display,
         184,
-        "Counts",
+        t(locale, "Counts", "Conteggi"),
         &format!(
             "T{} S{} R{} L{}",
             state.imu_events.counters.tilt,
@@ -83,13 +139,22 @@ pub fn render_motion_events(
         body,
     )?;
     Text::new(
-        "Raw QMI8658 stays behind Rust I2C.",
+        t(
+            locale,
+            "Raw QMI8658 stays behind Rust I2C.",
+            "I dati grezzi QMI8658 restano dietro I2C Rust.",
+        ),
         Point::new(22, 224),
         detail,
     )
     .draw(display)?;
 
-    Text::new("Thresholds and debounce", Point::new(22, 276), heading).draw(display)?;
+    Text::new(
+        t(locale, "Thresholds and debounce", "Soglie e debounce"),
+        Point::new(22, 276),
+        heading,
+    )
+    .draw(display)?;
     for index in 0..IMU_EVENT_CONTROL_COUNT {
         draw_control(
             display,
@@ -99,11 +164,7 @@ pub fn render_motion_events(
             body,
         )?;
     }
-    draw_footer(
-        display,
-        state.display,
-        "UP/DOWN ROW SELECT CHANGE BOOT BACK",
-    )?;
+    draw_footer(display, state, t(locale, "SELECT CHANGE", "SELECT CAMBIA"))?;
     Ok(())
 }
 
@@ -111,13 +172,23 @@ pub fn render_motion_details(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let detail = state.display.detail_style();
 
-    draw_header(display, state, "MOTION DETAILS")?;
+    draw_header(
+        display,
+        state,
+        t(locale, "MOTION DETAILS", "DETTAGLI MOVIMENTO"),
+    )?;
 
-    Text::new("Sensor status", Point::new(22, 118), heading).draw(display)?;
+    Text::new(
+        t(locale, "Sensor status", "Stato sensore"),
+        Point::new(22, 118),
+        heading,
+    )
+    .draw(display)?;
     if let Some(reading) = state.board.imu {
         let address = state
             .board
@@ -127,25 +198,31 @@ pub fn render_motion_details(
             .board
             .imu_revision
             .map_or_else(|| "--".into(), |value| format!("0x{value:02X}"));
-        line(display, 168, "Magnitude", &reading.magnitude_label(), body)?;
+        line(
+            display,
+            168,
+            t(locale, "Magnitude", "Magnitudine"),
+            &reading.magnitude_label(),
+            body,
+        )?;
         line(
             display,
             208,
-            "Dominant axis",
-            reading.dominant_axis.label(),
+            t(locale, "Dominant axis", "Asse dominante"),
+            reading.dominant_axis.label_i18n(locale),
             body,
         )?;
         line(
             display,
             248,
-            "Address / rev",
+            t(locale, "Address / rev", "Indirizzo / rev"),
             &format!("{address} / {revision}"),
             body,
         )?;
         line(
             display,
             288,
-            "Die temperature",
+            t(locale, "Die temperature", "Temperatura del chip"),
             &reading.temperature_label(),
             body,
         )?;
@@ -158,28 +235,49 @@ pub fn render_motion_details(
         )?;
     } else {
         Text::new(
-            "Optional IMU service unavailable.",
+            t(
+                locale,
+                "Optional IMU service unavailable.",
+                "Servizio IMU opzionale non disponibile.",
+            ),
             Point::new(22, 168),
             body,
         )
         .draw(display)?;
     }
 
-    Text::new("Profile", Point::new(22, 416), heading).draw(display)?;
-    Text::new("+/-8 g and +/-512 dps", Point::new(22, 464), body).draw(display)?;
     Text::new(
-        "Sample rate: 1000 Hz sensor / 80 ms bridge",
+        t(locale, "Profile", "Profilo"),
+        Point::new(22, 416),
+        heading,
+    )
+    .draw(display)?;
+    Text::new(
+        t(locale, "+/-8 g and +/-512 dps", "+/-8 g e +/-512 dps"),
+        Point::new(22, 464),
+        body,
+    )
+    .draw(display)?;
+    Text::new(
+        t(
+            locale,
+            "Sample rate: 1000 Hz sensor / 80 ms bridge",
+            "Frequenza campionamento: sensore 1000 Hz / bridge 80 ms",
+        ),
         Point::new(22, 504),
         body,
     )
     .draw(display)?;
     Text::new(
-        "Technical tokens remain compact.",
+        t(
+            locale,
+            "Technical tokens remain compact.",
+            "I token tecnici restano compatti.",
+        ),
         Point::new(22, 566),
         detail,
     )
     .draw(display)?;
-    draw_footer(display, state.display, "BOOT BACK")?;
     Ok(())
 }
 
@@ -212,25 +310,23 @@ fn draw_axis_lines(
     axes: Axis3Tenths,
     unit: &str,
     style: UiTextStyle,
+    locale: Locale,
 ) -> Result<(), Infallible> {
-    Text::new(
-        &format!("X axis      {} {unit}", format_tenths(axes.x)),
-        Point::new(42, start_y),
-        style,
-    )
-    .draw(display)?;
-    Text::new(
-        &format!("Y axis      {} {unit}", format_tenths(axes.y)),
-        Point::new(42, start_y + 38),
-        style,
-    )
-    .draw(display)?;
-    Text::new(
-        &format!("Z axis      {} {unit}", format_tenths(axes.z)),
-        Point::new(42, start_y + 76),
-        style,
-    )
-    .draw(display)?;
+    let x_label = match locale {
+        Locale::English => format!("X axis      {} {unit}", format_tenths(axes.x)),
+        Locale::Italian => format!("Asse X      {} {unit}", format_tenths(axes.x)),
+    };
+    let y_label = match locale {
+        Locale::English => format!("Y axis      {} {unit}", format_tenths(axes.y)),
+        Locale::Italian => format!("Asse Y      {} {unit}", format_tenths(axes.y)),
+    };
+    let z_label = match locale {
+        Locale::English => format!("Z axis      {} {unit}", format_tenths(axes.z)),
+        Locale::Italian => format!("Asse Z      {} {unit}", format_tenths(axes.z)),
+    };
+    Text::new(&x_label, Point::new(42, start_y), style).draw(display)?;
+    Text::new(&y_label, Point::new(42, start_y + 38), style).draw(display)?;
+    Text::new(&z_label, Point::new(42, start_y + 76), style).draw(display)?;
     Ok(())
 }
 

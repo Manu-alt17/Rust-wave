@@ -8,6 +8,8 @@ use std::{fs, path::Path};
 
 use anyhow::{bail, Context, Result};
 
+use crate::regional::Locale;
+
 /// SD-backed global UI typography preference file.
 pub const DISPLAY_CONFIG_PATH: &str = "/sdcard/RUSTMIX/DISPLAY.TXT";
 
@@ -77,6 +79,21 @@ impl UiFontSize {
             Self::Compact => "Compact",
             Self::Standard => "Standard",
             Self::Large => "Large",
+        }
+    }
+
+    /// Locale-aware sibling of [`Self::label`]. `label` itself is left
+    /// untouched so any English-only diagnostics that depend on it stay
+    /// stable.
+    #[must_use]
+    pub const fn label_i18n(self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => self.label(),
+            Locale::Italian => match self {
+                Self::Compact => "Compatta",
+                Self::Standard => "Standard",
+                Self::Large => "Grande",
+            },
         }
     }
 

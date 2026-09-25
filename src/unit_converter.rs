@@ -4,6 +4,8 @@
 //! on floating-point formatting. Ratios use `i128` intermediates to keep the
 //! bounded 0..=999_999 input range safe for every supported category.
 
+use crate::regional::Locale;
+
 /// Fixed-point units per rendered whole value.
 pub const FIXED_SCALE: i64 = 1_000;
 /// Maximum value accepted by the button-driven converter UI.
@@ -33,6 +35,22 @@ impl UnitCategory {
             Self::Mass => "Mass",
             Self::Temperature => "Temperature",
             Self::Volume => "Volume",
+        }
+    }
+
+    /// Locale-aware sibling of [`Self::label`] for on-screen display.
+    /// `label` itself is left untouched in case other code relies on its
+    /// stable English output.
+    #[must_use]
+    pub const fn label_i18n(self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => self.label(),
+            Locale::Italian => match self {
+                Self::Length => "Lunghezza",
+                Self::Mass => "Massa",
+                Self::Temperature => "Temperatura",
+                Self::Volume => "Volume",
+            },
         }
     }
 
@@ -165,6 +183,40 @@ impl Unit {
             Self::Pints => "Pints",
             Self::Quarts => "Quarts",
             Self::Gallons => "Gallons",
+        }
+    }
+
+    /// Locale-aware sibling of [`Self::label`] for on-screen display.
+    /// `label` itself is left untouched in case other code relies on its
+    /// stable English output.
+    #[must_use]
+    pub const fn label_i18n(self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => self.label(),
+            Locale::Italian => match self {
+                Self::Millimeters => "Millimetri",
+                Self::Centimeters => "Centimetri",
+                Self::Meters => "Metri",
+                Self::Kilometers => "Chilometri",
+                Self::Inches => "Pollici",
+                Self::Feet => "Piedi",
+                Self::Yards => "Iarde",
+                Self::Miles => "Miglia",
+                Self::Grams => "Grammi",
+                Self::Kilograms => "Chilogrammi",
+                Self::Ounces => "Once",
+                Self::Pounds => "Libbre",
+                Self::Celsius => "Celsius",
+                Self::Fahrenheit => "Fahrenheit",
+                Self::Kelvin => "Kelvin",
+                Self::Milliliters => "Millilitri",
+                Self::Liters => "Litri",
+                Self::Cups => "Tazze",
+                Self::FluidOunces => "Once fluide",
+                Self::Pints => "Pinte",
+                Self::Quarts => "Quarti",
+                Self::Gallons => "Galloni",
+            },
         }
     }
 

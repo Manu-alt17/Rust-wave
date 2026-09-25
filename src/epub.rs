@@ -12,9 +12,16 @@
 //! NCX records become a compact table of contents. Images, CSS layout and
 //! interactive links remain deferred.
 
-use std::{collections::BTreeMap, fs, path::Path, time::Instant};
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
-use miniz_oxide::inflate::decompress_to_vec;
+use miniz_oxide::inflate::decompress_to_vec_with_limit;
 
 /// Maximum EPUB archive bytes accepted from removable storage.
 pub const EPUB_ARCHIVE_BYTES_LIMIT: usize = 16 * 1024 * 1024;
@@ -24,8 +31,17 @@ pub const EPUB_ARCHIVE_ENTRY_LIMIT: usize = 512;
 pub const EPUB_MEMBER_COMPRESSED_LIMIT: usize = 2 * 1024 * 1024;
 /// Maximum decompressed bytes extracted for one EPUB member.
 pub const EPUB_MEMBER_UNCOMPRESSED_LIMIT: usize = 4 * 1024 * 1024;
-/// Maximum flattened reflowable text retained in RAM for one EPUB.
-pub const EPUB_REFLOW_TEXT_LIMIT: usize = 2 * 1024 * 1024;
+/// Maximum flattened reflowable text retained for one EPUB, whether resident
+/// in RAM (a freshly parsed book, still awaiting its background `.EPX` write)
+/// or backed by its `.EPX` cache file on SD (a reopened book: the Reader
+/// seeks/reads windows from that file instead of holding the whole text in
+/// RAM, the same way the TXT reader already streams pages from disk). Raised
+/// from the original 2 MiB RAM-only ceiling now that a reopened book no
+/// longer needs to fit in RAM at all; the on-device PSRAM headroom (8 MiB
+/// octal PSRAM on the Waveshare ESP32-S3-WROOM-1-N16R8) still bounds a
+/// *fresh, uncached* open, since that one pass has to hold the flattened text
+/// in RAM until the deferred background write lands it on SD.
+pub const EPUB_REFLOW_TEXT_LIMIT: usize = 8 * 1024 * 1024;
 /// Maximum manifest records retained from one OPF package.
 pub const EPUB_MANIFEST_LIMIT: usize = 256;
 /// Maximum spine records retained from one OPF package.
@@ -47,6 +63,27 @@ pub const EPUB_COVER_WORKER_STACK_BYTES: usize = 48 * 1024;
 /// bounds the largest buffer the cover-thumbnail pipeline decodes on
 /// PSRAM-limited hardware.
 pub const EPUB_COVER_BYTES_LIMIT: usize = 3 * 1024 * 1024;
+/// Maximum inline `<img>` references retained per EPUB. Bounded the same way
+/// TOC/manifest/spine records already are -- a heavily illustrated technical
+/// book or novel plausibly has dozens of figures; comics/fixed-layout EPUBs
+/// (deferred, see `docs/KNOWN_ISSUES.md`'s EPUB scope note) could have far
+/// more, so this also acts as a soft signal that a book past the limit is
+/// not this reader's target content. Images past the limit are silently
+/// dropped from the flattened text (as if the `<img>` tag were never
+/// there), matching the fallback every other size-bounded EPUB structure in
+/// this module already uses.
+pub const EPUB_IMAGE_LIMIT: usize = 64;
+/// Sentinel character standing in for one inline `<img>` in the flattened
+/// reflowable text, from the Unicode Private Use Area so it can never
+/// collide with real book content. Exactly one [`char`] occupies exactly one
+/// slot in the same byte-offset space `EpubChapter`/TOC/bookmarks already
+/// index into -- an image is "one more character" to every offset-based
+/// mechanism that already exists, including this document's own `.EPX` SD
+/// cache, rather than needing a parallel indexing scheme. The Reader's
+/// text-normalization pass (`push_normalized_character` in `reader.rs`)
+/// passes it through untouched, pagination reserves page space for it, and
+/// rendering blits the decoded image into that space.
+pub const EPUB_IMAGE_SENTINEL: char = '\u{E000}';
 
 /// One reflowable EPUB TOC destination. `text_offset` is an offset into the
 /// flattened UTF-8 text buffer retained by [`EpubDocument`].
@@ -68,31 +105,206 @@ pub struct EpubChapter {
     pub spine_index: usize,
 }
 
+/// One inline `<img>` reference captured while flattening EPUB spine XHTML to
+/// reflowable text. `text_offset` is the byte offset, in the whole book's
+/// flattened text, of the single [`EPUB_IMAGE_SENTINEL`] character this
+/// image occupies.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EpubImage {
+    /// Archive member path, resolved against the owning spine item's
+    /// directory the same way spine hrefs already are
+    /// (`normalize_archive_path`) -- ready to pass to `ZipArchive::extract`
+    /// once a later change actually decodes it.
+    pub href: String,
+    /// `alt` attribute text, if present; empty when the source EPUB omitted
+    /// it or left it blank.
+    pub alt: String,
+    pub text_offset: u64,
+    pub spine_index: usize,
+    /// Source pixel size read from the image header while the book is
+    /// opened (see `ZipArchive::probe_image_size`), so pagination can
+    /// reserve space matching the image's real aspect ratio before anything
+    /// is decoded. `0` when the header could not be read (missing member,
+    /// unsupported format); pagination then falls back to a fixed box.
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Where one [`EpubDocument`]'s flattened text physically lives.
+///
+/// A freshly parsed book (`open_epub`) starts out `Resident`: the whole
+/// flattened text is a `String` in RAM, exactly as before this type existed.
+/// Once the Reader's background tick persists that text to its `.EPX` cache
+/// file on SD, the document is converted to `OnDisk` and the RAM copy is
+/// dropped; a *reopened* book (cache hit) is `OnDisk` from the start and
+/// never materializes the full text in RAM at all. Either way, callers read
+/// windows of text through [`EpubDocument::text_window`] rather than
+/// matching on this enum directly.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum EpubTextStore {
+    Resident(String),
+    OnDisk { path: PathBuf, body_offset: u64 },
+}
+
 /// One bounded, reflowable EPUB book retained while the Reader session is open.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EpubDocument {
     pub title: String,
-    pub text: String,
+    text: EpubTextStore,
+    text_len: u64,
     pub toc: Vec<EpubTocEntry>,
     pub chapters: Vec<EpubChapter>,
+    pub images: Vec<EpubImage>,
     pub spine_count: usize,
 }
 
 impl EpubDocument {
     #[must_use]
     pub fn text_size_bytes(&self) -> u64 {
-        self.text.len() as u64
+        self.text_len
     }
 
-    /// Resolve the readable chapter containing one flattened UTF-8 byte offset.
+    /// Resolve the readable chapter containing one flattened UTF-8 byte
+    /// offset. `chapters` is built in spine order with strictly increasing
+    /// offsets (see `open_epub`), so a binary search finds it directly
+    /// instead of scanning from the start on every page turn.
     #[must_use]
     pub fn chapter_for_offset(&self, offset: u64) -> Option<&EpubChapter> {
-        self.chapters.iter().find(|chapter| {
-            offset >= chapter.text_offset
-                && (offset < chapter.text_end_offset
-                    || (offset == chapter.text_end_offset
-                        && chapter.text_end_offset == self.text_size_bytes()))
+        let index = self
+            .chapters
+            .partition_point(|chapter| chapter.text_end_offset <= offset);
+        if let Some(chapter) = self.chapters.get(index) {
+            if offset >= chapter.text_offset {
+                return Some(chapter);
+            }
+        }
+        // `offset` lands exactly at the book's end, which only the last
+        // chapter's `text_end_offset` can equal -- the search above skips
+        // past it, since `text_end_offset <= offset` also holds there.
+        self.chapters.last().filter(|chapter| {
+            offset == chapter.text_end_offset && chapter.text_end_offset == self.text_size_bytes()
         })
+    }
+
+    /// The full flattened text, when still resident in RAM (a fresh,
+    /// not-yet-persisted parse). `None` once the document has been converted
+    /// to [`EpubTextStore::OnDisk`] — callers past that point must go through
+    /// [`EpubDocument::text_window`] instead.
+    #[must_use]
+    pub fn resident_text(&self) -> Option<&str> {
+        match &self.text {
+            EpubTextStore::Resident(text) => Some(text),
+            EpubTextStore::OnDisk { .. } => None,
+        }
+    }
+
+    /// Read the raw flattened-text bytes in `[start, end)` (both clamped to
+    /// the document's actual length), regardless of whether they currently
+    /// live in RAM or on SD. Returned bytes are not adjusted to UTF-8
+    /// character boundaries — callers that need that (Reader pagination)
+    /// still do it themselves, the same way whether the slice came from RAM
+    /// or from a fresh SD read.
+    pub fn text_window(&self, start: usize, end: usize) -> Result<Cow<'_, [u8]>, String> {
+        let text_len = usize::try_from(self.text_len).unwrap_or(usize::MAX);
+        let end = end.min(text_len);
+        let start = start.min(end);
+        match &self.text {
+            EpubTextStore::Resident(text) => Ok(Cow::Borrowed(&text.as_bytes()[start..end])),
+            EpubTextStore::OnDisk { path, body_offset } => {
+                let mut file =
+                    File::open(path).map_err(|error| format!("EPUB cache read failed: {error}"))?;
+                file.seek(SeekFrom::Start(body_offset + start as u64))
+                    .map_err(|error| format!("EPUB cache seek failed: {error}"))?;
+                let mut buffer = vec![0_u8; end - start];
+                let mut filled = 0usize;
+                while filled < buffer.len() {
+                    let read = file
+                        .read(&mut buffer[filled..])
+                        .map_err(|error| format!("EPUB cache read failed: {error}"))?;
+                    if read == 0 {
+                        break;
+                    }
+                    filled += read;
+                }
+                if filled < buffer.len() {
+                    log::warn!(
+                        "rustmix-wave=epub-cache-short-read path={} start={start} wanted={} got={filled}",
+                        path.display(),
+                        buffer.len()
+                    );
+                }
+                buffer.truncate(filled);
+                Ok(Cow::Owned(buffer))
+            }
+        }
+    }
+
+    /// Convert an `.EPX`-cache-hit document's parsed header/metadata into a
+    /// full [`EpubDocument`] backed by that same file, without ever reading
+    /// its (potentially large) body into RAM.
+    #[must_use]
+    pub fn from_cache_body(
+        title: String,
+        toc: Vec<EpubTocEntry>,
+        chapters: Vec<EpubChapter>,
+        images: Vec<EpubImage>,
+        spine_count: usize,
+        cache_path: PathBuf,
+        body_offset: u64,
+        text_len: u64,
+    ) -> Self {
+        Self {
+            title,
+            text: EpubTextStore::OnDisk {
+                path: cache_path,
+                body_offset,
+            },
+            text_len,
+            toc,
+            chapters,
+            images,
+            spine_count,
+        }
+    }
+
+    /// Construct a resident (RAM-backed) document directly. Test-only: real
+    /// callers always go through [`open_epub`] or [`EpubDocument::from_cache_body`].
+    #[cfg(test)]
+    pub(crate) fn from_resident_for_test(
+        title: String,
+        text: String,
+        toc: Vec<EpubTocEntry>,
+        chapters: Vec<EpubChapter>,
+        images: Vec<EpubImage>,
+        spine_count: usize,
+    ) -> Self {
+        let text_len = text.len() as u64;
+        Self {
+            title,
+            text: EpubTextStore::Resident(text),
+            text_len,
+            toc,
+            chapters,
+            images,
+            spine_count,
+        }
+    }
+
+    /// Drop this document's resident RAM copy of the flattened text now that
+    /// it has been durably written to `cache_path` (at `body_offset` within
+    /// that file), and read future text windows from there instead — freeing
+    /// up to [`EPUB_REFLOW_TEXT_LIMIT`] bytes of RAM for the rest of the
+    /// reading session. A no-op (returns `self` unchanged) if the document is
+    /// already `OnDisk`.
+    #[must_use]
+    pub fn into_on_disk(self, cache_path: PathBuf, body_offset: u64) -> Self {
+        Self {
+            text: EpubTextStore::OnDisk {
+                path: cache_path,
+                body_offset,
+            },
+            ..self
+        }
     }
 }
 
@@ -106,25 +318,69 @@ struct ZipEntry {
     local_header_offset: usize,
 }
 
-/// ZIP reader backed by one whole-archive read. An earlier revision of this
-/// reader kept only the central directory in RAM and seeked+read each member
-/// from disk individually, to skip loading an EPUB's non-text assets (cover
-/// image, embedded fonts, CSS) that this reader never touches. On real
-/// hardware that traded a smaller total byte count for dozens of small SD
-/// seeks per book (two per extracted member), and per-seek latency on this
-/// SD/FAT stack dominates: a 48-chapter book measured no faster than before.
-/// One large sequential read is the safer default for SD access, so this
-/// reverts to it; only the archive-size check moved ahead of the read (a
-/// `fs::metadata` call, so an oversized file is rejected without reading it).
+/// Archives up to this size are read into RAM in one sequential read;
+/// larger ones are read member by member. See [`ZipArchive`].
+const ZIP_IN_MEMORY_LIMIT: u64 = 2 * 1024 * 1024;
+
+/// Compressed bytes read to probe one image member's header (see
+/// [`ZipArchive::probe_image_size`]) when the archive is not in RAM.
+const IMAGE_HEADER_PROBE_COMPRESSED_BYTES: usize = 64 * 1024;
+
+/// ZIP reader for EPUB archives.
+///
+/// Small archives are read into RAM with one sequential read: an earlier
+/// revision that always seeked+read each member individually measured no
+/// faster on this SD/FAT stack for a typical 48-chapter book, because
+/// per-seek latency dominates, and one large read is the safer default.
+///
+/// Archives above [`ZIP_IN_MEMORY_LIMIT`] keep only the central directory
+/// in RAM and read each member on demand instead. Holding a whole
+/// multi-megabyte omnibus in RAM *on top of* its flattened text (itself
+/// growing by doubling while chapters are appended) exceeded the ~8 MB of
+/// PSRAM on real hardware, and a failed allocation aborts the firmware.
 struct ZipArchive {
-    bytes: Vec<u8>,
+    storage: ZipStorage,
     entries: Vec<ZipEntry>,
+}
+
+enum ZipStorage {
+    InMemory(Vec<u8>),
+    OnDisk {
+        file: core::cell::RefCell<File>,
+        len: usize,
+    },
+}
+
+impl ZipStorage {
+    fn len(&self) -> usize {
+        match self {
+            Self::InMemory(bytes) => bytes.len(),
+            Self::OnDisk { len, .. } => *len,
+        }
+    }
+
+    /// `len` bytes at `offset`, borrowed when in RAM, read from disk
+    /// otherwise.
+    fn range(&self, offset: usize, len: usize) -> Result<Cow<'_, [u8]>, String> {
+        let end = offset
+            .checked_add(len)
+            .filter(|end| *end <= self.len())
+            .ok_or_else(|| "EPUB ZIP range exceeds archive".to_string())?;
+        match self {
+            Self::InMemory(bytes) => Ok(Cow::Borrowed(&bytes[offset..end])),
+            Self::OnDisk { file, .. } => {
+                read_file_range(&mut file.borrow_mut(), offset, len).map(Cow::Owned)
+            }
+        }
+    }
 }
 
 impl ZipArchive {
     fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
-        let file_len = fs::metadata(path)
+        let mut file = File::open(path).map_err(|error| format!("EPUB open failed: {error}"))?;
+        let file_len = file
+            .metadata()
             .map_err(|error| format!("EPUB open failed: {error}"))?
             .len();
         if file_len > EPUB_ARCHIVE_BYTES_LIMIT as u64 {
@@ -133,131 +389,275 @@ impl ZipArchive {
                 EPUB_ARCHIVE_BYTES_LIMIT
             ));
         }
-        let bytes = fs::read(path).map_err(|error| format!("EPUB open failed: {error}"))?;
-        let eocd = find_eocd(&bytes).ok_or_else(|| "EPUB ZIP end record missing".to_string())?;
-        let entry_count = read_u16(&bytes, eocd + 10)? as usize;
-        let central_size = read_u32(&bytes, eocd + 12)? as usize;
-        let central_offset = read_u32(&bytes, eocd + 16)? as usize;
+        let storage = if file_len <= ZIP_IN_MEMORY_LIMIT {
+            let mut bytes = Vec::with_capacity(file_len as usize);
+            file.read_to_end(&mut bytes)
+                .map_err(|error| format!("EPUB open failed: {error}"))?;
+            ZipStorage::InMemory(bytes)
+        } else {
+            ZipStorage::OnDisk {
+                file: core::cell::RefCell::new(file),
+                len: file_len as usize,
+            }
+        };
+        let archive_len = storage.len();
+        let tail_len = archive_len.min(65_557);
+        let tail_start = archive_len - tail_len;
+        let tail = storage.range(tail_start, tail_len)?;
+        let eocd = find_eocd(&tail).ok_or_else(|| "EPUB ZIP end record missing".to_string())?;
+        let entry_count = read_u16(&tail, eocd + 10)? as usize;
+        let central_size = read_u32(&tail, eocd + 12)? as usize;
+        let central_offset = read_u32(&tail, eocd + 16)? as usize;
         if entry_count > EPUB_ARCHIVE_ENTRY_LIMIT {
             return Err(format!("EPUB ZIP has too many entries: {entry_count}"));
         }
         let central_end = central_offset
             .checked_add(central_size)
             .ok_or_else(|| "EPUB ZIP directory overflow".to_string())?;
-        if central_end > bytes.len() {
+        if central_end > archive_len {
             return Err("EPUB ZIP directory exceeds archive".into());
         }
-        let mut entries = Vec::new();
-        let mut cursor = central_offset;
-        for _ in 0..entry_count {
-            if read_u32(&bytes, cursor)? != 0x0201_4B50 {
-                return Err("EPUB ZIP central record signature mismatch".into());
-            }
-            let flags = read_u16(&bytes, cursor + 8)?;
-            let method = read_u16(&bytes, cursor + 10)?;
-            let compressed_size = read_u32(&bytes, cursor + 20)? as usize;
-            let uncompressed_size = read_u32(&bytes, cursor + 24)? as usize;
-            let name_len = read_u16(&bytes, cursor + 28)? as usize;
-            let extra_len = read_u16(&bytes, cursor + 30)? as usize;
-            let comment_len = read_u16(&bytes, cursor + 32)? as usize;
-            let local_header_offset = read_u32(&bytes, cursor + 42)? as usize;
-            let name_start = cursor + 46;
-            let name_end = name_start
-                .checked_add(name_len)
-                .ok_or_else(|| "EPUB ZIP filename overflow".to_string())?;
-            if name_end > central_end {
-                return Err("EPUB ZIP filename exceeds directory".into());
-            }
-            let name = String::from_utf8_lossy(&bytes[name_start..name_end]).replace('\\', "/");
-            entries.push(ZipEntry {
-                name,
-                flags,
-                method,
-                compressed_size,
-                uncompressed_size,
-                local_header_offset,
-            });
-            cursor = name_end
-                .checked_add(extra_len)
-                .and_then(|value| value.checked_add(comment_len))
-                .ok_or_else(|| "EPUB ZIP central record overflow".to_string())?;
-            if cursor > central_end {
-                return Err("EPUB ZIP central record exceeds directory".into());
-            }
-        }
-        Ok(Self { bytes, entries })
+        let directory = if central_offset >= tail_start {
+            let start = central_offset - tail_start;
+            Cow::Owned(tail[start..start + central_size].to_vec())
+        } else {
+            storage.range(central_offset, central_size)?
+        };
+        let entries = parse_central_entries(&directory, 0, directory.len(), entry_count)?;
+        drop(directory);
+        drop(tail);
+        Ok(Self { storage, entries })
     }
 
     fn entry(&self, name: &str) -> Option<&ZipEntry> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .or_else(|| {
-                self.entries
-                    .iter()
-                    .find(|entry| entry.name.eq_ignore_ascii_case(name))
-            })
+        find_entry(&self.entries, name)
+    }
+
+    /// Compressed payload of one member, located through its local header,
+    /// truncated to `max_len` bytes when given (header probing needs only a
+    /// prefix).
+    fn compressed_bytes(
+        &self,
+        entry: &ZipEntry,
+        max_len: Option<usize>,
+    ) -> Result<Cow<'_, [u8]>, String> {
+        let offset = entry.local_header_offset;
+        let local_header = self.storage.range(offset, 30)?;
+        let data_start = offset + local_data_offset(&local_header, entry)?;
+        let data_end = data_start
+            .checked_add(entry.compressed_size)
+            .ok_or_else(|| "EPUB ZIP member overflow".to_string())?;
+        if data_end > self.storage.len() {
+            return Err(format!("EPUB ZIP member exceeds archive: {}", entry.name));
+        }
+        let len = max_len.map_or(entry.compressed_size, |max| max.min(entry.compressed_size));
+        self.storage.range(data_start, len)
+    }
+
+    /// Pixel dimensions of one JPEG/PNG member, read from its header only:
+    /// a stored member is parsed in place and a deflated one is inflated just
+    /// far enough to reach the header, so probing every inline image while
+    /// opening a book costs a bounded partial inflate each instead of full
+    /// decodes.
+    fn probe_image_size(&self, name: &str) -> Option<(u32, u32)> {
+        let entry = self.entry(name)?;
+        if entry.flags & 0x0001 != 0 {
+            return None;
+        }
+        let compressed = self
+            .compressed_bytes(entry, Some(IMAGE_HEADER_PROBE_COMPRESSED_BYTES))
+            .ok()?;
+        match entry.method {
+            0 => image_header_size(&compressed),
+            8 => {
+                let prefix =
+                    match decompress_to_vec_with_limit(&compressed, IMAGE_HEADER_PROBE_BYTES) {
+                        Ok(output) => output,
+                        Err(error) => error.output,
+                    };
+                image_header_size(&prefix)
+            }
+            _ => None,
+        }
     }
 
     fn extract(&self, name: &str) -> Result<Vec<u8>, String> {
         let entry = self
             .entry(name)
             .ok_or_else(|| format!("EPUB member missing: {name}"))?;
-        if entry.flags & 0x0001 != 0 {
-            return Err(format!(
-                "Encrypted EPUB member is unsupported: {}",
-                entry.name
-            ));
-        }
-        if entry.compressed_size > EPUB_MEMBER_COMPRESSED_LIMIT {
-            return Err(format!(
-                "EPUB member compressed size is too large: {}",
-                entry.name
-            ));
-        }
-        if entry.uncompressed_size > EPUB_MEMBER_UNCOMPRESSED_LIMIT {
-            return Err(format!(
-                "EPUB member expanded size is too large: {}",
-                entry.name
-            ));
-        }
-        let offset = entry.local_header_offset;
-        if read_u32(&self.bytes, offset)? != 0x0403_4B50 {
-            return Err(format!("EPUB local ZIP header mismatch: {}", entry.name));
-        }
-        let name_len = read_u16(&self.bytes, offset + 26)? as usize;
-        let extra_len = read_u16(&self.bytes, offset + 28)? as usize;
-        let data_start = offset
-            .checked_add(30)
-            .and_then(|value| value.checked_add(name_len))
-            .and_then(|value| value.checked_add(extra_len))
-            .ok_or_else(|| "EPUB ZIP data offset overflow".to_string())?;
-        let data_end = data_start
-            .checked_add(entry.compressed_size)
-            .ok_or_else(|| "EPUB ZIP member overflow".to_string())?;
-        if data_end > self.bytes.len() {
-            return Err(format!("EPUB ZIP member exceeds archive: {}", entry.name));
-        }
-        let compressed = &self.bytes[data_start..data_end];
-        let output = match entry.method {
-            0 => compressed.to_vec(),
-            8 => decompress_to_vec(compressed)
-                .map_err(|error| format!("EPUB deflate failed for {}: {error:?}", entry.name))?,
-            method => {
-                return Err(format!(
-                    "Unsupported EPUB compression method {method} for {}",
-                    entry.name
-                ))
-            }
-        };
-        if output.len() > EPUB_MEMBER_UNCOMPRESSED_LIMIT {
-            return Err(format!("EPUB member expanded beyond limit: {}", entry.name));
-        }
-        if entry.uncompressed_size != 0 && output.len() != entry.uncompressed_size {
-            return Err(format!("EPUB member size mismatch: {}", entry.name));
-        }
-        Ok(output)
+        check_entry_limits(entry)?;
+        inflate_entry(entry, &self.compressed_bytes(entry, None)?)
     }
+}
+
+/// Parse `entry_count` central-directory records from `bytes[start..central_end]`.
+fn parse_central_entries(
+    bytes: &[u8],
+    start: usize,
+    central_end: usize,
+    entry_count: usize,
+) -> Result<Vec<ZipEntry>, String> {
+    let mut entries = Vec::new();
+    let mut cursor = start;
+    for _ in 0..entry_count {
+        if read_u32(bytes, cursor)? != 0x0201_4B50 {
+            return Err("EPUB ZIP central record signature mismatch".into());
+        }
+        let flags = read_u16(bytes, cursor + 8)?;
+        let method = read_u16(bytes, cursor + 10)?;
+        let compressed_size = read_u32(bytes, cursor + 20)? as usize;
+        let uncompressed_size = read_u32(bytes, cursor + 24)? as usize;
+        let name_len = read_u16(bytes, cursor + 28)? as usize;
+        let extra_len = read_u16(bytes, cursor + 30)? as usize;
+        let comment_len = read_u16(bytes, cursor + 32)? as usize;
+        let local_header_offset = read_u32(bytes, cursor + 42)? as usize;
+        let name_start = cursor + 46;
+        let name_end = name_start
+            .checked_add(name_len)
+            .ok_or_else(|| "EPUB ZIP filename overflow".to_string())?;
+        if name_end > central_end {
+            return Err("EPUB ZIP filename exceeds directory".into());
+        }
+        let name = String::from_utf8_lossy(&bytes[name_start..name_end]).replace('\\', "/");
+        entries.push(ZipEntry {
+            name,
+            flags,
+            method,
+            compressed_size,
+            uncompressed_size,
+            local_header_offset,
+        });
+        cursor = name_end
+            .checked_add(extra_len)
+            .and_then(|value| value.checked_add(comment_len))
+            .ok_or_else(|| "EPUB ZIP central record overflow".to_string())?;
+        if cursor > central_end {
+            return Err("EPUB ZIP central record exceeds directory".into());
+        }
+    }
+    Ok(entries)
+}
+
+/// Exact-name lookup first, then an ASCII case-insensitive fallback.
+fn find_entry<'a>(entries: &'a [ZipEntry], name: &str) -> Option<&'a ZipEntry> {
+    entries
+        .iter()
+        .find(|entry| entry.name == name)
+        .or_else(|| {
+            entries
+                .iter()
+                .find(|entry| entry.name.eq_ignore_ascii_case(name))
+        })
+}
+
+fn check_entry_limits(entry: &ZipEntry) -> Result<(), String> {
+    if entry.flags & 0x0001 != 0 {
+        return Err(format!(
+            "Encrypted EPUB member is unsupported: {}",
+            entry.name
+        ));
+    }
+    if entry.compressed_size > EPUB_MEMBER_COMPRESSED_LIMIT {
+        return Err(format!(
+            "EPUB member compressed size is too large: {}",
+            entry.name
+        ));
+    }
+    if entry.uncompressed_size > EPUB_MEMBER_UNCOMPRESSED_LIMIT {
+        return Err(format!(
+            "EPUB member expanded size is too large: {}",
+            entry.name
+        ));
+    }
+    Ok(())
+}
+
+/// Byte distance from a member's local header to its compressed data.
+/// `local_header` starts at the header's signature and must hold at least
+/// its fixed 30-byte part.
+fn local_data_offset(local_header: &[u8], entry: &ZipEntry) -> Result<usize, String> {
+    if read_u32(local_header, 0)? != 0x0403_4B50 {
+        return Err(format!("EPUB local ZIP header mismatch: {}", entry.name));
+    }
+    let name_len = read_u16(local_header, 26)? as usize;
+    let extra_len = read_u16(local_header, 28)? as usize;
+    30_usize
+        .checked_add(name_len)
+        .and_then(|value| value.checked_add(extra_len))
+        .ok_or_else(|| "EPUB ZIP data offset overflow".to_string())
+}
+
+fn inflate_entry(entry: &ZipEntry, compressed: &[u8]) -> Result<Vec<u8>, String> {
+    let output = match entry.method {
+        0 => compressed.to_vec(),
+        // Bounded while inflating, not only after: the central directory's
+        // declared size is checked up front (`check_entry_limits`) but can
+        // lie, and an unbounded inflate of a malformed or hostile member
+        // could exhaust PSRAM before the size check below ever ran.
+        8 => decompress_to_vec_with_limit(compressed, EPUB_MEMBER_UNCOMPRESSED_LIMIT)
+            .map_err(|error| format!("EPUB deflate failed for {}: {error:?}", entry.name))?,
+        method => {
+            return Err(format!(
+                "Unsupported EPUB compression method {method} for {}",
+                entry.name
+            ))
+        }
+    };
+    if output.len() > EPUB_MEMBER_UNCOMPRESSED_LIMIT {
+        return Err(format!("EPUB member expanded beyond limit: {}", entry.name));
+    }
+    if entry.uncompressed_size != 0 && output.len() != entry.uncompressed_size {
+        return Err(format!("EPUB member size mismatch: {}", entry.name));
+    }
+    Ok(output)
+}
+
+/// Inflated prefix probed for an image header. PNG's IHDR always sits in
+/// the first 33 bytes; a JPEG's SOF marker follows its APPn segments, which
+/// an embedded EXIF thumbnail or ICC profile can push well past the first
+/// few KB, so this leaves generous room while staying a small fraction of a
+/// typical illustration.
+const IMAGE_HEADER_PROBE_BYTES: usize = 128 * 1024;
+
+/// Pixel dimensions from a PNG IHDR or the first JPEG SOFn marker.
+pub fn image_header_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        let width = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+        let height = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+        return (width > 0 && height > 0).then_some((width, height));
+    }
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut cursor = 2;
+    while cursor + 4 <= bytes.len() {
+        if bytes[cursor] != 0xFF {
+            return None;
+        }
+        let marker = bytes[cursor + 1];
+        // Fill bytes and standalone markers carry no length field.
+        if marker == 0xFF {
+            cursor += 1;
+            continue;
+        }
+        if marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+            cursor += 2;
+            continue;
+        }
+        let length = usize::from(u16::from_be_bytes([bytes[cursor + 2], bytes[cursor + 3]]));
+        let is_sof = matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+        if is_sof {
+            let segment = bytes.get(cursor + 4..cursor + 9)?;
+            let height = u32::from(u16::from_be_bytes([segment[1], segment[2]]));
+            let width = u32::from(u16::from_be_bytes([segment[3], segment[4]]));
+            return (width > 0 && height > 0).then_some((width, height));
+        }
+        if length < 2 {
+            return None;
+        }
+        cursor += 2 + length;
+    }
+    None
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -278,15 +678,46 @@ pub fn open_epub_on_worker(path: impl AsRef<Path>) -> Result<EpubDocument, Strin
         "rustmix-wave=epub-parser-worker status=starting stack-bytes={}",
         EPUB_PARSER_WORKER_STACK_BYTES
     );
+    // This worker only reads the SD card and computes in RAM/PSRAM, never
+    // touches flash directly and never runs from an ISR, so its stack is
+    // safe to place in PSRAM (see `runtime_worker::run_named_worker_in_psram`'s
+    // doc comment for the full reasoning). That matters here specifically:
+    // internal SRAM is shared with Wi-Fi/lwIP, and on this hardware merely
+    // being Wi-Fi-connected has been observed to shrink the largest
+    // contiguous internal block below this worker's own stack size, while
+    // the 8 MB of PSRAM sits almost untouched.
+    #[cfg(target_os = "espidf")]
+    let psram_cfg_status = {
+        let mut cfg = unsafe { esp_idf_svc::sys::esp_pthread_get_default_config() };
+        cfg.stack_alloc_caps =
+            esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_8BIT;
+        unsafe { esp_idf_svc::sys::esp_pthread_set_cfg(&cfg) }
+    };
+    #[cfg(target_os = "espidf")]
+    if psram_cfg_status != 0 {
+        log::warn!(
+            "rustmix-wave=epub-parser-worker status=psram-cfg-failed error-code={psram_cfg_status}"
+        );
+    }
     let worker = std::thread::Builder::new()
         .name("epub-parser".into())
         .stack_size(EPUB_PARSER_WORKER_STACK_BYTES)
-        .spawn(move || open_epub(path))
-        .map_err(|error| {
-            let message = format!("EPUB parser worker start failed: {error}");
-            log::warn!("rustmix-wave=epub-parser-worker status=start-failed error={message}");
-            message
-        })?;
+        .spawn(move || open_epub(path));
+    #[cfg(target_os = "espidf")]
+    {
+        let restore = unsafe { esp_idf_svc::sys::esp_pthread_get_default_config() };
+        let restore_status = unsafe { esp_idf_svc::sys::esp_pthread_set_cfg(&restore) };
+        if restore_status != 0 {
+            log::warn!(
+                "rustmix-wave=epub-parser-worker status=psram-cfg-restore-failed error-code={restore_status}"
+            );
+        }
+    }
+    let worker = worker.map_err(|error| {
+        let message = format!("EPUB parser worker start failed: {error}");
+        log::warn!("rustmix-wave=epub-parser-worker status=start-failed error={message}");
+        message
+    })?;
     let result = worker.join().map_err(|_| {
         let message = "EPUB parser worker panicked".to_string();
         log::warn!("rustmix-wave=epub-parser-worker status=panicked");
@@ -307,16 +738,19 @@ pub fn open_epub_on_worker(path: impl AsRef<Path>) -> Result<EpubDocument, Strin
 /// Read only the OPF title on a lightweight bounded worker stack. Library scans
 /// remain safe on the firmware main task and fall back to the FAT filename when
 /// metadata cannot be read.
+///
+/// The stack comes from PSRAM: once Wi-Fi is up and a few books are warmed,
+/// the largest free internal block sits just under 32 KB, so an internal
+/// stack of this size failed to spawn ("pthread: Failed to create task!")
+/// for every uncached title on each Library visit.
 pub fn read_epub_title_on_worker(path: impl AsRef<Path>) -> Result<String, String> {
     let path = path.as_ref().to_path_buf();
-    let worker = std::thread::Builder::new()
-        .name("epub-title".into())
-        .stack_size(EPUB_TITLE_WORKER_STACK_BYTES)
-        .spawn(move || read_epub_title(path))
-        .map_err(|error| format!("EPUB title worker start failed: {error}"))?;
-    worker
-        .join()
-        .map_err(|_| "EPUB title worker panicked".to_string())?
+    crate::runtime_worker::run_named_worker_in_psram(
+        "epub-title",
+        EPUB_TITLE_WORKER_STACK_BYTES,
+        move || read_epub_title(path),
+    )
+    .map_err(|error| format!("EPUB title worker: {error}"))
 }
 
 /// Read one OPF metadata title without flattening the spine.
@@ -376,6 +810,113 @@ pub fn extract_cover(path: impl AsRef<Path>) -> Result<Option<EpubCoverImage>, S
         bytes,
         media_type: item.media_type.clone(),
     }))
+}
+
+/// Extract one arbitrary archive member's raw bytes on a short-lived bounded
+/// worker stack, given an already-resolved path such as an
+/// [`EpubImage::href`]. Reuses [`extract_cover_on_worker`]'s stack budget:
+/// this is the same kind of work (ZIP central-directory lookup plus one
+/// member's DEFLATE expansion, no XHTML flattening).
+pub fn extract_member_on_worker(path: impl AsRef<Path>, href: &str) -> Result<Vec<u8>, String> {
+    let path = path.as_ref().to_path_buf();
+    let href = href.to_string();
+    let worker = std::thread::Builder::new()
+        .name("epub-member".into())
+        .stack_size(EPUB_COVER_WORKER_STACK_BYTES)
+        .spawn(move || extract_member(path, &href))
+        .map_err(|error| format!("EPUB member worker start failed: {error}"))?;
+    worker
+        .join()
+        .map_err(|_| "EPUB member worker panicked".to_string())?
+}
+
+/// Extract one arbitrary archive member's raw bytes by an already-resolved
+/// path, bounded the same way [`extract_cover`] already is. Used by the
+/// Reader to decode one inline image (see [`EpubImage`]) the first time it
+/// is about to be shown.
+///
+/// Unlike [`ZipArchive::open`], this never reads the whole archive: it reads
+/// the end-of-central-directory tail, the central directory itself, and then
+/// only the one member's local header and payload. `ZipArchive`'s single
+/// sequential read wins when a book open touches dozens of members, but an
+/// inline image needs exactly one, and reading a multi-megabyte illustrated
+/// EPUB off SD just to reach it was the dominant cost of showing a page with
+/// an image on it.
+#[inline(never)]
+pub fn extract_member(path: impl AsRef<Path>, href: &str) -> Result<Vec<u8>, String> {
+    let mut file =
+        File::open(path.as_ref()).map_err(|error| format!("EPUB open failed: {error}"))?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| format!("EPUB open failed: {error}"))?
+        .len();
+    if file_len > EPUB_ARCHIVE_BYTES_LIMIT as u64 {
+        return Err(format!(
+            "EPUB archive exceeds {} byte limit",
+            EPUB_ARCHIVE_BYTES_LIMIT
+        ));
+    }
+    let file_len = file_len as usize;
+    let tail_len = file_len.min(65_557);
+    let tail_start = file_len - tail_len;
+    let tail = read_file_range(&mut file, tail_start, tail_len)?;
+    let eocd = find_eocd(&tail).ok_or_else(|| "EPUB ZIP end record missing".to_string())?;
+    let entry_count = read_u16(&tail, eocd + 10)? as usize;
+    let central_size = read_u32(&tail, eocd + 12)? as usize;
+    let central_offset = read_u32(&tail, eocd + 16)? as usize;
+    if entry_count > EPUB_ARCHIVE_ENTRY_LIMIT {
+        return Err(format!("EPUB ZIP has too many entries: {entry_count}"));
+    }
+    if central_offset
+        .checked_add(central_size)
+        .map_or(true, |end| end > file_len)
+    {
+        return Err("EPUB ZIP directory exceeds archive".into());
+    }
+    let directory = if central_offset >= tail_start {
+        let start = central_offset - tail_start;
+        tail[start..start + central_size].to_vec()
+    } else {
+        read_file_range(&mut file, central_offset, central_size)?
+    };
+    let entries = parse_central_entries(&directory, 0, directory.len(), entry_count)?;
+    let entry =
+        find_entry(&entries, href).ok_or_else(|| format!("EPUB member missing: {href}"))?;
+    check_entry_limits(entry)?;
+    if entry.compressed_size > EPUB_COVER_BYTES_LIMIT {
+        return Err(format!(
+            "EPUB image member exceeds {EPUB_COVER_BYTES_LIMIT} byte limit"
+        ));
+    }
+    let local_header = read_file_range(&mut file, entry.local_header_offset, 30)?;
+    let name_and_extra = local_data_offset(&local_header, entry)?;
+    let data_start = entry
+        .local_header_offset
+        .checked_add(name_and_extra)
+        .ok_or_else(|| "EPUB ZIP data offset overflow".to_string())?;
+    if data_start
+        .checked_add(entry.compressed_size)
+        .map_or(true, |end| end > file_len)
+    {
+        return Err(format!("EPUB ZIP member exceeds archive: {}", entry.name));
+    }
+    let compressed = read_file_range(&mut file, data_start, entry.compressed_size)?;
+    let bytes = inflate_entry(entry, &compressed)?;
+    if bytes.len() > EPUB_COVER_BYTES_LIMIT {
+        return Err(format!(
+            "EPUB image member exceeds {EPUB_COVER_BYTES_LIMIT} byte limit"
+        ));
+    }
+    Ok(bytes)
+}
+
+fn read_file_range(file: &mut File, offset: usize, len: usize) -> Result<Vec<u8>, String> {
+    file.seek(SeekFrom::Start(offset as u64))
+        .map_err(|error| format!("EPUB seek failed: {error}"))?;
+    let mut buffer = vec![0_u8; len];
+    file.read_exact(&mut buffer)
+        .map_err(|error| format!("EPUB read failed: {error}"))?;
+    Ok(buffer)
 }
 
 fn find_cover_manifest_item<'a>(
@@ -447,13 +988,15 @@ pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
     let mut chapter_offsets = BTreeMap::new();
     let mut chapter_labels = Vec::new();
     let mut chapters = Vec::new();
+    let mut images = Vec::new();
     for (spine_index, idref) in spine_ids.iter().enumerate() {
         let item = manifest
             .get(idref)
             .ok_or_else(|| format!("EPUB spine item missing from manifest: {idref}"))?;
         let member = normalize_archive_path(&package_dir, &item.href);
         let xhtml = utf8_member(&archive, &member)?;
-        let chapter = html_to_text(&xhtml);
+        let member_dir = archive_parent(&member);
+        let (chapter, flattened_images) = html_to_text_with_images(&xhtml, &member_dir);
         if chapter.trim().is_empty() {
             continue;
         }
@@ -473,6 +1016,20 @@ pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
             text_end_offset,
             spine_index,
         });
+        for image in flattened_images {
+            if images.len() >= EPUB_IMAGE_LIMIT {
+                break;
+            }
+            let (width, height) = archive.probe_image_size(&image.href).unwrap_or((0, 0));
+            images.push(EpubImage {
+                href: image.href,
+                alt: image.alt,
+                text_offset: offset + image.offset as u64,
+                spine_index,
+                width,
+                height,
+            });
+        }
         if text.len() > EPUB_REFLOW_TEXT_LIMIT {
             return Err(format!(
                 "EPUB reflow text exceeds {} byte limit",
@@ -515,11 +1072,14 @@ pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
     }
     dedupe_toc(&mut toc);
     toc.truncate(EPUB_TOC_LIMIT);
+    let text_len = text.len() as u64;
     Ok(EpubDocument {
         title,
-        text,
+        text: EpubTextStore::Resident(text),
+        text_len,
         toc,
         chapters,
+        images,
         spine_count: spine_ids.len(),
     })
 }
@@ -929,6 +1489,16 @@ fn first_element_text(xml: &str, local_name: &str) -> Option<String> {
     None
 }
 
+/// One `<img>` captured by [`flatten_html`], with its byte offset in that
+/// call's *untrimmed* output buffer -- `flatten_html` itself adjusts this to
+/// the trimmed string before returning, callers never see the untrimmed
+/// value.
+struct FlattenedImage {
+    href: String,
+    alt: String,
+    offset: usize,
+}
+
 /// Convert XHTML into bounded, paragraph-aware reflowable UTF-8 text.
 ///
 /// Callers pass either a full XHTML document or a small inner fragment (a TOC
@@ -937,8 +1507,28 @@ fn first_element_text(xml: &str, local_name: &str) -> Option<String> {
 /// `<script>` content never leaks into reflowed body text. Fragments without
 /// a `<body>` tag are processed as-is.
 pub fn html_to_text(html: &str) -> String {
+    flatten_html(html, None).0
+}
+
+/// Same flattening as [`html_to_text`], but also captures each `<img>`'s
+/// resolved archive href and alt text, emitting [`EPUB_IMAGE_SENTINEL`] into
+/// the returned text at each one's position. `base` resolves `src` the same
+/// way spine hrefs already are (`normalize_archive_path`). Only
+/// [`open_epub`]'s spine loop calls this -- TOC labels and chapter-title
+/// fallbacks keep using plain [`html_to_text`], since an `<img>` inside a
+/// heading or nav link is not something those short fragments need to track.
+fn html_to_text_with_images(html: &str, base: &str) -> (String, Vec<FlattenedImage>) {
+    flatten_html(html, Some(base))
+}
+
+/// Shared implementation behind [`html_to_text`] and
+/// [`html_to_text_with_images`]. `image_base` being `Some` is what turns on
+/// `<img>` capture; `None` leaves `<img>` dropped exactly as before this
+/// function existed.
+fn flatten_html(html: &str, image_base: Option<&str>) -> (String, Vec<FlattenedImage>) {
     let html = find_tag_start_ci(html, "body").map_or(html, |start| &html[start..]);
     let mut output = String::new();
+    let mut images: Vec<FlattenedImage> = Vec::new();
     let mut cursor = 0;
     while cursor < html.len() {
         let rest = &html[cursor..];
@@ -968,6 +1558,28 @@ pub fn html_to_text(html: &str) -> String {
                 let close_tag = format!("</{name}>");
                 cursor = find_ci(&html[cursor..], &close_tag)
                     .map_or(html.len(), |relative| cursor + relative + close_tag.len());
+                continue;
+            }
+            // `<img>` is a void element (no separate close tag, whether or
+            // not the source bothers with the trailing `/`) -- capture it
+            // once here, ahead of the paragraph/newline match below, which
+            // does not otherwise recognize "img" and would just fall
+            // through to the plain `cursor += end_rel + 1; continue;` this
+            // branch also ends with.
+            if !closing && name == "img" {
+                if let Some(base) = image_base {
+                    if images.len() < EPUB_IMAGE_LIMIT {
+                        if let Some(src) = attribute(tag, "src") {
+                            images.push(FlattenedImage {
+                                href: normalize_archive_path(base, &src),
+                                alt: attribute(tag, "alt").unwrap_or_default(),
+                                offset: output.len(),
+                            });
+                            output.push(EPUB_IMAGE_SENTINEL);
+                        }
+                    }
+                }
+                cursor += end_rel + 1;
                 continue;
             }
             if matches!(
@@ -1007,7 +1619,25 @@ pub fn html_to_text(html: &str) -> String {
         push_text_character(&mut output, character);
         cursor += character.len_utf8();
     }
-    output.trim().to_string()
+    // `.trim()` below can drop a leading/trailing run of whitespace that an
+    // image offset recorded above was measured against -- shift every
+    // recorded offset by the trimmed prefix, and drop any image whose
+    // sentinel would otherwise land outside the trimmed string entirely
+    // (only possible if trailing whitespace somehow followed the sentinel,
+    // since the sentinel itself is never whitespace and so is never trimmed
+    // away on its own).
+    let trim_start = output.len() - output.trim_start().len();
+    let trimmed = output.trim().to_string();
+    let trimmed_end = trim_start + trimmed.len();
+    let images = images
+        .into_iter()
+        .filter(|image| image.offset >= trim_start && image.offset < trimmed_end)
+        .map(|image| FlattenedImage {
+            offset: image.offset - trim_start,
+            ..image
+        })
+        .collect();
+    (trimmed, images)
 }
 
 /// Case-insensitive ASCII substring search that avoids allocating a
@@ -1158,9 +1788,10 @@ mod tests {
     };
 
     use super::{
-        attribute, extract_cover, extract_cover_on_worker, first_open_tag, html_to_text,
-        open_epub, open_epub_on_worker, read_epub_title_on_worker, EPUB_PARSER_WORKER_STACK_BYTES,
-        EPUB_TITLE_WORKER_STACK_BYTES,
+        attribute, extract_cover, extract_member, image_header_size, extract_cover_on_worker, first_open_tag, html_to_text,
+        html_to_text_with_images, open_epub, open_epub_on_worker, read_epub_title_on_worker,
+        EPUB_IMAGE_LIMIT, EPUB_IMAGE_SENTINEL, EPUB_PARSER_WORKER_STACK_BYTES,
+        EPUB_REFLOW_TEXT_LIMIT, EPUB_TITLE_WORKER_STACK_BYTES,
     };
 
     fn temp_epub(name: &str) -> PathBuf {
@@ -1275,7 +1906,9 @@ mod tests {
     #[test]
     fn decodes_named_typographic_and_accent_entities_instead_of_a_stray_question_mark() {
         assert_eq!(
-            html_to_text("<p>Perch&eacute; &laquo;cos&igrave;&raquo;&hellip; disse lei&mdash;e tacque.</p>"),
+            html_to_text(
+                "<p>Perch&eacute; &laquo;cos&igrave;&raquo;&hellip; disse lei&mdash;e tacque.</p>"
+            ),
             "Perché «così»… disse lei\u{2014}e tacque."
         );
     }
@@ -1307,6 +1940,46 @@ mod tests {
     }
 
     #[test]
+    fn html_to_text_ignores_images_when_not_capturing() {
+        // TOC labels and chapter-title fallbacks go through plain
+        // `html_to_text`, which must keep dropping `<img>` exactly as before
+        // image capture existed -- only `open_epub`'s spine loop (via
+        // `html_to_text_with_images`) should ever record one.
+        let xhtml = "<body><p>Before</p><img src='pic.jpg' alt='A cat'/><p>After</p></body>";
+        assert_eq!(html_to_text(xhtml), "Before\n\nAfter");
+    }
+
+    #[test]
+    fn html_to_text_with_images_captures_src_alt_and_sentinel_offset() {
+        let xhtml =
+            "<body><p>Before</p><img src='../images/pic.jpg' alt='A cat'/><p>After</p></body>";
+        let (text, images) = html_to_text_with_images(xhtml, "OEBPS/text");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].href, "OEBPS/images/pic.jpg");
+        assert_eq!(images[0].alt, "A cat");
+        assert_eq!(
+            text[images[0].offset..].chars().next(),
+            Some(EPUB_IMAGE_SENTINEL)
+        );
+        // `<img>` itself inserts no paragraph break (it is void, not a
+        // block tag in the newline-triggering match); the single `\n`
+        // before "After" comes from `<p>` opening once, matching how the
+        // tokenizer already treats other non-paragraph inline content.
+        assert_eq!(text, format!("Before\n\n{EPUB_IMAGE_SENTINEL}\nAfter"));
+    }
+
+    #[test]
+    fn html_to_text_with_images_skips_img_without_src_and_respects_limit() {
+        let mut xhtml = String::from("<body>");
+        for index in 0..EPUB_IMAGE_LIMIT + 5 {
+            xhtml.push_str(&format!("<img src='p{index}.jpg'/>"));
+        }
+        xhtml.push_str("<img alt='no src, must not count or panic'/></body>");
+        let (_, images) = html_to_text_with_images(&xhtml, "OEBPS");
+        assert_eq!(images.len(), EPUB_IMAGE_LIMIT);
+    }
+
+    #[test]
     fn opens_stored_epub_manifest_spine_and_nav_toc() {
         let path = temp_epub("stored");
         let bytes = stored_zip(&[
@@ -1332,11 +2005,136 @@ mod tests {
             2
         );
         assert_eq!(read_epub_title_on_worker(&path).unwrap(), "Sample EPUB");
-        assert!(epub.text.contains("First chapter."));
-        assert!(epub.text.contains("Second chapter."));
+        let resident = epub.resident_text().unwrap();
+        assert!(resident.contains("First chapter."));
+        assert!(resident.contains("Second chapter."));
         assert_eq!(epub.toc.len(), 2);
         assert_eq!(epub.toc[0].label, "Start");
         assert!(epub.toc[1].text_offset > epub.toc[0].text_offset);
+        let _ = fs::remove_file(path);
+    }
+
+    /// End-to-end spike check: an inline `<img>` parsed through the real
+    /// `open_epub` path becomes one [`super::EpubImage`] whose `text_offset`
+    /// lands exactly on the sentinel character in the whole book's flattened
+    /// text, and every other offset-based mechanism (`chapter_for_offset`,
+    /// the following chapter's own offsets) stays coherent around it -- the
+    /// actual thing this step was meant to prove, not just the isolated
+    /// `flatten_html` unit tests above.
+    #[test]
+    fn opens_a_book_with_an_inline_image_and_keeps_offsets_coherent() {
+        let path = temp_epub("inline-image");
+        let bytes = stored_zip(&[
+            ("META-INF/container.xml", "<container><rootfiles><rootfile full-path='OEBPS/book.opf'/></rootfiles></container>"),
+            ("OEBPS/book.opf", "<package><metadata><dc:title>Illustrated Book</dc:title></metadata><manifest><item id='c1' href='c1.xhtml' media-type='application/xhtml+xml'/><item id='c2' href='c2.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='c1'/><itemref idref='c2'/></spine></package>"),
+            ("OEBPS/c1.xhtml", "<html><body><h1>One</h1><p>Before the picture.</p><img src=\"images/fig1.jpg\" alt=\"A figure\"/><p>After the picture.</p></body></html>"),
+            ("OEBPS/c2.xhtml", "<html><body><h1>Two</h1><p>Second chapter text.</p></body></html>"),
+        ]);
+        fs::write(&path, bytes).unwrap();
+        let epub = open_epub(&path).unwrap();
+
+        assert_eq!(epub.images.len(), 1);
+        let image = &epub.images[0];
+        assert_eq!(image.href, "OEBPS/images/fig1.jpg");
+        assert_eq!(image.alt, "A figure");
+        assert_eq!(image.spine_index, 0);
+
+        let text = epub.resident_text().unwrap();
+        assert_eq!(
+            text[image.text_offset as usize..].chars().next(),
+            Some(EPUB_IMAGE_SENTINEL)
+        );
+        assert_eq!(
+            epub.chapter_for_offset(image.text_offset)
+                .unwrap()
+                .spine_index,
+            0
+        );
+        assert!(text.contains("Before the picture."));
+        assert!(text.contains("After the picture."));
+
+        // Chapter two's own offset math is unaffected by chapter one's
+        // image -- it is simply one character (the sentinel) further along
+        // than it would be without the image, not corrupted or misaligned.
+        assert_eq!(
+            epub.chapter_for_offset(epub.chapters[1].text_offset)
+                .unwrap()
+                .number,
+            2
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reads_png_and_jpeg_pixel_size_from_headers() {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&640_u32.to_be_bytes());
+        png.extend_from_slice(&960_u32.to_be_bytes());
+        assert_eq!(image_header_size(&png), Some((640, 960)));
+
+        // SOI, one APP0 segment to skip, then SOF0 (height 300, width 200).
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0xAA, 0xBB, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x01,
+            0x2C, 0x00, 0xC8, 0x01, 0x01, 0x11, 0x00,
+        ];
+        assert_eq!(image_header_size(&jpeg), Some((200, 300)));
+        // A DHT marker (0xC4) is not a frame header and must be skipped.
+        let with_dht = [
+            0xFF, 0xD8, 0xFF, 0xC4, 0x00, 0x03, 0x00, 0xFF, 0xC2, 0x00, 0x0B, 0x08, 0x00, 0x10,
+            0x00, 0x20, 0x01, 0x01, 0x11, 0x00,
+        ];
+        assert_eq!(image_header_size(&with_dht), Some((32, 16)));
+        assert_eq!(image_header_size(b"GIF89a"), None);
+    }
+
+    #[test]
+    fn extract_member_reads_one_member_without_the_whole_archive() {
+        let path = temp_epub("extract-member");
+        let bytes = stored_zip(&[
+            ("META-INF/container.xml", "<container/>"),
+            ("OEBPS/images/fig1.jpg", "not really a jpeg"),
+            ("OEBPS/c1.xhtml", "<html><body><p>Text</p></body></html>"),
+        ]);
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            extract_member(&path, "OEBPS/images/fig1.jpg").unwrap(),
+            b"not really a jpeg"
+        );
+        assert_eq!(
+            extract_member(&path, "oebps/c1.xhtml").unwrap(),
+            b"<html><body><p>Text</p></body></html>"
+        );
+        assert!(extract_member(&path, "OEBPS/missing.png").is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    /// A book whose flattened text lands well past the old 2 MiB RAM ceiling
+    /// (but under the current, raised `EPUB_REFLOW_TEXT_LIMIT`) must open
+    /// successfully instead of failing with "byte limit" — this is the exact
+    /// failure a reader hit with a real large EPUB before the limit was
+    /// raised to give large books PSRAM headroom to actually use.
+    #[test]
+    fn opens_a_book_whose_flattened_text_exceeds_the_old_two_mebibyte_limit() {
+        let path = temp_epub("large");
+        // Comfortably over the old 2 MiB cap, comfortably under the new one,
+        // and each chapter's raw XHTML stays under `EPUB_MEMBER_COMPRESSED_LIMIT`
+        // (2 MiB) so `stored_zip`'s uncompressed entries still extract.
+        let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit. ".repeat(28_000);
+        assert!(paragraph.len() > 1_500_000 && paragraph.len() < 2 * 1024 * 1024);
+        let chapter_one = format!("<html><body><h1>One</h1><p>{paragraph}</p></body></html>");
+        let chapter_two = format!("<html><body><h1>Two</h1><p>{paragraph}</p></body></html>");
+        let bytes = stored_zip(&[
+            ("META-INF/container.xml", "<container><rootfiles><rootfile full-path='OEBPS/book.opf'/></rootfiles></container>"),
+            ("OEBPS/book.opf", "<package><metadata><dc:title>Large Book</dc:title></metadata><manifest><item id='c1' href='c1.xhtml' media-type='application/xhtml+xml'/><item id='c2' href='c2.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='c1'/><itemref idref='c2'/></spine></package>"),
+            ("OEBPS/c1.xhtml", &chapter_one),
+            ("OEBPS/c2.xhtml", &chapter_two),
+        ]);
+        fs::write(&path, bytes).unwrap();
+        let epub = open_epub(&path).unwrap();
+        assert!(epub.text_size_bytes() > 2 * 1024 * 1024);
+        assert!(epub.text_size_bytes() < EPUB_REFLOW_TEXT_LIMIT as u64);
+        assert_eq!(epub.chapters.len(), 2);
         let _ = fs::remove_file(path);
     }
 

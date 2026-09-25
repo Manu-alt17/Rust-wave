@@ -6,8 +6,8 @@
 //! hostname a phone tries to reach while joining -- its OS's automatic
 //! connectivity probe, or the user manually opening any website -- resolves
 //! to this device. Combined with the wildcard HTTP redirect in
-//! `network_provision::espidf`, either path lands on the device's own
-//! portal, so joining the hotspot QR code alone is enough to pop the
+//! `wifi_transfer::espidf`, either path lands on the device's own portal, so
+//! joining the hotspot QR code alone is enough to pop the
 //! "Sign in to network" browser, or at least to make any manually opened
 //! site redirect there -- no second QR code for the portal URL is needed.
 //!
@@ -249,7 +249,11 @@ mod tests {
         let query = a_query("example.com");
         let response = build_response(&query, [192, 168, 71, 1]).unwrap();
 
-        assert_eq!(&response[0..2], &query[0..2], "DNS transaction ID must be echoed");
+        assert_eq!(
+            &response[0..2],
+            &query[0..2],
+            "DNS transaction ID must be echoed"
+        );
         assert_eq!(response[2] & 0x80, 0x80, "QR bit must be set on a response");
         assert_eq!(response[3], 0x80, "RCODE must be 0 (NOERROR)");
         assert_eq!(&response[4..6], &[0, 1], "QDCOUNT");

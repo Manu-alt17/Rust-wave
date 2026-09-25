@@ -11,10 +11,10 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use super::{
     display::{UiFontFamily, UiFontSize},
     reader_atkinson_next_assets::{
-        ATKINSON_NEXT_LARGE, ATKINSON_NEXT_MEDIUM, ATKINSON_NEXT_SMALL, ATKINSON_NEXT_XLARGE,
+        ATKINSON_NEXT_LARGE, ATKINSON_NEXT_XLARGE, ATKINSON_NEXT_XXLARGE, ATKINSON_NEXT_XXXLARGE,
     },
-    reader_literata_assets::{LITERATA_LARGE, LITERATA_MEDIUM, LITERATA_SMALL, LITERATA_XLARGE},
-    reader_serif_assets::{SERIF_LARGE, SERIF_MEDIUM, SERIF_SMALL, SERIF_XLARGE},
+    reader_literata_assets::{LITERATA_LARGE, LITERATA_XLARGE, LITERATA_XXLARGE, LITERATA_XXXLARGE},
+    reader_serif_assets::{SERIF_LARGE, SERIF_XLARGE, SERIF_XXLARGE, SERIF_XXXLARGE},
     typography::{style_for, UiTextRole, UiTextStyle},
 };
 use crate::reader::{BookFont, BookFontSize, ReadingTheme};
@@ -44,47 +44,56 @@ pub const fn reader_body_style(
 #[must_use]
 const fn ui_profile(size: BookFontSize) -> UiFontSize {
     match size {
-        BookFontSize::Small => UiFontSize::Compact,
-        BookFontSize::Medium => UiFontSize::Standard,
-        BookFontSize::Large | BookFontSize::XLarge => UiFontSize::Large,
+        BookFontSize::Large => UiFontSize::Standard,
+        // Inter reuses the shared UI type system, which tops out at
+        // `UiFontSize::Large`. XLarge, XXLarge and XXXLarge all render at
+        // that ceiling (distinguished only by `ui_role` below) because
+        // growing Inter further would mean adding a new tier to the
+        // global UI typography system used everywhere else in the app,
+        // not just the Reader's book-font picker.
+        BookFontSize::XLarge | BookFontSize::XXLarge | BookFontSize::XXXLarge => {
+            UiFontSize::Large
+        }
     }
 }
 
 #[must_use]
 const fn ui_role(size: BookFontSize) -> UiTextRole {
     match size {
-        BookFontSize::Small | BookFontSize::Medium | BookFontSize::Large => UiTextRole::Body,
-        BookFontSize::XLarge => UiTextRole::Heading,
+        BookFontSize::Large => UiTextRole::Body,
+        BookFontSize::XLarge | BookFontSize::XXLarge | BookFontSize::XXXLarge => {
+            UiTextRole::Heading
+        }
     }
 }
 
 #[must_use]
 const fn atkinson_next_font(size: BookFontSize) -> &'static super::typography::BitmapFont {
     match size {
-        BookFontSize::Small => &ATKINSON_NEXT_SMALL,
-        BookFontSize::Medium => &ATKINSON_NEXT_MEDIUM,
         BookFontSize::Large => &ATKINSON_NEXT_LARGE,
         BookFontSize::XLarge => &ATKINSON_NEXT_XLARGE,
+        BookFontSize::XXLarge => &ATKINSON_NEXT_XXLARGE,
+        BookFontSize::XXXLarge => &ATKINSON_NEXT_XXXLARGE,
     }
 }
 
 #[must_use]
 const fn serif_font(size: BookFontSize) -> &'static super::typography::BitmapFont {
     match size {
-        BookFontSize::Small => &SERIF_SMALL,
-        BookFontSize::Medium => &SERIF_MEDIUM,
         BookFontSize::Large => &SERIF_LARGE,
         BookFontSize::XLarge => &SERIF_XLARGE,
+        BookFontSize::XXLarge => &SERIF_XXLARGE,
+        BookFontSize::XXXLarge => &SERIF_XXXLARGE,
     }
 }
 
 #[must_use]
 const fn literata_font(size: BookFontSize) -> &'static super::typography::BitmapFont {
     match size {
-        BookFontSize::Small => &LITERATA_SMALL,
-        BookFontSize::Medium => &LITERATA_MEDIUM,
         BookFontSize::Large => &LITERATA_LARGE,
         BookFontSize::XLarge => &LITERATA_XLARGE,
+        BookFontSize::XXLarge => &LITERATA_XXLARGE,
+        BookFontSize::XXXLarge => &LITERATA_XXXLARGE,
     }
 }
 
@@ -102,10 +111,10 @@ mod tests {
             BookFont::Literata,
         ] {
             for size in [
-                BookFontSize::Small,
-                BookFontSize::Medium,
                 BookFontSize::Large,
                 BookFontSize::XLarge,
+                BookFontSize::XXLarge,
+                BookFontSize::XXXLarge,
             ] {
                 assert!(reader_body_style(family, size, ReadingTheme::Classic).line_height() > 0);
             }

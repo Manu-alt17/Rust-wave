@@ -20,6 +20,23 @@ use crate::{
 
 const BUSY_POLL_MS: u32 = 10;
 const BUSY_TIMEOUT_MS: u32 = 15_000;
+/// Settle time before the first BUSY sample. The SSD1677 raises BUSY within
+/// microseconds of a command that starts internal work, so one short wait is
+/// enough before polling; the pin itself then decides how long to wait. The
+/// vendor reference used a fixed 100 ms here, which added ~90 ms of dead
+/// time to every wait that finishes early (hardware reset, SWRESET and the
+/// final init check -- up to ~270 ms on every panel wake-up).
+const BUSY_SETTLE_MS: u32 = 10;
+
+/// Value written to 0x1A before the fast global waveform. Despite the
+/// register's "temperature" name this isn't a Celsius reading: it selects
+/// one of the SSD1677 OTP's pre-baked LUT buckets, and each bucket is tied
+/// to a specific waveform. 0x6A is the vendor-reference constant for the
+/// monochrome "fast 1.5s" waveform used with 0x22 0xD7 (see Waveshare's
+/// `EPD_Init_Fast` for this panel). 0x5A is a different bucket entirely —
+/// the one for 4-gray mode — and loading it for a 1-bit frame is what
+/// produced the inverted black/white output seen on real hardware.
+const FAST_GLOBAL_TEMPERATURE: u8 = 0x6A;
 
 /// Controller driver with explicit ownership of the panel bus and pins.
 pub struct Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER> {
@@ -124,12 +141,36 @@ where
     /// refresh. Use this at boot and periodically after partial refreshes.
     pub fn show_base(&mut self, frame: &[u8]) -> Result<()> {
         validate_frame(frame)?;
-        info!("epd397: global base refresh");
+        debug!("epd397: global base refresh");
         self.command(0x24)?;
         self.data(frame)?;
         self.command(0x26)?;
         self.data(frame)?;
         self.turn_on_display(0xF7)
+    }
+
+    /// Transfer a base frame to both controller RAM planes and run a global
+    /// refresh using the fast waveform (0x22 0xD7). 0xD7 is 0xF7 without the
+    /// "load temperature from sensor" step, so 0x1A is written explicitly
+    /// right before it to select the OTP's fast-waveform LUT bucket
+    /// (`FAST_GLOBAL_TEMPERATURE`) instead of whatever the sensor last put
+    /// there — this drops the standard multi-flash waveform down to a
+    /// single white-to-black flash. Partial refreshes (0xFF/0xDF) are
+    /// unaffected: they select their own LUT bucket independently of 0x1A.
+    pub fn show_base_fast(&mut self, frame: &[u8]) -> Result<()> {
+        validate_frame(frame)?;
+        debug!("epd397: global base refresh (fast waveform)");
+        self.command_data(0x3C, &[0x01])?;
+        self.command_data(0x4E, &[0x00, 0x00])?;
+        self.command_data(0x4F, &[0x00, 0x00])?;
+        self.command(0x24)?;
+        self.data(frame)?;
+        self.command_data(0x4E, &[0x00, 0x00])?;
+        self.command_data(0x4F, &[0x00, 0x00])?;
+        self.command(0x26)?;
+        self.data(frame)?;
+        self.command_data(0x1A, &[FAST_GLOBAL_TEMPERATURE])?;
+        self.turn_on_display(0xD7)
     }
 
     /// Apply a full-screen partial refresh. This intentionally mirrors the
@@ -140,9 +181,17 @@ where
     /// refresh only adds a fixed ~102 ms of delay (plus reloading the
     /// default waveform) without being needed to reconfigure partial mode,
     /// which the commands below already do on every call.
+    ///
+    /// Skips the controller's temperature reload (0x22 bit 0x20): re-reading
+    /// the sensor on every partial refresh spends time on a value that can't
+    /// have drifted between two UI updates. `show_base` still reloads it on
+    /// every global refresh (boot, wake, periodic ghost cleanup, manual
+    /// cleanup, safety fallback), which bounds staleness to at most
+    /// `PANEL_PARTIAL_REFRESH_LIMIT` partials instead of a whole idle-sleep
+    /// interval.
     pub fn show_partial_fullscreen(&mut self, frame: &[u8]) -> Result<()> {
         validate_frame(frame)?;
-        info!("epd397: partial full-screen refresh");
+        debug!("epd397: partial full-screen refresh");
         self.command_data(0x18, &[0x80])?;
         self.command_data(0x3C, &[0x80])?;
         self.command_data(0x44, &[0x00, 0x00, 0x18, 0x03])?; // 0 .. 792
@@ -151,7 +200,7 @@ where
         self.command_data(0x4F, &[0x00, 0x00])?;
         self.command(0x24)?;
         self.data(frame)?;
-        self.turn_on_display(0xFF)
+        self.turn_on_display(0xDF)
     }
 
     /// Put the panel controller into deep sleep and disable its PMIC rail.
@@ -196,8 +245,8 @@ where
     }
 
     fn wait_until_idle(&mut self) -> Result<()> {
-        self.delay.delay_ms(100);
-        let mut elapsed_ms = 100;
+        self.delay.delay_ms(BUSY_SETTLE_MS);
+        let mut elapsed_ms = BUSY_SETTLE_MS;
         while self
             .busy
             .is_high()

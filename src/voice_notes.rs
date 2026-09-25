@@ -17,6 +17,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::{
     buttons::ButtonEvent,
     keyboard_navigation::KeyboardGridNavigation,
+    regional::Locale,
     voice_note_metadata::{
         default_voice_title, delete_voice_note_metadata, load_voice_note_metadata,
         metadata_for_file, rename_voice_note_title, sanitize_voice_title, title_from_editable,
@@ -66,6 +67,22 @@ impl VoiceMicGain {
             Self::Normal => "NORMAL",
             Self::High => "HIGH",
             Self::Boost => "BOOST",
+        }
+    }
+
+    /// Locale-aware sibling of [`Self::label`]. `label` itself is left
+    /// untouched because `src/main.rs`'s serial diagnostics logging depends
+    /// on its English output staying stable.
+    #[must_use]
+    pub const fn label_i18n(self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => self.label(),
+            Locale::Italian => match self {
+                Self::Low => "BASSO",
+                Self::Normal => "NORMALE",
+                Self::High => "ALTO",
+                Self::Boost => "BOOST",
+            },
         }
     }
 

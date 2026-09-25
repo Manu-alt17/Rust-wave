@@ -9,8 +9,8 @@ This repository is the cleaned source tree. Historical patch overlays, temporary
 ## Highlights
 
 - Rotary-first product shell with Reader, Productivity, Games, Tools, and Settings categories.
-- Physical **Power short press** opens a display-maintenance menu for manual ghost-clearing refresh.
-- Physical **Power long press** enters the accepted random sleep-image mode with network suspension and route restoration after wake.
+- Physical **Power short press** shows a random sleep image, then cuts power at the AXP2101 PMIC; pressing Power again turns the board back on and restores the prior route (real MCU deep sleep is the automatic fallback if the PMIC power-off cannot be armed).
+- Physical **Power long press** opens a display-maintenance menu for manual ghost-clearing refresh.
 - Reader supports TXT and bounded reflowable EPUB files, TOC navigation, bookmarks, per-book resume, typography preferences, paragraph alignment, and FAT 8.3-safe persistence.
 - Voice Notes records PCM16 mono 16 kHz WAV files to SD, supports microphone gain, pause/resume, saved-note playback, titles, timestamps, delete confirmation, storage telemetry, and LAN export.
 - Native Dictionary reuses the Rustmix X4 prefix-shard SD pack and uses held-SELECT `NAV H` / `NAV V` keyboard-axis switching.
@@ -29,7 +29,7 @@ This repository is the cleaned source tree. Historical patch overlays, temporary
 | Display SPI | SCLK GPIO11, MOSI GPIO12, CS GPIO10, DC GPIO9, RST GPIO46, BUSY GPIO3 |
 | SD storage | FAT SD card mounted at `/sdcard` |
 | BOOT button | GPIO0, short press contextual, long press hierarchical Back |
-| Power key | AXP2101 PEK interrupts: short opens display menu, long enters sleep-image mode |
+| Power key | AXP2101 PEK interrupts: short powers the board off via the PMIC (deep-sleep fallback), long opens display menu |
 | RTC alarm interrupt | GPIO45, active low |
 | Audio | ES8311 codec and native I2S ownership |
 | Sensors | SHTC3 environment sensor, QMI8658 IMU |
@@ -63,7 +63,7 @@ Rustmix Wave uses the board peripherals as product features rather than treating
 | Hardware service | Firmware use |
 | --- | --- |
 | PCF85063 RTC | Localized clock, calendar date, persistent alarm schedules, and GPIO45 alarm wake |
-| AXP2101 PMIC | Battery and USB/charge status, e-paper rail support, and Power-key short/long interrupt classification |
+| AXP2101 PMIC | Battery and USB/charge status, e-paper rail support, Power-key short/long interrupt classification, and software power-off on Power short press |
 | SHTC3 environment sensor | Temperature and humidity cards, home status, and sensor details |
 | QMI8658 accelerometer and gyroscope | Live Motion diagnostics, debounced `TILT`, `SHAKE`, `ROTATE`, and `LEVEL` events, Tilt Maze, Motion 2048, and Sokoban Tilt |
 | ES8311 audio codec and I2S | Alarm chime, audio diagnostics, Voice Notes recording, and saved-WAV playback |
@@ -220,8 +220,8 @@ ROTARY               Move the current selection
 SELECT               Activate the current selection
 Hold SELECT          Contextual action; keyboard/grid screens toggle NAV H / NAV V
 BOOT                 Hierarchical Back
-Power short          Open display-maintenance menu
-Power long           Enter sleep-image mode
+Power short          Power the board off via the PMIC (deep-sleep fallback)
+Power long           Open display-maintenance menu
 ```
 
 All new keyboard or grid-style text-entry screens should compose the shared `KeyboardGridNavigation` helper so held-SELECT H/V axis switching is consistent across apps.

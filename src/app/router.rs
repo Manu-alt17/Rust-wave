@@ -1,24 +1,26 @@
 //! Hierarchical screen router for the portrait product UI shell.
 
+use crate::regional::Locale;
+
 /// Product screens exposed by the RustMix Wave shell.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ScreenRoute {
     #[default]
     Home,
-    Reader,
-    Productivity,
     Games,
     Tools,
     Settings,
     ContinueReading,
     Library,
-    Bookmarks,
+    LibraryBookActions,
+    LibraryBookBookmarks,
     ReaderBookmarks,
     ReaderLoading,
     ReaderPage,
     ReaderOptions,
     ReaderPreferences,
     ReaderToc,
+    ReadingStats,
     Calendar,
     CalendarAgenda,
     CalendarEventDetails,
@@ -43,10 +45,12 @@ pub enum ScreenRoute {
     ClockSetTime,
     ClockDetails,
     Display,
+    Language,
     PowerKeyMenu,
     DeviceInfo,
     DeviceInfoBoard,
     DeviceInfoRuntime,
+    OtaUpdate,
     Environment,
     EnvironmentDetails,
     Motion,
@@ -54,7 +58,6 @@ pub enum ScreenRoute {
     MotionDetails,
     Network,
     NetworkDetails,
-    NetworkProvision,
     NetworkSaved,
     WifiTransfer,
     Weather,
@@ -66,20 +69,20 @@ impl ScreenRoute {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Home => "Home",
-            Self::Reader => "Reader",
-            Self::Productivity => "Productivity",
             Self::Games => "Games",
             Self::Tools => "Tools",
             Self::Settings => "Settings",
             Self::ContinueReading => "Continue Reading",
             Self::Library => "Library",
-            Self::Bookmarks => "Bookmarks",
+            Self::LibraryBookActions => "Book Options",
+            Self::LibraryBookBookmarks => "Book Bookmarks",
             Self::ReaderBookmarks => "Reader Bookmarks",
             Self::ReaderLoading => "Opening Book",
             Self::ReaderPage => "Reader Page",
             Self::ReaderOptions => "Reader Options",
             Self::ReaderPreferences => "Reading Preferences",
             Self::ReaderToc => "Table of Contents",
+            Self::ReadingStats => "Reading Stats",
             Self::Calendar => "Calendar",
             Self::CalendarAgenda => "Daily Agenda",
             Self::CalendarEventDetails => "Calendar Event",
@@ -104,10 +107,12 @@ impl ScreenRoute {
             Self::ClockSetTime => "Set Date & Time",
             Self::ClockDetails => "RTC details",
             Self::Display => "Display",
+            Self::Language => "Language",
             Self::PowerKeyMenu => "Power Key Menu",
             Self::DeviceInfo => "Device Info",
             Self::DeviceInfoBoard => "Board services",
             Self::DeviceInfoRuntime => "Runtime services",
+            Self::OtaUpdate => "Software Update",
             Self::Environment => "Environment",
             Self::EnvironmentDetails => "Sensor details",
             Self::Motion => "Motion",
@@ -115,7 +120,6 @@ impl ScreenRoute {
             Self::MotionDetails => "Motion details",
             Self::Network => "Network",
             Self::NetworkDetails => "Provisioning details",
-            Self::NetworkProvision => "Configure via Phone",
             Self::NetworkSaved => "Saved Networks",
             Self::WifiTransfer => "Wi-Fi Transfer",
             Self::Weather => "Weather",
@@ -123,24 +127,101 @@ impl ScreenRoute {
         }
     }
 
+    /// Locale-aware sibling of [`Self::label`] for on-screen headers. `label`
+    /// itself is left untouched because `src/main.rs`'s serial diagnostics
+    /// logging depends on its English output staying stable.
+    #[must_use]
+    pub const fn label_i18n(self, locale: Locale) -> &'static str {
+        match locale {
+            // `OtaUpdate`/`DeviceInfo`/`UnitConverter` diverge from
+            // `label()`'s stable diagnostic strings: their on-screen names
+            // are the shorter "Update"/"Info"/"Conv" (see the matching tiles
+            // in `menu.rs`), in both locales.
+            Locale::English => match self {
+                Self::OtaUpdate => "Update",
+                Self::DeviceInfo => "Info",
+                Self::UnitConverter => "Conv",
+                other => other.label(),
+            },
+            Locale::Italian => match self {
+                Self::Home => "Home",
+                Self::Games => "Giochi",
+                Self::Tools => "Strumenti",
+                Self::Settings => "Impostazioni",
+                Self::ContinueReading => "Continua a leggere",
+                Self::Library => "Libreria",
+                Self::LibraryBookActions => "Opzioni libro",
+                Self::LibraryBookBookmarks => "Segnalibri libro",
+                Self::ReaderBookmarks => "Segnalibri lettore",
+                Self::ReaderLoading => "Apertura libro",
+                Self::ReaderPage => "Pagina lettore",
+                Self::ReaderOptions => "Opzioni lettore",
+                Self::ReaderPreferences => "Preferenze di lettura",
+                Self::ReaderToc => "Indice",
+                Self::ReadingStats => "Statistiche di lettura",
+                Self::Calendar => "Calendario",
+                Self::CalendarAgenda => "Agenda giornaliera",
+                Self::CalendarEventDetails => "Evento del calendario",
+                Self::CalendarEventEditor => "Modifica evento",
+                Self::CalendarDeleteConfirmation => "Elimina evento",
+                Self::VoiceNotes => "Note vocali",
+                Self::VoiceNoteDetails => "Nota vocale",
+                Self::VoiceNoteRecording => "Registra nota vocale",
+                Self::GamesTbd => "Da definire",
+                Self::LuaApps => "App Lua da SD",
+                Self::LuaGame => "App Lua",
+                Self::LuaGameError => "Errore app Lua",
+                Self::Magic => "Token Magic",
+                Self::MagicView => "Visualizza token",
+                Self::Files => "Esplora file",
+                Self::Dictionary => "Dizionario",
+                Self::UnitConverter => "Conv",
+                Self::Alarms => "Sveglie",
+                Self::Audio => "Audio",
+                Self::AudioDetails => "Dettagli audio",
+                Self::Clock => "Orologio",
+                Self::ClockSetTime => "Imposta data e ora",
+                Self::ClockDetails => "Dettagli RTC",
+                Self::Display => "Schermo",
+                Self::Language => "Lingua",
+                Self::PowerKeyMenu => "Menu tasto accensione",
+                Self::DeviceInfo => "Info",
+                Self::DeviceInfoBoard => "Servizi scheda",
+                Self::DeviceInfoRuntime => "Servizi runtime",
+                Self::OtaUpdate => "Update",
+                Self::Environment => "Ambiente",
+                Self::EnvironmentDetails => "Dettagli sensore",
+                Self::Motion => "Movimento",
+                Self::MotionEvents => "Eventi di movimento",
+                Self::MotionDetails => "Dettagli movimento",
+                Self::Network => "Rete",
+                Self::NetworkDetails => "Dettagli configurazione",
+                Self::NetworkSaved => "Reti salvate",
+                Self::WifiTransfer => "Trasferimento Wi-Fi",
+                Self::Weather => "Meteo",
+                Self::WeatherDetails => "Dettagli meteo",
+            },
+        }
+    }
+
     #[must_use]
     pub const fn marker(self) -> &'static str {
         match self {
             Self::Home => "home",
-            Self::Reader => "reader",
-            Self::Productivity => "productivity",
             Self::Games => "games",
             Self::Tools => "tools",
             Self::Settings => "settings",
             Self::ContinueReading => "continue-reading",
             Self::Library => "library",
-            Self::Bookmarks => "bookmarks",
+            Self::LibraryBookActions => "library-book-actions",
+            Self::LibraryBookBookmarks => "library-book-bookmarks",
             Self::ReaderBookmarks => "reader-bookmarks",
             Self::ReaderLoading => "reader-loading",
             Self::ReaderPage => "reader-page",
             Self::ReaderOptions => "reader-options",
             Self::ReaderPreferences => "reader-preferences",
             Self::ReaderToc => "reader-toc",
+            Self::ReadingStats => "reading-stats",
             Self::Calendar => "calendar",
             Self::CalendarAgenda => "calendar-agenda",
             Self::CalendarEventDetails => "calendar-event-details",
@@ -165,10 +246,12 @@ impl ScreenRoute {
             Self::ClockSetTime => "clock-set-time",
             Self::ClockDetails => "rtc-details",
             Self::Display => "display",
+            Self::Language => "language",
             Self::PowerKeyMenu => "power-key-menu",
             Self::DeviceInfo => "device-info",
             Self::DeviceInfoBoard => "device-info-board",
             Self::DeviceInfoRuntime => "device-info-runtime",
+            Self::OtaUpdate => "ota-update",
             Self::Environment => "environment",
             Self::EnvironmentDetails => "environment-details",
             Self::Motion => "motion",
@@ -176,7 +259,6 @@ impl ScreenRoute {
             Self::MotionDetails => "motion-details",
             Self::Network => "network",
             Self::NetworkDetails => "network-details",
-            Self::NetworkProvision => "network-provision",
             Self::NetworkSaved => "network-saved",
             Self::WifiTransfer => "wifi-transfer",
             Self::Weather => "weather",
@@ -186,10 +268,7 @@ impl ScreenRoute {
 
     #[must_use]
     pub const fn is_category(self) -> bool {
-        matches!(
-            self,
-            Self::Reader | Self::Productivity | Self::Games | Self::Tools | Self::Settings
-        )
+        matches!(self, Self::Games | Self::Tools | Self::Settings)
     }
 
     #[must_use]
@@ -218,16 +297,17 @@ impl ScreenRoute {
     pub const fn parent(self) -> Option<Self> {
         match self {
             Self::Home => None,
-            Self::Reader | Self::Productivity | Self::Games | Self::Tools | Self::Settings => {
-                Some(Self::Home)
-            }
-            Self::ContinueReading | Self::Library | Self::Bookmarks => Some(Self::Reader),
+            Self::Games | Self::Tools | Self::Settings => Some(Self::Home),
+            Self::ReadingStats => Some(Self::Home),
+            Self::ContinueReading | Self::Library => Some(Self::Home),
+            Self::LibraryBookActions => Some(Self::Library),
+            Self::LibraryBookBookmarks => Some(Self::LibraryBookActions),
             Self::ReaderBookmarks => Some(Self::ReaderOptions),
             Self::ReaderLoading | Self::ReaderPage => Some(Self::Library),
             Self::ReaderOptions => Some(Self::ReaderPage),
             Self::ReaderPreferences => Some(Self::ReaderOptions),
             Self::ReaderToc => Some(Self::ReaderOptions),
-            Self::Calendar | Self::VoiceNotes => Some(Self::Productivity),
+            Self::Calendar | Self::VoiceNotes => Some(Self::Tools),
             Self::CalendarAgenda => Some(Self::Calendar),
             Self::CalendarEventDetails => Some(Self::CalendarAgenda),
             Self::CalendarEventEditor => Some(Self::CalendarAgenda),
@@ -242,7 +322,9 @@ impl ScreenRoute {
             | Self::Audio
             | Self::Clock
             | Self::Display
+            | Self::Language
             | Self::DeviceInfo
+            | Self::OtaUpdate
             | Self::Environment
             | Self::Motion
             | Self::Network
@@ -254,9 +336,7 @@ impl ScreenRoute {
             Self::EnvironmentDetails => Some(Self::Environment),
             Self::MotionEvents => Some(Self::Motion),
             Self::MotionDetails => Some(Self::MotionEvents),
-            Self::NetworkDetails | Self::NetworkProvision | Self::NetworkSaved => {
-                Some(Self::Network)
-            }
+            Self::NetworkDetails | Self::NetworkSaved => Some(Self::Network),
             Self::WifiTransfer => Some(Self::Home),
             Self::WeatherDetails => Some(Self::Weather),
         }
@@ -274,7 +354,6 @@ impl ScreenRoute {
                 | Self::MotionDetails
                 | Self::Network
                 | Self::NetworkDetails
-                | Self::NetworkProvision
                 | Self::NetworkSaved
                 | Self::WifiTransfer
                 | Self::Alarms
@@ -283,6 +362,17 @@ impl ScreenRoute {
                 | Self::ReaderLoading
                 | Self::VoiceNoteRecording
         )
+    }
+
+    /// Routes that render the SHTC3 temperature/humidity reading. A strict
+    /// subset of [`Self::uses_live_status`]: used to decide whether a fresh
+    /// environment sample (a mandatory ~20ms blocking read) is worth taking
+    /// after an interaction that navigates here, versus skipping it and
+    /// relying on the periodic live-status refresh for routes that don't
+    /// display it at all.
+    #[must_use]
+    pub const fn uses_environment_sample(self) -> bool {
+        matches!(self, Self::Clock | Self::Environment)
     }
 }
 
@@ -313,16 +403,16 @@ impl ScreenRouter {
 #[cfg(test)]
 mod tests {
     use super::{ScreenRoute, ScreenRouter};
+    use crate::regional::Locale;
 
     #[test]
     fn router_exposes_static_parent_hierarchy() {
         assert_eq!(ScreenRoute::Files.parent(), Some(ScreenRoute::Tools));
         assert_eq!(ScreenRoute::Display.parent(), Some(ScreenRoute::Settings));
+        assert_eq!(ScreenRoute::Language.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::PowerKeyMenu.parent(), Some(ScreenRoute::Home));
-        assert_eq!(
-            ScreenRoute::Calendar.parent(),
-            Some(ScreenRoute::Productivity)
-        );
+        assert_eq!(ScreenRoute::Calendar.parent(), Some(ScreenRoute::Tools));
+        assert_eq!(ScreenRoute::ReadingStats.parent(), Some(ScreenRoute::Home));
         assert_eq!(
             ScreenRoute::CalendarAgenda.parent(),
             Some(ScreenRoute::Calendar)
@@ -351,7 +441,8 @@ mod tests {
             ScreenRoute::DeviceInfoRuntime.parent(),
             Some(ScreenRoute::DeviceInfoBoard)
         );
-        assert_eq!(ScreenRoute::Reader.parent(), Some(ScreenRoute::Home));
+        assert_eq!(ScreenRoute::OtaUpdate.parent(), Some(ScreenRoute::Settings));
+        assert_eq!(ScreenRoute::Library.parent(), Some(ScreenRoute::Home));
         assert_eq!(ScreenRoute::LuaApps.parent(), Some(ScreenRoute::Games));
         assert_eq!(ScreenRoute::LuaGame.parent(), Some(ScreenRoute::LuaApps));
         assert_eq!(
@@ -362,10 +453,6 @@ mod tests {
         assert_eq!(ScreenRoute::MagicView.parent(), Some(ScreenRoute::Magic));
         assert_eq!(ScreenRoute::Home.parent(), None);
         assert_eq!(ScreenRoute::WifiTransfer.parent(), Some(ScreenRoute::Home));
-        assert_eq!(
-            ScreenRoute::NetworkProvision.parent(),
-            Some(ScreenRoute::Network)
-        );
         assert_eq!(
             ScreenRoute::NetworkSaved.parent(),
             Some(ScreenRoute::Network)
@@ -400,7 +487,15 @@ mod tests {
         assert!(!ScreenRoute::ReaderLoading.is_reader_active());
         assert!(!ScreenRoute::ContinueReading.is_reader_active());
         assert!(!ScreenRoute::Library.is_reader_active());
-        assert!(!ScreenRoute::Bookmarks.is_reader_active());
+        assert!(!ScreenRoute::LibraryBookActions.is_reader_active());
+        assert!(!ScreenRoute::LibraryBookBookmarks.is_reader_active());
         assert!(!ScreenRoute::Home.is_reader_active());
+    }
+
+    #[test]
+    fn label_i18n_translates_into_italian_and_keeps_english_label_stable() {
+        assert_eq!(ScreenRoute::Clock.label_i18n(Locale::English), "Clock");
+        assert_eq!(ScreenRoute::Clock.label_i18n(Locale::Italian), "Orologio");
+        assert_eq!(ScreenRoute::Clock.label(), "Clock");
     }
 }

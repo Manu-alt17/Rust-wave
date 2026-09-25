@@ -9,7 +9,15 @@ use std::{fs, path::Path};
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::{buttons::ButtonEvent, rtc::RtcDateTime};
+use crate::{buttons::ButtonEvent, regional::Locale, rtc::RtcDateTime};
+
+/// Master switch for the alarm/sveglia feature. Off by default: the product
+/// does not need alarm-clock functionality, and a ringing alarm with no
+/// auto-dismiss timeout was found to block deep sleep indefinitely (see
+/// `main.rs`'s deep-sleep guards on `state.alarms.active`), causing large
+/// unexplained battery drain. Flip back to `true` to re-enable; nothing else
+/// needs to change since every call site gates off this flag.
+pub const ALARMS_ENABLED: bool = false;
 
 /// Removable-SD alarm definition file.
 pub const ALARMS_CONFIG_PATH: &str = "/sdcard/RUSTMIX/ALARMS.TXT";
@@ -49,6 +57,22 @@ impl AlarmScheduleKind {
             Self::OneTime { year, month, day } => format!("ONCE {year:04}-{month:02}-{day:02}"),
         }
     }
+
+    /// Locale-aware sibling of [`Self::compact_label`]. `compact_label`
+    /// itself is left untouched because `src/main.rs`'s serial diagnostics
+    /// logging depends on its English output staying stable.
+    #[must_use]
+    pub fn compact_label_i18n(self, locale: Locale) -> String {
+        match locale {
+            Locale::English => self.compact_label(),
+            Locale::Italian => match self {
+                Self::Recurring { weekdays } => weekday_mask_label_i18n(weekdays, locale),
+                Self::OneTime { year, month, day } => {
+                    format!("UNA VOLTA {year:04}-{month:02}-{day:02}")
+                }
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,6 +98,23 @@ impl AlarmDefinition {
             "OFF"
         }
     }
+
+    /// Locale-aware sibling of [`Self::status_label`]. `status_label` itself
+    /// is left untouched because `src/main.rs`'s serial diagnostics logging
+    /// depends on its English output staying stable.
+    #[must_use]
+    pub const fn status_label_i18n(&self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => self.status_label(),
+            Locale::Italian => {
+                if self.enabled {
+                    "ATTIVA"
+                } else {
+                    "SPENTA"
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +135,25 @@ impl ScheduledOccurrence {
             .map_or("alarm", |alarm| alarm.name.as_str());
         format!("{name} {}", self.local.date_time())
     }
+
+    /// Locale-aware sibling of [`Self::label`]. `label` itself is left
+    /// untouched because `src/main.rs`'s serial diagnostics logging depends
+    /// on its English output staying stable.
+    #[must_use]
+    pub fn label_i18n(&self, alarms: &[AlarmDefinition], locale: Locale) -> String {
+        match locale {
+            Locale::English => self.label(alarms),
+            Locale::Italian => {
+                if self.snooze {
+                    return format!("POSTICIPO {}", self.local.date_time());
+                }
+                let name = alarms
+                    .get(self.alarm_index)
+                    .map_or("sveglia", |alarm| alarm.name.as_str());
+                format!("{name} {}", self.local.date_time())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,6 +172,23 @@ impl ActiveAlarm {
             "{prefix}: {} {:02}:{:02}",
             self.name, self.local.hour, self.local.minute
         )
+    }
+
+    /// Locale-aware sibling of [`Self::label`]. `label` itself is left
+    /// untouched because `src/main.rs`'s serial diagnostics logging depends
+    /// on its English output staying stable.
+    #[must_use]
+    pub fn label_i18n(&self, locale: Locale) -> String {
+        match locale {
+            Locale::English => self.label(),
+            Locale::Italian => {
+                let prefix = if self.snoozed { "POSTICIPO" } else { "SVEGLIA" };
+                format!(
+                    "{prefix}: {} {:02}:{:02}",
+                    self.name, self.local.hour, self.local.minute
+                )
+            }
+        }
     }
 }
 
@@ -218,6 +295,20 @@ impl AlarmSnapshot {
             || "No enabled alarms".into(),
             |next| next.label(&self.alarms),
         )
+    }
+
+    /// Locale-aware sibling of [`Self::next_label`]. `next_label` itself is
+    /// left untouched because `src/main.rs`'s serial diagnostics logging
+    /// depends on its English output staying stable.
+    #[must_use]
+    pub fn next_label_i18n(&self, locale: Locale) -> String {
+        match locale {
+            Locale::English => self.next_label(),
+            Locale::Italian => self.next.as_ref().map_or_else(
+                || "Nessuna sveglia attiva".into(),
+                |next| next.label_i18n(&self.alarms, locale),
+            ),
+        }
     }
 
     #[must_use]
@@ -824,6 +915,34 @@ pub fn weekday_mask_label(mask: u8) -> String {
         .filter_map(|(index, name)| (mask & (1 << index) != 0).then_some(*name))
         .collect::<Vec<_>>()
         .join("|")
+}
+
+/// Locale-aware sibling of [`weekday_mask_label`]. `weekday_mask_label`
+/// itself is left untouched because `src/main.rs`'s serial diagnostics
+/// logging depends on its English output staying stable.
+#[must_use]
+pub fn weekday_mask_label_i18n(mask: u8, locale: Locale) -> String {
+    match locale {
+        Locale::English => weekday_mask_label(mask),
+        Locale::Italian => {
+            if mask == EVERY_DAY {
+                return "OGNI GIORNO".into();
+            }
+            if mask == WEEKDAYS {
+                return "FERIALI".into();
+            }
+            if mask == WEEKENDS {
+                return "WEEKEND".into();
+            }
+            let names = ["DOM", "LUN", "MAR", "MER", "GIO", "VEN", "SAB"];
+            names
+                .iter()
+                .enumerate()
+                .filter_map(|(index, name)| (mask & (1 << index) != 0).then_some(*name))
+                .collect::<Vec<_>>()
+                .join("|")
+        }
+    }
 }
 
 fn same_minute(left: RtcDateTime, right: RtcDateTime) -> bool {

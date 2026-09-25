@@ -10,18 +10,21 @@ use embedded_graphics::{
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
         typography::Text,
         widgets::{footer::draw_footer, header::draw_header},
     },
     dictionary::{DictionaryUiState, DICTIONARY_KEY_ROWS, DICTIONARY_SHARD_MAX_BYTES},
     orientation::OrientedFrameBuffer,
+    regional::Locale,
 };
 
 pub fn render_dictionary(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
     let dictionary = &state.dictionary;
     let body = state.display.body_style();
     let heading = state.display.heading_style();
@@ -34,14 +37,14 @@ pub fn render_dictionary(
         dictionary.query.clone()
     };
     let mode = if dictionary.wildcard {
-        "PREFIX"
+        t(locale, "PREFIX", "PREFISSO")
     } else {
-        "EXACT"
+        t(locale, "EXACT", "ESATTA")
     };
 
-    draw_header(display, state, "DICTIONARY")?;
+    draw_header(display, state, t(locale, "DICTIONARY", "DIZIONARIO"))?;
 
-    Text::new("Search", Point::new(22, 112), heading).draw(display)?;
+    Text::new(t(locale, "Search", "Cerca"), Point::new(22, 112), heading).draw(display)?;
     Rectangle::new(Point::new(22, 130), Size::new(436, 52))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
@@ -52,7 +55,11 @@ pub fn render_dictionary(
         body,
     )
     .draw(display)?;
-    Text::new(&format!("LOOKUP {mode}"), Point::new(350, 212), detail).draw(display)?;
+    let lookup_label = match locale {
+        Locale::English => format!("LOOKUP {mode}"),
+        Locale::Italian => format!("RICERCA {mode}"),
+    };
+    Text::new(&lookup_label, Point::new(350, 212), detail).draw(display)?;
 
     Rectangle::new(Point::new(22, 232), Size::new(436, 190))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
@@ -64,24 +71,40 @@ pub fn render_dictionary(
             Text::new(line, Point::new(38, 306 + index as i32 * 24), detail).draw(display)?;
         }
     } else {
-        Text::new("Offline native lookup", Point::new(38, 276), heading).draw(display)?;
-        Text::new("Reuses /RUSTMIX/APPS/DICT", Point::new(38, 316), body).draw(display)?;
         Text::new(
-            &format!(
-                "Bounded shard read: {} KiB",
-                DICTIONARY_SHARD_MAX_BYTES / 1024
+            t(locale, "Offline native lookup", "Ricerca nativa offline"),
+            Point::new(38, 276),
+            heading,
+        )
+        .draw(display)?;
+        Text::new(
+            t(
+                locale,
+                "Reuses /RUSTMIX/APPS/DICT",
+                "Riutilizza /RUSTMIX/APPS/DICT",
             ),
-            Point::new(38, 356),
+            Point::new(38, 316),
             body,
         )
         .draw(display)?;
+        let shard_note = match locale {
+            Locale::English => format!(
+                "Bounded shard read: {} KiB",
+                DICTIONARY_SHARD_MAX_BYTES / 1024
+            ),
+            Locale::Italian => format!(
+                "Lettura shard limitata: {} KiB",
+                DICTIONARY_SHARD_MAX_BYTES / 1024
+            ),
+        };
+        Text::new(&shard_note, Point::new(38, 356), body).draw(display)?;
     }
 
     draw_keyboard(display, dictionary, body, heading)?;
     draw_footer(
         display,
-        state.display,
-        "UP/DOWN MOVE  HOLD H/V  SELECT  BOOT BACK",
+        state,
+        t(locale, "HOLD H/V  SELECT", "TIENI H/V  SELECT"),
     )?;
     Ok(())
 }

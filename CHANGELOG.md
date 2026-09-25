@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — PMIC Power-Off Shutdown
+
+- Replace the Reader's two smallest Book Font Size options (`Small`, `Medium`) with two new larger tiers above the old `XLarge` ceiling; the size picker now reads `Little` / `Medium` / `Large` / `XLarge` on screen (internally still the `Large` / `XLarge` / `XXLarge` / `XXXLarge` variants and persisted markers, to keep old preference files loading correctly), with the internal `XLarge` tier (on-screen "Medium") as the new default. Adds matching generated bitmap strikes (Atkinson Hyperlegible Next Medium, DejaVu Serif, Literata Medium) and recalibrated `lines_per_page` pagination for both new sizes. Saved preference files from older firmware that still say `small` or `medium` load as the smallest tier instead of failing to parse.
+- Replace MCU deep sleep with a real AXP2101 PMIC software power-off as the primary Power short-press shutdown path; real MCU deep sleep is now the automatic fallback if the PMIC power-off cannot be armed, and the pre-existing software-only sleep loop remains the last-resort fallback.
+- Add `Axp2101::power_off`, `write_shutdown_marker`, and `take_shutdown_marker`, using an AXP2101 scratch register to flag a firmware-requested shutdown so the next boot can tell a PMIC Power-key wake apart from an ordinary power-on/reset.
+- Add `BootCause::PmicPowerKeyOn` and `BootCause::is_sleep_resume()`; Reader auto-resume and other sleep-wake boot behavior now trigger identically for a PMIC wake and a real MCU deep-sleep GPIO wake.
+- Add a post-boot guard that suppresses residual Power-key events in the first moments after boot, so the same press that turns the board back on can never immediately shut it back off.
+- Finish the Power-key short-press/long-press swap (short press now shuts down, long press opens the display-maintenance menu) across code comments, logs, `scripts/validate_source_contract.sh`, and the documentation set below -- the runtime behavior had already changed; several docs and one validation assertion had not caught up.
+- Update `README.md`, `docs/USER_GUIDE.md`, `docs/BOARD_CONTRACT.md`, `docs/KNOWN_ISSUES.md`, and `docs/PHYSICAL_SMOKE_TEST.md` for the new shutdown path.
+
 ## v1.0.0-r3 — Screenshot User Guide and Architecture Documentation
 
 - Add `screenshots/` with the physically verified UI screenshot set.

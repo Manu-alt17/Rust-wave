@@ -81,23 +81,31 @@ impl TimeZoneProfile {
 
     #[must_use]
     pub fn offset_minutes_for_utc(self, utc: RtcDateTime) -> i16 {
-        match self {
-            Self::AmericaNewYork if is_new_york_dst(utc) => -4 * 60,
-            Self::AmericaNewYork => -5 * 60,
-            Self::Utc => 0,
-            Self::EuropeRome if is_eu_dst(utc) => 2 * 60,
-            Self::EuropeRome => 60,
-        }
+        self.abbreviation_and_offset_for_utc(utc).1
     }
 
     #[must_use]
     pub fn abbreviation_for_utc(self, utc: RtcDateTime) -> &'static str {
+        self.abbreviation_and_offset_for_utc(utc).0
+    }
+
+    /// Both display pieces from a single DST computation -- used wherever a
+    /// caller needs abbreviation and offset together (e.g.
+    /// [`RegionalPreferences::timezone_label_for_rtc`]) so `is_new_york_dst`/
+    /// `is_eu_dst` isn't evaluated twice for the same instant.
+    #[must_use]
+    fn abbreviation_and_offset_for_utc(self, utc: RtcDateTime) -> (&'static str, i16) {
+        let dst = match self {
+            Self::AmericaNewYork => is_new_york_dst(utc),
+            Self::EuropeRome => is_eu_dst(utc),
+            Self::Utc => false,
+        };
         match self {
-            Self::AmericaNewYork if is_new_york_dst(utc) => "EDT",
-            Self::AmericaNewYork => "EST",
-            Self::Utc => "UTC",
-            Self::EuropeRome if is_eu_dst(utc) => "CEST",
-            Self::EuropeRome => "CET",
+            Self::AmericaNewYork if dst => ("EDT", -4 * 60),
+            Self::AmericaNewYork => ("EST", -5 * 60),
+            Self::Utc => ("UTC", 0),
+            Self::EuropeRome if dst => ("CEST", 2 * 60),
+            Self::EuropeRome => ("CET", 60),
         }
     }
 
@@ -141,12 +149,56 @@ impl TimeZoneProfile {
     }
 }
 
+/// UI display language.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Locale {
+    #[default]
+    English,
+    Italian,
+}
+
+impl Locale {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "en" => Ok(Self::English),
+            "it" => Ok(Self::Italian),
+            _ => bail!("unsupported locale {value:?}"),
+        }
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Italian => "it",
+        }
+    }
+
+    /// User-facing name of this language, shown in its own language.
+    #[must_use]
+    pub const fn display_label(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::Italian => "Italiano",
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::English => Self::Italian,
+            Self::Italian => Self::English,
+        }
+    }
+}
+
 /// Regional presentation settings owned by UI state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegionalPreferences {
     pub rtc_storage_utc_offset_minutes: i16,
     pub timezone: TimeZoneProfile,
     pub temperature_unit: TemperatureUnit,
+    pub locale: Locale,
 }
 
 impl Default for RegionalPreferences {
@@ -155,6 +207,7 @@ impl Default for RegionalPreferences {
             rtc_storage_utc_offset_minutes: SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES,
             timezone: TimeZoneProfile::default(),
             temperature_unit: TemperatureUnit::default(),
+            locale: Locale::default(),
         }
     }
 }
@@ -206,11 +259,8 @@ impl RegionalPreferences {
     pub fn timezone_label_for_rtc(self, rtc: Option<RtcDateTime>) -> String {
         if let Some(rtc) = rtc {
             let utc = self.rtc_to_utc(rtc);
-            return format!(
-                "{} {}",
-                self.timezone.abbreviation_for_utc(utc),
-                format_utc_offset(self.timezone.offset_minutes_for_utc(utc))
-            );
+            let (abbreviation, offset_minutes) = self.timezone.abbreviation_and_offset_for_utc(utc);
+            return format!("{abbreviation} {}", format_utc_offset(offset_minutes));
         }
         match self.timezone {
             TimeZoneProfile::AmericaNewYork => format!(
@@ -235,34 +285,67 @@ impl RegionalPreferences {
     }
 }
 
-/// Load a timezone selection previously saved by [`save_timezone_name`].
-/// Independent of `WIFI.TXT`/`NetworkConfig`: this is the durable home for a
-/// timezone chosen on-device, regardless of whether Wi-Fi has ever been
-/// configured.
-pub fn load_timezone_name(path: impl AsRef<Path>) -> Result<String> {
-    let path = path.as_ref();
-    let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let value = contents
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("timezone="))
-        .ok_or_else(|| anyhow::anyhow!("missing timezone key in {}", path.display()))?
-        .trim();
-    TimeZoneProfile::parse(value)
-        .with_context(|| format!("invalid timezone in {}", path.display()))?;
-    Ok(value.to_string())
-}
-
-/// Persist a timezone selection to `path`, creating the parent directory if
-/// needed. Called every time the Clock screen's "Set date & time" editor
-/// commits a timezone, so the choice survives the next boot on its own,
-/// without requiring `WIFI.TXT` to already exist.
-pub fn save_timezone_name(path: impl AsRef<Path>, timezone: &str) -> Result<()> {
-    let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+impl RegionalPreferences {
+    /// Parse the `key=value` lines written by [`Self::serialized`]. Both
+    /// `timezone` and `locale` are optional in the source text and default
+    /// to [`TimeZoneProfile::default`]/[`Locale::default`] when absent, so a
+    /// config file written before `locale` existed still loads cleanly.
+    pub fn parse(text: &str) -> Result<Self> {
+        let mut preferences = Self::default();
+        for raw_line in text.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let (key, value) = line
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("malformed line {line:?}"))?;
+            match key.trim() {
+                "timezone" => {
+                    preferences.timezone = TimeZoneProfile::parse(value.trim())
+                        .context("invalid timezone value")?;
+                }
+                "locale" => {
+                    preferences.locale =
+                        Locale::parse(value.trim()).context("invalid locale value")?;
+                }
+                other => bail!("unsupported regional config key {other:?}"),
+            }
+        }
+        Ok(preferences)
     }
-    fs::write(path, format!("timezone={timezone}\n"))
-        .with_context(|| format!("write {}", path.display()))
+
+    /// Load previously saved regional preferences, independent of
+    /// `WIFI.TXT`/`NetworkConfig` — this is the durable home for choices made
+    /// on-device, regardless of whether Wi-Fi has ever been configured.
+    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let contents =
+            fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        Self::parse(&contents).with_context(|| format!("parse {}", path.display()))
+    }
+
+    /// Render the full set of regional preferences as `key=value` lines.
+    #[must_use]
+    pub fn serialized(self) -> String {
+        format!(
+            "timezone={}\nlocale={}\n",
+            self.timezone.name(),
+            self.locale.name()
+        )
+    }
+
+    /// Persist every regional preference to `path` in one write, creating the
+    /// parent directory if needed. Writing the whole struct every time (never
+    /// a single key) is what keeps this safe against clobbering: there is no
+    /// per-field writer left that could drop a sibling key.
+    pub fn save_to_path(self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+        }
+        fs::write(path, self.serialized()).with_context(|| format!("write {}", path.display()))
+    }
 }
 
 /// Render an offset using the user-facing `UTC+HH:MM` form.
@@ -337,7 +420,7 @@ fn date_time_key(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8
 #[cfg(test)]
 mod tests {
     use super::{
-        format_utc_offset, RegionalPreferences, TemperatureUnit, TimeZoneProfile,
+        format_utc_offset, Locale, RegionalPreferences, TemperatureUnit, TimeZoneProfile,
         DEFAULT_DISPLAY_UTC_OFFSET_MINUTES, SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES,
     };
     use crate::rtc::RtcDateTime;
@@ -522,8 +605,6 @@ mod tests {
 
     #[test]
     fn round_trips_timezone_selection_through_its_own_config_file() {
-        use super::{load_timezone_name, save_timezone_name};
-
         let dir = std::env::temp_dir().join(format!(
             "rustmix-wave-clock-config-test-{}",
             std::process::id()
@@ -531,16 +612,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("CLOCK.TXT");
 
-        save_timezone_name(&path, "Europe/Rome").unwrap();
-        assert_eq!(load_timezone_name(&path).unwrap(), "Europe/Rome");
+        let preferences = RegionalPreferences::default()
+            .with_timezone_name("Europe/Rome")
+            .unwrap();
+        preferences.save_to_path(&path).unwrap();
+        assert_eq!(
+            RegionalPreferences::load_from_path(&path)
+                .unwrap()
+                .timezone_name(),
+            "Europe/Rome"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn rejects_unsupported_timezone_in_clock_config_file() {
-        use super::load_timezone_name;
-
         let dir = std::env::temp_dir().join(format!(
             "rustmix-wave-clock-config-invalid-test-{}",
             std::process::id()
@@ -550,7 +637,54 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "timezone=Mars/Olympus\n").unwrap();
 
-        assert!(load_timezone_name(&path).is_err());
+        assert!(RegionalPreferences::load_from_path(&path).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn round_trips_locale_selection_through_its_own_config_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "rustmix-wave-clock-config-locale-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("CLOCK.TXT");
+
+        let preferences = RegionalPreferences {
+            locale: Locale::Italian,
+            ..RegionalPreferences::default()
+        };
+        preferences.save_to_path(&path).unwrap();
+        assert_eq!(
+            RegionalPreferences::load_from_path(&path).unwrap().locale,
+            Locale::Italian
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_one_regional_field_does_not_clobber_the_other() {
+        let dir = std::env::temp_dir().join(format!(
+            "rustmix-wave-clock-config-no-clobber-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("CLOCK.TXT");
+
+        let with_timezone = RegionalPreferences::default()
+            .with_timezone_name("Europe/Rome")
+            .unwrap();
+        with_timezone.save_to_path(&path).unwrap();
+
+        let mut with_locale = RegionalPreferences::load_from_path(&path).unwrap();
+        with_locale.locale = Locale::Italian;
+        with_locale.save_to_path(&path).unwrap();
+
+        let reloaded = RegionalPreferences::load_from_path(&path).unwrap();
+        assert_eq!(reloaded.timezone_name(), "Europe/Rome");
+        assert_eq!(reloaded.locale, Locale::Italian);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

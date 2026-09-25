@@ -275,7 +275,7 @@ for module in (
 
 for marker in (
     'rustmix-wave=release-flash-workflow-safety-ready',
-    'rustmix-wave=power-key-short-menu-long-sleep-ready',
+    'rustmix-wave=power-key-short-sleep-long-menu-ready',
     'rustmix-wave=calendar-personal-event-editor-ready',
     'rustmix-wave=calendar-us-events-daily-agenda-ready',
     'rustmix-wave=offline-dictionary-x4-pack-native-foundation-ready',
@@ -284,11 +284,11 @@ for marker in (
 ):
     assert marker in main, f'runtime readiness marker missing: {marker}'
 
-# Power-key behavior: short menu, long sleep, manual global refresh, non-const helper.
+# Power-key behavior: short sleep, long menu, manual global refresh, non-const helper.
 assert 'pub fn power_key_sleep_restore_route(&self) -> ScreenRoute {' in state
 assert 'pub const fn power_key_sleep_restore_route(&self) -> ScreenRoute {' not in state
 assert 'state.open_power_key_menu();' in main
-assert 'event == PowerKeyEvent::ShortPress' in main
+assert 'event == PowerKeyEvent::LongPress' in main
 assert 'power_key_event_from_irq_status' in power
 assert 'power_key_clear_ghost' in main
 assert 'POWER_KEY_LONG_PRESS_MASK' in power

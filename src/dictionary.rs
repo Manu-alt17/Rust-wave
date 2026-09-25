@@ -6,6 +6,7 @@
 //! but renders the rotary-first UI natively in Rust.
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -312,12 +313,30 @@ pub fn lookup_dictionary_with_index(
         bail!("type a word first");
     }
 
+    // Shards already read while trying an exact match below, carried over
+    // into the prefix-search fallback so a miss doesn't re-read (and
+    // re-parse) the same shard from SD a second time. The exact-only
+    // candidate set is always a subset of the broader one used below (see
+    // `row_matches`), so every shard read here is also a candidate there.
+    let mut read_shards: HashMap<String, String> = HashMap::new();
+
     if !prefix_mode {
-        if let Some(entry) = lookup_dictionary_exact(root, rows, &query)? {
-            return Ok(DictionaryLookup {
-                matches: vec![entry],
-                prefix_mode: false,
-            });
+        for row in candidate_rows(rows, &query, false) {
+            let shard = read_bounded_shard(root, row)?;
+            if let Some((word, definition)) = extract_shard_matches(&shard, &query, false, 1)?
+                .into_iter()
+                .next()
+            {
+                return Ok(DictionaryLookup {
+                    matches: vec![DictionaryMatch {
+                        word,
+                        definition,
+                        shard: row.name.clone(),
+                    }],
+                    prefix_mode: false,
+                });
+            }
+            read_shards.insert(row.name.clone(), shard);
         }
     }
 
@@ -327,7 +346,10 @@ pub fn lookup_dictionary_with_index(
     }
     let mut matches = Vec::new();
     for row in &candidates {
-        let shard = read_bounded_shard(root, row)?;
+        let shard = match read_shards.remove(&row.name) {
+            Some(cached) => cached,
+            None => read_bounded_shard(root, row)?,
+        };
         for (word, definition) in
             extract_shard_matches(&shard, &query, true, DICTIONARY_MATCH_LIMIT - matches.len())?
         {

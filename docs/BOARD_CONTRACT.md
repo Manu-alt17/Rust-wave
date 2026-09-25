@@ -32,13 +32,39 @@ Power key               AXP2101 PEK short / long interrupts
 Power-key product behavior:
 
 ```text
-Short Power press   Open display-maintenance menu
-Long Power press    Enter random sleep-image mode, then real MCU deep sleep
-Wake Power press    Restore retained route after quiet guard (software-only fallback path)
-Wake rotary SELECT  GPIO5 ext1 wakeup from real MCU deep sleep (reboots the board)
+Short Power press   Enter random sleep-image mode, then power off via the
+                     AXP2101 PMIC (real MCU deep sleep is the automatic
+                     fallback if the PMIC power-off cannot be armed)
+Long Power press    Open display-maintenance menu
+Wake Power press    Turn the board back on (PMIC power-key wake) or restore
+                     the retained route after the quiet guard (software-only
+                     fallback path)
+Wake rotary SELECT  GPIO5 ext1 wakeup from the real MCU deep-sleep fallback
+                     (reboots the board)
 ```
 
-## MCU deep sleep
+## PMIC power-off
+
+```text
+Mechanism       AXP2101 COMMON_CONFIG (register 0x10) soft power-off bit;
+                cuts every PMIC rail immediately, no MCU involvement
+Boot marker     One PMIC scratch register (DATA_BUFFER1, 0x04) is written
+                right before power-off and read + cleared right after boot,
+                so a Power-key wake from PMIC power-off can be told apart
+                from an ordinary power-on/reset even though the ESP32-S3's
+                own wakeup-cause register cannot see the difference
+State on wake   Same as a real MCU deep-sleep wake: full reboot, RAM lost,
+                classified as `BootCause::PmicPowerKeyOn` -- product-facing
+                behavior (Reader auto-resume, route restore) is identical to
+                `BootCause::DeepSleepGpioWake` via `BootCause::is_sleep_resume`
+Fallback        If the shutdown marker cannot be written, or the PMIC
+                power-off call returns instead of cutting power, the board
+                falls through to the existing MCU deep-sleep path below
+```
+
+See `src/power.rs` (`Axp2101::power_off`, `write_shutdown_marker`, `take_shutdown_marker`).
+
+## MCU deep sleep (fallback)
 
 ```text
 Wakeup source   ext1 on GPIO5 (rotary SELECT), active low
