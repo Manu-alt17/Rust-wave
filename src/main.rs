@@ -5391,6 +5391,44 @@ mod firmware {
         ForceGlobalSafetyFallback,
     }
 
+    /// Upper bound on finishing a warm-cache book open before the first
+    /// refresh of the Reader route. Measured opens take ~100 ms.
+    const FAST_READER_OPEN_BUDGET: Duration = Duration::from_millis(400);
+
+    /// Opening a book routes to `ReaderLoading` first. When the book's
+    /// `.EPX` cache is warm the open itself finishes in ~100 ms, far less
+    /// than the ~530 ms partial refresh the loading screen costs, and that
+    /// screen was immediately replaced by a second refresh showing the page.
+    /// Drive such an open to completion here so the one refresh draws the
+    /// page directly. Cold opens (no cache, or TXT) keep the loading screen:
+    /// they can take seconds and need the visible feedback. Stops on the
+    /// first tick that is not a plain stage change, and between ticks once
+    /// the budget is spent; an unfinished open simply carries on behind the
+    /// loading screen as before.
+    fn settle_fast_reader_open(state: &mut AppState) {
+        if state.active_route() != ScreenRoute::ReaderLoading
+            || !state.reader.pending_open_has_warm_cache()
+        {
+            return;
+        }
+        let mut span = boot_profile::span("reader-fast-open");
+        let deadline = Instant::now() + FAST_READER_OPEN_BUDGET;
+        let mut outcome = ReaderTickOutcome::None;
+        while state.reader.loading.is_some() && Instant::now() < deadline {
+            outcome = state.tick_reader();
+            if outcome != ReaderTickOutcome::LoadingStageChanged {
+                break;
+            }
+        }
+        span.detail(format_args!("{outcome:?}"));
+        if outcome == ReaderTickOutcome::FirstPageReady {
+            info!(
+                "rustmix-wave=reader-first-page-ready route={} policy=fast-open-no-loading-screen",
+                state.active_route().marker()
+            );
+        }
+    }
+
     fn refresh_screen<SPI, DC, RST, CS, BUSY, DELAY, POWER>(
         panel: &mut Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER>,
         frame: &mut FrameBuffer,
@@ -5412,6 +5450,7 @@ mod firmware {
         DELAY: DelayNs,
         POWER: waveshare_epd397_rust_app::power::PanelPower,
     {
+        settle_fast_reader_open(state);
         // A refresh request while the panel sleeps (rail off after the idle
         // timeout) cannot succeed: the controller is unpowered, BUSY reads
         // high through its pull-up, and `wait_until_idle` times out after

@@ -2812,6 +2812,19 @@ impl ReaderUiState {
         self.loading.as_ref().map(|loading| loading.stage)
     }
 
+    /// Whether the pending open is an EPUB whose flattened-document cache
+    /// (`.EPX`) is already on the card. Such an open skips the ZIP/DEFLATE
+    /// parse entirely and finishes in about 100 ms, so it can complete
+    /// before anything is drawn instead of showing a loading screen first.
+    /// Anything else (TXT, or an EPUB never opened before) may take seconds.
+    #[must_use]
+    pub fn pending_open_has_warm_cache(&self) -> bool {
+        self.loading.as_ref().is_some_and(|loading| {
+            loading.book.format == BookFormat::Epub
+                && self.epub_document_cache_path_for(&loading.book).exists()
+        })
+    }
+
     pub fn tick(&mut self) -> ReaderTickOutcome {
         if let Some(mut loading) = self.loading.take() {
             let outcome = loop {
@@ -7830,6 +7843,44 @@ mod tests {
             ),
         ]);
         fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn warm_cache_is_reported_only_for_epubs_with_an_epx_on_disk() {
+        let root = temp_dir("warm-open-books");
+        let state = temp_dir("warm-open-state");
+        write_sample_epub(&root.join("Sample.epub"));
+        let open_reader = || {
+            let mut reader = ReaderUiState::with_roots(
+                root.to_string_lossy().into_owned(),
+                state.to_string_lossy().into_owned(),
+            );
+            reader.refresh_library();
+            reader.library_selected = 0;
+            assert!(reader.apply_library_button(ButtonEvent::Select));
+            reader
+        };
+
+        let mut reader = open_reader();
+        assert!(!reader.pending_open_has_warm_cache(), "first open has no .EPX yet");
+        while reader.tick() != ReaderTickOutcome::FirstPageReady {}
+        assert!(!reader.pending_open_has_warm_cache(), "nothing pending once open");
+        reader.tick(); // deferred .EPX write
+
+        let reader = open_reader();
+        assert!(reader.pending_open_has_warm_cache());
+
+        let txt_root = temp_dir("warm-open-txt-books");
+        let txt_state = temp_dir("warm-open-txt-state");
+        write_sequential_txt_books(&txt_root, &["Book.txt"]);
+        let mut txt_reader = ReaderUiState::with_roots(
+            txt_root.to_string_lossy().into_owned(),
+            txt_state.to_string_lossy().into_owned(),
+        );
+        txt_reader.refresh_library();
+        let book = txt_reader.books[0].clone();
+        txt_reader.request_open_book(book, None);
+        assert!(!txt_reader.pending_open_has_warm_cache());
     }
 
     #[test]
