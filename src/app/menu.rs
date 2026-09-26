@@ -3,6 +3,10 @@
 //! Category rows contain applications only. Hierarchical navigation uses the
 //! dedicated GPIO0 Boot-button long press instead of synthetic Back rows.
 
+use std::{fs, path::Path};
+
+use anyhow::{Context, Result};
+
 use crate::regional::Locale;
 
 use super::router::ScreenRoute;
@@ -10,13 +14,15 @@ use super::router::ScreenRoute;
 pub const MAIN_CATEGORY_COUNT: usize = 7;
 pub const CATEGORY_COUNT: usize = 3;
 pub const CATEGORY_PAGE_SIZE: usize = 6;
-pub const SETTINGS_ENTRY_COUNT: usize = 10;
-/// Leading entries of [`SETTINGS_ENTRIES`] shown under the "Most used" /
-/// "Più usate" heading on the Settings grid (see
-/// `screens::category::render_tile_grid`), ahead of the "Other" /
-/// "Altro" section holding the rest. Picked from what the user told us they
-/// reach for most: Network (Wi-Fi status) and Software Update.
-pub const SETTINGS_PRIMARY_COUNT: usize = 2;
+pub const TOOLS_ENTRY_COUNT: usize = 8;
+pub const SETTINGS_ENTRY_COUNT: usize = 7;
+/// Maximum number of tiles shown under the "Most used" / "Più usate"
+/// heading of the Tools and Settings grids (see
+/// `screens::category::render_tile_grid`). The section holds the entries
+/// opened most recently, newest first — see [`CategoryUsage`].
+pub const MOST_USED_MAX: usize = 3;
+/// Persisted "Most used" history for the Tools and Settings grids.
+pub const MENU_USAGE_CONFIG_PATH: &str = "/sdcard/RUSTMIX/MENU.TXT";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MenuEntry {
@@ -95,10 +101,10 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
     MenuEntry {
         label_en: "Tools",
         label_it: "Strumenti",
-        subtitle_en: "Files, dictionary and conversion",
-        subtitle_it: "File, dizionario e conversioni",
-        badge_en: "3",
-        badge_it: "3",
+        subtitle_en: "Files, dictionary, weather and sensors",
+        subtitle_it: "File, dizionario, meteo e sensori",
+        badge_en: "8",
+        badge_it: "8",
         route: ScreenRoute::Tools,
     },
     MenuEntry {
@@ -106,8 +112,8 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         label_it: "Opzioni",
         subtitle_en: "Device services and display",
         subtitle_it: "Servizi del dispositivo e schermo",
-        badge_en: "9",
-        badge_it: "9",
+        badge_en: "7",
+        badge_it: "7",
         route: ScreenRoute::Settings,
     },
     // Kept last rather than first so every existing `home_selected` index
@@ -150,7 +156,7 @@ const GAMES_ENTRIES: [MenuEntry; 2] = [
     },
 ];
 
-const TOOLS_ENTRIES: [MenuEntry; 5] = [
+const TOOLS_ENTRIES: [MenuEntry; TOOLS_ENTRY_COUNT] = [
     MenuEntry {
         label_en: "File Browser",
         label_it: "Esplora file",
@@ -198,11 +204,36 @@ const TOOLS_ENTRIES: [MenuEntry; 5] = [
         badge_it: "",
         route: ScreenRoute::VoiceNotes,
     },
+    MenuEntry {
+        label_en: "Environment",
+        label_it: "Ambiente",
+        subtitle_en: "SHTC3 temperature and humidity",
+        subtitle_it: "Temperatura e umidità SHTC3",
+        badge_en: "",
+        badge_it: "",
+        route: ScreenRoute::Environment,
+    },
+    MenuEntry {
+        label_en: "Motion",
+        label_it: "Movimento",
+        subtitle_en: "QMI8658 accelerometer and gyroscope",
+        subtitle_it: "Accelerometro e giroscopio QMI8658",
+        badge_en: "",
+        badge_it: "",
+        route: ScreenRoute::Motion,
+    },
+    MenuEntry {
+        label_en: "Weather",
+        label_it: "Meteo",
+        subtitle_en: "Open-Meteo conditions and forecast",
+        subtitle_it: "Condizioni e previsioni Open-Meteo",
+        badge_en: "",
+        badge_it: "",
+        route: ScreenRoute::Weather,
+    },
 ];
 
 const SETTINGS_ENTRIES: [MenuEntry; SETTINGS_ENTRY_COUNT] = [
-    // First `SETTINGS_PRIMARY_COUNT` entries are the "Most used" / "Più
-    // usate" section — keep that many in sync if this leading group changes.
     MenuEntry {
         label_en: "Network",
         label_it: "Rete",
@@ -271,33 +302,6 @@ const SETTINGS_ENTRIES: [MenuEntry; SETTINGS_ENTRY_COUNT] = [
         badge_it: "",
         route: ScreenRoute::DeviceInfo,
     },
-    MenuEntry {
-        label_en: "Environment",
-        label_it: "Ambiente",
-        subtitle_en: "SHTC3 temperature and humidity",
-        subtitle_it: "Temperatura e umidità SHTC3",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Environment,
-    },
-    MenuEntry {
-        label_en: "Motion",
-        label_it: "Movimento",
-        subtitle_en: "QMI8658 accelerometer and gyroscope",
-        subtitle_it: "Accelerometro e giroscopio QMI8658",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Motion,
-    },
-    MenuEntry {
-        label_en: "Weather",
-        label_it: "Meteo",
-        subtitle_en: "Open-Meteo conditions and forecast",
-        subtitle_it: "Condizioni e previsioni Open-Meteo",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Weather,
-    },
 ];
 
 #[must_use]
@@ -325,16 +329,174 @@ pub const fn category_index(route: ScreenRoute) -> Option<usize> {
     }
 }
 
+/// Recently-opened history behind the "Most used" / "Più usate" section of
+/// the Tools and Settings grids: up to [`MOST_USED_MAX`] routes per category,
+/// newest first. Every other entry keeps its static order below the
+/// "Other" / "Altro" heading. Persisted to [`MENU_USAGE_CONFIG_PATH`] by
+/// entry `label_en`, so reordering or adding entries in the static tables
+/// above never remaps a saved history onto the wrong tile.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CategoryUsage {
+    tools: Vec<ScreenRoute>,
+    settings: Vec<ScreenRoute>,
+}
+
+impl Default for CategoryUsage {
+    fn default() -> Self {
+        Self {
+            tools: Vec::new(),
+            // Seeded with what Settings used to pin permanently (Wi-Fi status
+            // and Software Update) until the user's own history replaces it.
+            settings: vec![ScreenRoute::Network, ScreenRoute::OtaUpdate],
+        }
+    }
+}
+
+impl CategoryUsage {
+    fn recent(&self, category: ScreenRoute) -> &[ScreenRoute] {
+        match category {
+            ScreenRoute::Tools => &self.tools,
+            ScreenRoute::Settings => &self.settings,
+            _ => &[],
+        }
+    }
+
+    fn recent_mut(&mut self, category: ScreenRoute) -> Option<&mut Vec<ScreenRoute>> {
+        match category {
+            ScreenRoute::Tools => Some(&mut self.tools),
+            ScreenRoute::Settings => Some(&mut self.settings),
+            _ => None,
+        }
+    }
+
+    /// Moves `target` to the front of `category`'s history, dropping the
+    /// oldest entry past [`MOST_USED_MAX`]. Returns whether anything changed
+    /// (so the caller only rewrites the SD file when it has to).
+    pub fn record(&mut self, category: ScreenRoute, target: ScreenRoute) -> bool {
+        if !category_entries(category)
+            .iter()
+            .any(|entry| entry.route == target)
+        {
+            return false;
+        }
+        let Some(recent) = self.recent_mut(category) else {
+            return false;
+        };
+        if recent.first() == Some(&target) {
+            return false;
+        }
+        recent.retain(|route| *route != target);
+        recent.insert(0, target);
+        recent.truncate(MOST_USED_MAX);
+        true
+    }
+
+    /// Size of `category`'s "Most used" section; `0` means the grid draws a
+    /// single uncaptioned run of tiles (e.g. Tools before anything was ever
+    /// opened, or Games, which has no history at all).
+    #[must_use]
+    pub fn most_used_count(&self, category: ScreenRoute) -> usize {
+        self.recent(category).len()
+    }
+
+    /// `category`'s entries in display order: the "Most used" history
+    /// first, then every remaining entry in its static order. Selection
+    /// indices on the Tools and Settings grids index into this list.
+    #[must_use]
+    pub fn ordered_entries(&self, category: ScreenRoute) -> Vec<MenuEntry> {
+        let entries = category_entries(category);
+        let recent = self.recent(category);
+        let mut ordered: Vec<MenuEntry> = recent
+            .iter()
+            .filter_map(|route| entries.iter().copied().find(|entry| entry.route == *route))
+            .collect();
+        ordered.extend(
+            entries
+                .iter()
+                .copied()
+                .filter(|entry| !recent.contains(&entry.route)),
+        );
+        ordered
+    }
+
+    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("read menu usage {}", path.display()))?;
+        Ok(Self::parse(&text))
+    }
+
+    /// Lenient on purpose: this is a convenience history, so unknown keys or
+    /// labels (say, an entry renamed by a firmware update) are skipped
+    /// rather than failing the whole file.
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        let mut usage = Self::default();
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let category = match key.trim() {
+                "tools" => ScreenRoute::Tools,
+                "settings" => ScreenRoute::Settings,
+                _ => continue,
+            };
+            let entries = category_entries(category);
+            let mut routes: Vec<ScreenRoute> = Vec::new();
+            for label in value.split(',').map(str::trim) {
+                if let Some(entry) = entries.iter().find(|entry| entry.label_en == label) {
+                    if !routes.contains(&entry.route) && routes.len() < MOST_USED_MAX {
+                        routes.push(entry.route);
+                    }
+                }
+            }
+            if let Some(recent) = usage.recent_mut(category) {
+                *recent = routes;
+            }
+        }
+        usage
+    }
+
+    pub fn save_to_path(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        fs::write(path, self.serialized())
+            .with_context(|| format!("write menu usage {}", path.display()))
+    }
+
+    #[must_use]
+    pub fn serialized(&self) -> String {
+        let labels = |category: ScreenRoute| {
+            self.ordered_entries(category)
+                .iter()
+                .take(self.most_used_count(category))
+                .map(|entry| entry.label_en)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "# RustMix Wave most-used menu entries, newest first\ntools={}\nsettings={}\n",
+            labels(ScreenRoute::Tools),
+            labels(ScreenRoute::Settings)
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{category_entries, home_entries, MAIN_CATEGORY_COUNT, SETTINGS_ENTRY_COUNT};
+    use super::{
+        category_entries, home_entries, CategoryUsage, MAIN_CATEGORY_COUNT, MOST_USED_MAX,
+        SETTINGS_ENTRY_COUNT, TOOLS_ENTRY_COUNT,
+    };
     use crate::{app::router::ScreenRoute, regional::Locale};
 
     #[test]
     fn exposes_requested_main_category_counts_without_synthetic_back_rows() {
         assert_eq!(home_entries().len(), MAIN_CATEGORY_COUNT);
         assert_eq!(category_entries(ScreenRoute::Games).len(), 2);
-        assert_eq!(category_entries(ScreenRoute::Tools).len(), 5);
+        assert_eq!(category_entries(ScreenRoute::Tools).len(), TOOLS_ENTRY_COUNT);
         assert_eq!(
             category_entries(ScreenRoute::Settings).len(),
             SETTINGS_ENTRY_COUNT
@@ -364,17 +526,68 @@ mod tests {
     }
 
     #[test]
-    fn settings_contains_display_and_language_before_existing_diagnostics() {
+    fn sensors_and_weather_live_in_tools_not_settings() {
         let settings = category_entries(ScreenRoute::Settings);
+        let tools = category_entries(ScreenRoute::Tools);
         assert!(settings
             .iter()
             .any(|entry| entry.route == ScreenRoute::Display));
         assert!(settings
             .iter()
             .any(|entry| entry.route == ScreenRoute::Language));
-        assert!(settings
+        for route in [
+            ScreenRoute::Environment,
+            ScreenRoute::Weather,
+            ScreenRoute::Motion,
+        ] {
+            assert!(tools.iter().any(|entry| entry.route == route));
+            assert!(settings.iter().all(|entry| entry.route != route));
+            assert_eq!(route.parent(), Some(ScreenRoute::Tools));
+        }
+    }
+
+    #[test]
+    fn most_used_follows_recently_opened_entries() {
+        let mut usage = CategoryUsage::default();
+        assert_eq!(usage.most_used_count(ScreenRoute::Tools), 0);
+        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Weather));
+        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Dictionary));
+        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Motion));
+        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Files));
+        assert_eq!(usage.most_used_count(ScreenRoute::Tools), MOST_USED_MAX);
+        // Re-opening the newest entry is a no-op; re-opening an older one
+        // moves it back to the front.
+        assert!(!usage.record(ScreenRoute::Tools, ScreenRoute::Files));
+        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Dictionary));
+        // Routes outside the category are ignored.
+        assert!(!usage.record(ScreenRoute::Tools, ScreenRoute::Network));
+
+        let ordered = usage.ordered_entries(ScreenRoute::Tools);
+        assert_eq!(ordered.len(), TOOLS_ENTRY_COUNT);
+        let head: Vec<ScreenRoute> = ordered.iter().take(3).map(|entry| entry.route).collect();
+        assert_eq!(
+            head,
+            [ScreenRoute::Dictionary, ScreenRoute::Files, ScreenRoute::Motion]
+        );
+        assert!(ordered
             .iter()
             .any(|entry| entry.route == ScreenRoute::Weather));
+    }
+
+    #[test]
+    fn menu_usage_round_trips_and_skips_unknown_labels() {
+        let mut usage = CategoryUsage::default();
+        usage.record(ScreenRoute::Tools, ScreenRoute::Environment);
+        usage.record(ScreenRoute::Settings, ScreenRoute::Audio);
+        assert_eq!(CategoryUsage::parse(&usage.serialized()), usage);
+
+        let parsed = CategoryUsage::parse("tools=Gone,Weather,Weather\nbogus=1\nsettings=\n");
+        assert_eq!(
+            parsed.ordered_entries(ScreenRoute::Tools)[0].route,
+            ScreenRoute::Weather
+        );
+        assert_eq!(parsed.most_used_count(ScreenRoute::Tools), 1);
+        assert_eq!(parsed.most_used_count(ScreenRoute::Settings), 0);
     }
 
     #[test]

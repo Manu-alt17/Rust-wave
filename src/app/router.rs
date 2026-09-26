@@ -303,7 +303,7 @@ impl ScreenRoute {
             Self::LibraryBookActions => Some(Self::Library),
             Self::LibraryBookBookmarks => Some(Self::LibraryBookActions),
             Self::ReaderBookmarks => Some(Self::ReaderOptions),
-            Self::ReaderLoading | Self::ReaderPage => Some(Self::Library),
+            Self::ReaderLoading | Self::ReaderPage => Some(Self::Home),
             Self::ReaderOptions => Some(Self::ReaderPage),
             Self::ReaderPreferences => Some(Self::ReaderOptions),
             Self::ReaderToc => Some(Self::ReaderOptions),
@@ -325,10 +325,8 @@ impl ScreenRoute {
             | Self::Language
             | Self::DeviceInfo
             | Self::OtaUpdate
-            | Self::Environment
-            | Self::Motion
-            | Self::Network
-            | Self::Weather => Some(Self::Settings),
+            | Self::Network => Some(Self::Settings),
+            Self::Environment | Self::Motion | Self::Weather => Some(Self::Tools),
             Self::AudioDetails => Some(Self::Audio),
             Self::ClockSetTime | Self::ClockDetails => Some(Self::Clock),
             Self::DeviceInfoBoard => Some(Self::DeviceInfo),

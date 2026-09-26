@@ -2069,7 +2069,9 @@ impl ReaderUiState {
     /// Load persisted state without making startup dependent on removable
     /// storage. Corrupt records are ignored and reported as a warning.
     pub fn load_persistent_state(&mut self) -> ReaderPersistenceReport {
+        let _span = crate::boot_profile::span("reader-load-persistent-state");
         let mut warnings = Vec::new();
+        let file_span = crate::boot_profile::span("reader-load-prefs");
         let preferences_loaded = match load_preferences(&self.preferences_path()) {
             Ok(Some(preferences)) => {
                 self.preferences = preferences;
@@ -2081,6 +2083,8 @@ impl ReaderUiState {
                 false
             }
         };
+        file_span.end();
+        let file_span = crate::boot_profile::span("reader-load-state");
         self.resume = match load_location_record(&self.state_path()) {
             Ok(value) => value,
             Err(error) => {
@@ -2088,6 +2092,8 @@ impl ReaderUiState {
                 None
             }
         };
+        file_span.end();
+        let file_span = crate::boot_profile::span("reader-load-positions");
         self.positions = match self.load_positions_with_legacy_migration() {
             Ok(value) => value,
             Err(error) => {
@@ -2096,6 +2102,8 @@ impl ReaderUiState {
                 Vec::new()
             }
         };
+        file_span.end();
+        let file_span = crate::boot_profile::span("reader-load-recent");
         self.recent = match load_location_list(&self.recent_path(), READER_RECENT_LIMIT) {
             Ok(value) => value,
             Err(error) => {
@@ -2122,6 +2130,8 @@ impl ReaderUiState {
                 "rustmix-wave=reader-persistence status=positions-restored-from-recent count={restored}"
             );
         }
+        file_span.end();
+        let file_span = crate::boot_profile::span("reader-load-bookmarks");
         self.bookmarks = match load_location_list(&self.bookmarks_path(), READER_BOOKMARK_LIMIT) {
             Ok(value) => value,
             Err(error) => {
@@ -2130,6 +2140,7 @@ impl ReaderUiState {
                 Vec::new()
             }
         };
+        file_span.end();
         self.bookmarks_selected = self
             .bookmarks_selected
             .min(self.bookmarks.len().saturating_sub(1));
@@ -2293,6 +2304,10 @@ impl ReaderUiState {
             return true;
         }
         let book = location.as_book();
+        let mut span = crate::boot_profile::span("reader-background-warmup");
+        if crate::boot_profile::is_active() {
+            span.detail(format_args!("{:?} {}", location.format, book.path));
+        }
         let session = match location.format {
             BookFormat::Text => detect_txt_encoding(&book.path)
                 .ok()
@@ -2302,20 +2317,20 @@ impl ReaderUiState {
                 // sub-steps of a cache-hit reopen separately, so the delta
                 // between consecutive lines attributes fragmentation to
                 // either the document cache (title/TOC/chapter parsing,
-                // including `read_epub_cache_header`'s 256 KiB scratch
-                // buffer) or to `open_epub_session` (page-index cache load
-                // plus session construction).
-                crate::runtime_memory::log_runtime_memory("before-epub-document-cache-load");
+                // including `read_epub_cache_header`'s header buffer) or to
+                // `open_epub_session` (page-index cache load plus session
+                // construction).
+                crate::runtime_memory::debug_runtime_memory("before-epub-document-cache-load");
                 let result =
                     self.load_epub_document_cache_best_effort(&book)
                         .and_then(|document| {
-                            crate::runtime_memory::log_runtime_memory(
+                            crate::runtime_memory::debug_runtime_memory(
                                 "after-epub-document-cache-load",
                             );
                             let session = self
                                 .open_epub_session(&book, document, Some(&location), false, true)
                                 .ok();
-                            crate::runtime_memory::log_runtime_memory("after-open-epub-session");
+                            crate::runtime_memory::debug_runtime_memory("after-open-epub-session");
                             session
                         });
                 result
@@ -2802,6 +2817,10 @@ impl ReaderUiState {
             let outcome = loop {
                 let stage_before = loading.stage;
                 let stage_started_at = Instant::now();
+                let mut stage_span = crate::boot_profile::span("reader-open-stage");
+                if crate::boot_profile::is_active() {
+                    stage_span.detail(format_args!("{stage_before:?}"));
+                }
                 let outcome = match loading.stage {
                     ReaderLoadingStage::OpeningFile => {
                         loading.stage = match loading.book.format {
@@ -2922,10 +2941,22 @@ impl ReaderUiState {
                         };
                         match session {
                             Ok(session) => {
+                                let location = session.current_location();
                                 self.session = Some(session);
                                 self.last_message =
                                     Some("Saved position ready; caching continues lazily".into());
-                                self.persist_current_session_best_effort();
+                                // Reopening exactly where the saved state
+                                // already points (every resume, including the
+                                // one on a deep-sleep wake) would rewrite
+                                // STATE/POSITS/RECENT byte for byte: ~150 ms
+                                // of fsync'd atomic replaces, plus ~170 ms
+                                // more when it is the first FAT allocation
+                                // since mount, all before the first frame.
+                                if self.persisted_state_matches(&location) {
+                                    self.persist_anchor_cache_best_effort();
+                                } else {
+                                    self.persist_current_session_best_effort();
+                                }
                                 ReaderTickOutcome::FirstPageReady
                             }
                             Err(error) => {
@@ -4272,6 +4303,7 @@ impl ReaderUiState {
         let Some(location) = self.session.as_ref().map(ReaderSession::current_location) else {
             return;
         };
+        let _span = crate::boot_profile::span("reader-persist-session");
         self.resume = Some(location.clone());
         self.positions.retain(|entry| entry.path != location.path);
         self.positions.insert(0, location.clone());
@@ -4313,6 +4345,14 @@ impl ReaderUiState {
             errors.push(format!("MARKS.TXT: {error}"));
         }
         self.finish_persistence("bookmarks", errors);
+    }
+
+    /// Whether [`Self::persist_current_session_best_effort`] for `location`
+    /// would leave STATE/POSITS/RECENT exactly as they already are.
+    fn persisted_state_matches(&self, location: &ReaderLocation) -> bool {
+        self.resume.as_ref() == Some(location)
+            && self.positions.first() == Some(location)
+            && self.recent.first() == Some(location)
     }
 
     fn persist_anchor_cache_best_effort(&mut self) {
@@ -5716,32 +5756,57 @@ fn parse_epub_document_cache(
 /// generously sized) without ever reading the flattened body that follows.
 const EPUB_CACHE_HEADER_MAX_BYTES: usize = 256 * 1024;
 
+/// Read granularity for [`read_epub_cache_header`]. Real headers are a few KB,
+/// so this usually finds the marker in the first one or two reads.
+const EPUB_CACHE_HEADER_READ_CHUNK_BYTES: usize = 4 * 1024;
+
+const EPUB_CACHE_TEXT_MARKER: &[u8] = b"text_start\n";
+
 /// Read and return just the header portion of an `.EPX` cache file — from the
 /// start of the file through the end of its `text_start\n` marker line — as a
 /// `String`. Cutting exactly after that line is always a valid UTF-8 boundary
 /// (`\n` is never part of a multi-byte sequence), regardless of what non-ASCII
 /// text the title/TOC/chapter labels contain.
+///
+/// Reads in `EPUB_CACHE_HEADER_READ_CHUNK_BYTES` steps and stops at the marker.
+/// The whole flattened book follows the header in the same file, so filling
+/// the full `EPUB_CACHE_HEADER_MAX_BYTES` bound before searching (as this
+/// used to) read 256 KiB of body text off the SD card on every cached open:
+/// ~440 ms measured, on every EPUB resume, open and background warm-up, plus
+/// a 256 KiB allocation on an already fragmented heap.
 fn read_epub_cache_header(path: &Path) -> Result<String, String> {
+    let mut span = crate::boot_profile::span("epub-cache-header-read");
     let mut file = File::open(path).map_err(|error| format!("EPUB cache open failed: {error}"))?;
-    let mut buffer = vec![0_u8; EPUB_CACHE_HEADER_MAX_BYTES];
-    let mut filled = 0usize;
-    while filled < buffer.len() {
+    let mut buffer = Vec::with_capacity(EPUB_CACHE_HEADER_READ_CHUNK_BYTES);
+    let mut chunk = vec![0_u8; EPUB_CACHE_HEADER_READ_CHUNK_BYTES];
+    while buffer.len() < EPUB_CACHE_HEADER_MAX_BYTES {
+        let want = chunk
+            .len()
+            .min(EPUB_CACHE_HEADER_MAX_BYTES - buffer.len());
         let read = file
-            .read(&mut buffer[filled..])
+            .read(&mut chunk[..want])
             .map_err(|error| format!("EPUB cache read failed: {error}"))?;
         if read == 0 {
             break;
         }
-        filled += read;
+        // The marker may straddle the previous read, so rescan its tail too.
+        let search_from = buffer
+            .len()
+            .saturating_sub(EPUB_CACHE_TEXT_MARKER.len() - 1);
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(offset) = buffer[search_from..]
+            .windows(EPUB_CACHE_TEXT_MARKER.len())
+            .position(|window| window == EPUB_CACHE_TEXT_MARKER)
+        {
+            buffer.truncate(search_from + offset + EPUB_CACHE_TEXT_MARKER.len());
+            if crate::boot_profile::is_active() {
+                span.detail(format_args!("header-bytes={}", buffer.len()));
+            }
+            return String::from_utf8(buffer)
+                .map_err(|_| "EPUB cache header is not valid UTF-8".to_string());
+        }
     }
-    buffer.truncate(filled);
-    const MARKER: &[u8] = b"text_start\n";
-    let marker_at = buffer
-        .windows(MARKER.len())
-        .position(|window| window == MARKER)
-        .ok_or_else(|| "EPUB cache header exceeds bound or is missing text marker".to_string())?;
-    buffer.truncate(marker_at + MARKER.len());
-    String::from_utf8(buffer).map_err(|_| "EPUB cache header is not valid UTF-8".to_string())
+    Err("EPUB cache header exceeds bound or is missing text marker".to_string())
 }
 
 fn load_epub_document_cache(
@@ -6251,6 +6316,14 @@ fn atomic_replace_cache_text(path: &Path, text: &str) -> Result<(), String> {
 }
 
 fn atomic_replace_text_with_durability(path: &Path, text: &str, fsync: bool) -> Result<(), String> {
+    let mut span = crate::boot_profile::span("atomic-replace");
+    if crate::boot_profile::is_active() {
+        span.detail(format_args!(
+            "{} fsync={fsync} bytes={}",
+            path.file_name().and_then(|name| name.to_str()).unwrap_or("?"),
+            text.len()
+        ));
+    }
     let parent = path
         .parent()
         .ok_or_else(|| "state path has no parent".to_string())?;
@@ -6273,6 +6346,7 @@ fn atomic_replace_text_with_durability(path: &Path, text: &str, fsync: bool) -> 
         file.write_all(text.as_bytes())
             .map_err(|error| format!("write {}: {error}", temp.display()))?;
         if fsync {
+            let _fsync_span = crate::boot_profile::span("atomic-replace-fsync");
             file.sync_all()
                 .map_err(|error| format!("sync {}: {error}", temp.display()))?;
         }
@@ -8739,6 +8813,105 @@ mod tests {
             "a parked book must resume with no reload"
         );
         assert_eq!(reader.session.as_ref().unwrap().book.path, first_book.path);
+    }
+
+    /// Write `header` (which must end with the text marker) followed by
+    /// `body_bytes` of filler, and return what `read_epub_cache_header` makes
+    /// of it.
+    fn read_header_from(name: &str, header: &[u8], body_bytes: usize) -> Result<String, String> {
+        let dir = temp_dir(name);
+        let path = dir.join("TEST.EPX");
+        let mut content = header.to_vec();
+        content.extend(std::iter::repeat(b'x').take(body_bytes));
+        fs::write(&path, content).unwrap();
+        super::read_epub_cache_header(&path)
+    }
+
+    /// A header of exactly `total_len` bytes ending in the text marker.
+    fn header_of_len(total_len: usize) -> Vec<u8> {
+        let marker = super::EPUB_CACHE_TEXT_MARKER;
+        let mut header = b"version=1\ntitle=".to_vec();
+        header.resize(total_len - marker.len() - 1, b't');
+        header.push(b'\n');
+        header.extend_from_slice(marker);
+        header
+    }
+
+    #[test]
+    fn epub_cache_header_stops_at_the_marker_without_the_body() {
+        let header = header_of_len(900);
+        let read = read_header_from("epx-header-small", &header, 600 * 1024).unwrap();
+        assert_eq!(read.as_bytes(), header.as_slice());
+    }
+
+    #[test]
+    fn epub_cache_header_finds_a_marker_straddling_two_reads() {
+        let chunk = super::EPUB_CACHE_HEADER_READ_CHUNK_BYTES;
+        // Marker starts 5 bytes before the first read ends.
+        let header = header_of_len(chunk - 5 + super::EPUB_CACHE_TEXT_MARKER.len());
+        let read = read_header_from("epx-header-straddle", &header, 10_000).unwrap();
+        assert_eq!(read.as_bytes(), header.as_slice());
+    }
+
+    #[test]
+    fn epub_cache_header_accepts_a_marker_at_end_of_file() {
+        let header = header_of_len(3 * super::EPUB_CACHE_HEADER_READ_CHUNK_BYTES + 17);
+        let read = read_header_from("epx-header-eof", &header, 0).unwrap();
+        assert_eq!(read.as_bytes(), header.as_slice());
+    }
+
+    #[test]
+    fn epub_cache_header_keeps_the_size_bound() {
+        let max = super::EPUB_CACHE_HEADER_MAX_BYTES;
+        let at_bound = header_of_len(max);
+        assert!(read_header_from("epx-header-at-bound", &at_bound, 1000).is_ok());
+        let past_bound = header_of_len(max + 1);
+        assert!(read_header_from("epx-header-past-bound", &past_bound, 1000).is_err());
+    }
+
+    #[test]
+    fn epub_cache_header_without_marker_is_an_error() {
+        let dir = temp_dir("epx-header-missing");
+        let path = dir.join("TEST.EPX");
+        fs::write(&path, vec![b'x'; 20_000]).unwrap();
+        assert!(super::read_epub_cache_header(&path).is_err());
+    }
+
+    #[test]
+    fn resuming_at_the_saved_location_does_not_rewrite_state_files() {
+        let root = temp_dir("resume-no-rewrite-books");
+        let state = temp_dir("resume-no-rewrite-state");
+        let paths = write_sequential_txt_books(&root, &["Book.txt"]);
+        let roots = || {
+            ReaderUiState::with_roots(
+                root.to_string_lossy().into_owned(),
+                state.to_string_lossy().into_owned(),
+            )
+        };
+        let mut reader = roots();
+        reader.refresh_library();
+        let book = reader
+            .books
+            .iter()
+            .find(|book| book.path == paths[0].to_string_lossy())
+            .unwrap()
+            .clone();
+        reader.request_open_book(book, None);
+        while reader.tick() != ReaderTickOutcome::FirstPageReady {}
+        let state_path = reader.state_path();
+        let saved = fs::read_to_string(&state_path).unwrap();
+        // The first save had nothing to back up; a rewrite would leave one.
+        let backup = super::with_extension(&state_path, "BAK");
+        assert!(!backup.exists());
+
+        // Fresh boot: reload persisted state and resume the same book.
+        let mut reader = roots();
+        reader.load_persistent_state();
+        assert!(reader.request_continue());
+        while reader.tick() != ReaderTickOutcome::FirstPageReady {}
+
+        assert!(!backup.exists(), "resume rewrote STATE.TXT");
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), saved);
     }
 
     #[test]

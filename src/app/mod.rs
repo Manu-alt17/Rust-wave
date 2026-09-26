@@ -106,7 +106,7 @@ mod tests {
         state.home_selected = 5;
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Settings);
-        for _ in 0..3 {
+        for _ in 0..4 {
             state.apply(ButtonEvent::Down);
         }
         state.apply(ButtonEvent::Select);

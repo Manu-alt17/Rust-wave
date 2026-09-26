@@ -32,14 +32,14 @@ use crate::{
 
 use super::{
     display::DisplayPreferences,
-    menu::{category_entries, category_index, home_entries, CATEGORY_COUNT, MAIN_CATEGORY_COUNT},
+    menu::{category_index, home_entries, CategoryUsage, CATEGORY_COUNT, MAIN_CATEGORY_COUNT},
     router::{ScreenRoute, ScreenRouter},
 };
 
 /// Number of selectable rows in the playback overview screen.
 pub const AUDIO_ACTION_COUNT: usize = 6;
 /// Number of selectable rows in the Display settings screen.
-pub const DISPLAY_ACTION_COUNT: usize = 2;
+pub const DISPLAY_ACTION_COUNT: usize = 3;
 /// Number of selectable rows in the Weather overview screen.
 pub const WEATHER_ACTION_COUNT: usize = 2;
 /// Set date & time or open RTC details rows on the Clock overview screen.
@@ -53,6 +53,9 @@ pub const NETWORK_ACTION_COUNT: usize = 3;
 pub struct AppState {
     pub home_selected: usize,
     category_selected: [usize; CATEGORY_COUNT],
+    /// Recently-opened Tools/Settings entries shown under "Most used";
+    /// persisted by the runtime owner in main.rs whenever it changes.
+    pub category_usage: CategoryUsage,
     pub display_action_selected: usize,
     pub display: DisplayPreferences,
     /// Read-only monthly Calendar Foundation cursor and navigation mode.
@@ -139,14 +142,6 @@ pub struct AppState {
     /// the runtime owner in main.rs, which owns the wall clock and SD
     /// access the reading-stats session tracker needs.
     reader_page_turn_event: Option<ReaderLocation>,
-    /// Screen a `ReaderLoading`/`ReaderPage` session returns to once BACK
-    /// steps out of the reader entirely: `Home` when opened from the Home
-    /// dashboard's Continue Reading card, `Library` when opened by picking a
-    /// book on the Library screen. Nested reader screens (Options, TOC,
-    /// Bookmarks, Preferences...) still use `ScreenRoute::parent()`'s static
-    /// hierarchy -- only the exit point needs to remember where the session
-    /// started (see `Self::back`).
-    reader_return_route: ScreenRoute,
 }
 
 impl Default for AppState {
@@ -158,6 +153,7 @@ impl Default for AppState {
             // whichever tile happens to sit at index 0.
             home_selected: MAIN_CATEGORY_COUNT - 1,
             category_selected: [0; CATEGORY_COUNT],
+            category_usage: CategoryUsage::default(),
             display_action_selected: 0,
             display: DisplayPreferences::default(),
             calendar: CalendarUiState::default(),
@@ -200,7 +196,6 @@ impl Default for AppState {
             reading_stats: ReadingStatsSnapshot::default(),
             reading_stats_refresh_requested: false,
             reader_page_turn_event: None,
-            reader_return_route: ScreenRoute::Library,
         }
     }
 }
@@ -495,12 +490,6 @@ impl AppState {
     /// Continue Reading summary screen (`ScreenRoute::ContinueReading`
     /// itself) — used by the Home dashboard's card (`apply_home`).
     fn activate_continue_reading(&mut self) {
-        // Opened from Home, so BACK out of the reader session must return to
-        // Home rather than `ReaderPage`/`ReaderLoading`'s static Library
-        // parent (see `reader_return_route`). Harmless when this falls
-        // through to the no-saved-book Library branch below, since opening a
-        // book from there re-sets it to `Library` anyway.
-        self.reader_return_route = ScreenRoute::Home;
         if self.reader.session.is_some() {
             self.router.navigate_to(ScreenRoute::ReaderPage);
         } else if self.reader.request_continue() {
@@ -521,7 +510,7 @@ impl AppState {
     }
 
     fn apply_category(&mut self, route: ScreenRoute, event: ButtonEvent) {
-        let entries = category_entries(route);
+        let entries = self.category_usage.ordered_entries(route);
         match event {
             ButtonEvent::Up => {
                 let selected = self.category_selection_mut(route);
@@ -534,6 +523,11 @@ impl AppState {
             ButtonEvent::Select => {
                 let target = entries[self.category_selection(route)].route;
                 self.note_select_press();
+                // The opened entry moves to the front of "Most used", so keep
+                // the cursor on it for when BOOT brings the user back here.
+                if self.category_usage.record(route, target) {
+                    *self.category_selection_mut(route) = 0;
+                }
                 if target == ScreenRoute::Weather {
                     self.weather_action_selected = 0;
                     // Weather used to be fetched automatically as soon as
@@ -989,7 +983,6 @@ impl AppState {
             ScreenRoute::ContinueReading => {
                 if event == ButtonEvent::Select {
                     self.note_select_press();
-                    self.reader_return_route = ScreenRoute::Home;
                     if self.reader.session.is_some() {
                         self.router.navigate_to(ScreenRoute::ReaderPage);
                     } else if self.reader.request_continue() {
@@ -1010,9 +1003,6 @@ impl AppState {
                     self.note_select_press();
                 }
                 if self.reader.apply_library_button(event) {
-                    // Opened from Library, so BACK out of the session should
-                    // return here rather than Home (see `reader_return_route`).
-                    self.reader_return_route = ScreenRoute::Library;
                     // Reopening the book already in `self.reader.session`
                     // (see `request_open_visible`) leaves `loading` at
                     // `None`, so go straight to `ReaderPage` instead of
@@ -1246,7 +1236,8 @@ impl AppState {
                 self.note_select_press();
                 match self.display_action_selected {
                     0 => self.display.cycle_font_family(),
-                    _ => self.display.cycle_font_size(),
+                    1 => self.display.cycle_font_size(),
+                    _ => self.display.cycle_sleep_screen(),
                 }
             }
         }
@@ -1359,15 +1350,6 @@ impl AppState {
             if !self.reader.cancel_preference_edit() {
                 self.router.navigate_to(ScreenRoute::ReaderOptions);
             }
-        } else if matches!(
-            self.router.current(),
-            ScreenRoute::ReaderLoading | ScreenRoute::ReaderPage
-        ) {
-            // Unlike `ScreenRoute::parent()`'s static hierarchy (which always
-            // sends these two to `Library`), exiting the reader entirely
-            // returns to wherever this session was opened from -- Home's
-            // Continue Reading card or the Library screen.
-            self.router.navigate_to(self.reader_return_route);
         } else {
             self.router.back();
         }
@@ -1765,9 +1747,9 @@ mod tests {
         state.home_selected = 5;
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Settings);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Down);
+        for _ in 0..4 {
+            state.apply(ButtonEvent::Down);
+        }
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Display);
         let original = state.display;
@@ -1776,6 +1758,9 @@ mod tests {
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_ne!(state.display.font_size, original.font_size);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert_ne!(state.display.sleep_screen, original.sleep_screen);
         state.apply(ButtonEvent::Down);
         assert_eq!(state.display_action_selected, 0);
         assert_eq!(state.active_route(), ScreenRoute::Display);
@@ -2169,11 +2154,8 @@ mod tests {
 
     #[test]
     fn resuming_from_home_continue_reading_card_returns_home_on_back() {
-        // Opening the reader from Home's Continue Reading card must send
-        // BACK to Home, not to Library -- `ScreenRoute::ReaderPage`'s static
-        // `parent()` always points at Library, so this only works because
-        // `activate_continue_reading` records the entry point separately
-        // (see `reader_return_route`).
+        // Exiting the reader always lands on Home (`ScreenRoute::ReaderPage`'s
+        // static `parent()`), whatever screen the book was opened from.
         let mut state = AppState::default();
         state.reader.session = Some(reader_session_with_lines(&["Line"]));
         assert_eq!(state.home_selected, 6); // Continue Reading, pre-selected.
@@ -2184,9 +2166,9 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_book_from_library_returns_to_library_on_back() {
+    fn opening_a_book_from_library_returns_home_on_back() {
         // The counterpart to the Home card above: opening a book from the
-        // Library screen must send BACK to Library.
+        // Library screen also sends BACK to Home, never back to Library.
         let mut state = AppState::default();
         let session = reader_session_with_lines(&["Line"]);
         state.reader.books = vec![session.book.clone()];
@@ -2196,7 +2178,7 @@ mod tests {
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
         state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Library);
+        assert_eq!(state.active_route(), ScreenRoute::Home);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use embedded_graphics::{
 use crate::{
     app::{
         i18n::t,
-        menu::{category_entries, MenuEntry, CATEGORY_PAGE_SIZE, SETTINGS_PRIMARY_COUNT},
+        menu::{category_entries, MenuEntry, CATEGORY_PAGE_SIZE},
         router::ScreenRoute,
         state::AppState,
         typography::{Text, UiTextRole, UiTextStyle},
@@ -443,7 +443,7 @@ fn tile_grid_block_height(block: &TileGridBlock, metrics: &TileGridMetrics) -> i
 /// "Most used" header + rows and an "Other" header + rows the way the
 /// Settings grid uses it (mirroring `screens::reader::library_blocks`'s
 /// Reading Now / Recent split). `primary_count == 0` means the category has
-/// no such split (Tools' 5 entries, say) — just one plain run of rows with
+/// no such split (Tools before anything was opened, say) — just one plain run of rows with
 /// no section captions at all.
 fn tile_grid_blocks(entry_count: usize, primary_count: usize) -> Vec<TileGridBlock> {
     let mut blocks = Vec::new();
@@ -527,35 +527,25 @@ fn tile_grid_page_for_selection(pages: &[Vec<TileGridBlock>], selected: usize) -
         .unwrap_or(0)
 }
 
-/// "Most used" section size for a tile-grid category — only Settings has
-/// one; every other category using this grid (currently just Tools) shows a
-/// single, uncaptioned run of tiles instead.
-fn tile_grid_primary_count(route: ScreenRoute) -> usize {
-    match route {
-        ScreenRoute::Settings => SETTINGS_PRIMARY_COUNT,
-        _ => 0,
-    }
-}
-
 /// Compact icon + title tile grid, matching the Home dashboard's grid —
-/// used for both Settings, grouped under "Most used" / "Other" section
-/// headers (see [`crate::app::menu::SETTINGS_PRIMARY_COUNT`]) so the handful
-/// of settings actually reached for often — Network, Software Update —
-/// aren't buried among the rest, and Tools, which has too few entries to
-/// need that split (see [`tile_grid_primary_count`]).
+/// used for both Settings and Tools, grouped under "Most used" / "Other"
+/// section headers. "Most used" holds up to
+/// [`crate::app::menu::MOST_USED_MAX`] entries opened most recently (see
+/// [`crate::app::menu::CategoryUsage`]), so the ones actually reached for
+/// aren't buried among the rest.
 fn render_tile_grid(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
     route: ScreenRoute,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let entries = category_entries(route);
+    let entries = state.category_usage.ordered_entries(route);
     let selected = state.category_selection(route);
     let title = route.label_i18n(locale).to_ascii_uppercase();
 
     draw_header(display, state, &title)?;
 
-    let primary_count = tile_grid_primary_count(route).min(entries.len());
+    let primary_count = state.category_usage.most_used_count(route).min(entries.len());
     let blocks = tile_grid_blocks(entries.len(), primary_count);
     let metrics = tile_grid_metrics(state);
     let available = TILE_GRID_BOTTOM - TILE_GRID_TOP;

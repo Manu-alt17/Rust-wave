@@ -10,7 +10,7 @@ use embedded_graphics::{
     geometry::{OriginDimensions, Size},
     pixelcolor::BinaryColor,
     prelude::{DrawTarget, Pixel, Point},
-    primitives::Rectangle,
+    primitives::{PointsIter, Rectangle},
 };
 
 use crate::framebuffer::{FrameBuffer, HEIGHT, ROW_BYTES, WIDTH};
@@ -274,6 +274,25 @@ impl<'a> OrientedFrameBuffer<'a> {
                 self.whiten_local_pixel(top_left, width - 1 - x, y);
                 self.whiten_local_pixel(top_left, x, height - 1 - y);
                 self.whiten_local_pixel(top_left, width - 1 - x, height - 1 - y);
+            }
+        }
+    }
+
+    /// Swap black and white across the whole panel. Orientation-independent,
+    /// so it runs straight on the packed bytes.
+    pub fn invert_all(&mut self) {
+        self.frame.invert();
+    }
+
+    /// Swap black and white inside one logical rectangle, clipped to the
+    /// logical surface. Per pixel, so meant for small areas such as a
+    /// preview swatch; use [`Self::invert_all`] for a full screen.
+    pub fn invert_logical_rect(&mut self, area: &Rectangle) {
+        for point in area.points() {
+            if let Some(native_point) = self.orientation.map_logical_to_native(point) {
+                if let Some(black) = self.frame.is_black(native_point) {
+                    self.frame.set_native_black(native_point, !black);
+                }
             }
         }
     }
@@ -708,6 +727,50 @@ mod render_perf_tests {
         display.draw_packed_bitmap_opaque(Point::new(5, 5), 16, 50, &[0xFF; 6]);
         assert_eq!(frame.is_black(Point::new(5, 7)), Some(true));
         assert_eq!(frame.is_black(Point::new(5, 8)), Some(false));
+    }
+
+    #[test]
+    fn invert_logical_rect_flips_only_inside_the_rect_in_portrait() {
+        use embedded_graphics::{
+            geometry::Size,
+            pixelcolor::BinaryColor,
+            prelude::{DrawTarget, Pixel},
+            primitives::Rectangle,
+        };
+
+        let mut frame = FrameBuffer::new_white();
+        let mut display = OrientedFrameBuffer::new(&mut frame, DisplayOrientation::Portrait);
+        display
+            .draw_iter([Pixel(Point::new(12, 22), BinaryColor::On)])
+            .unwrap();
+        display.invert_logical_rect(&Rectangle::new(Point::new(10, 20), Size::new(5, 5)));
+        let orientation = DisplayOrientation::Portrait;
+        let black = |frame: &FrameBuffer, x, y| {
+            frame.is_black(orientation.map_logical_to_native(Point::new(x, y)).unwrap())
+        };
+        assert_eq!(black(&frame, 10, 20), Some(true));
+        assert_eq!(black(&frame, 14, 24), Some(true));
+        assert_eq!(black(&frame, 12, 22), Some(false));
+        assert_eq!(black(&frame, 15, 20), Some(false));
+        assert_eq!(black(&frame, 10, 25), Some(false));
+    }
+
+    #[test]
+    fn invert_all_flips_every_pixel() {
+        use embedded_graphics::{
+            pixelcolor::BinaryColor,
+            prelude::{DrawTarget, Pixel},
+        };
+
+        let mut frame = FrameBuffer::new_white();
+        let mut display = OrientedFrameBuffer::new(&mut frame, DisplayOrientation::Landscape);
+        display
+            .draw_iter([Pixel(Point::new(3, 3), BinaryColor::On)])
+            .unwrap();
+        display.invert_all();
+        assert_eq!(frame.is_black(Point::new(3, 3)), Some(false));
+        assert_eq!(frame.is_black(Point::new(0, 0)), Some(true));
+        assert_eq!(frame.is_black(Point::new(799, 479)), Some(true));
     }
 
     #[test]

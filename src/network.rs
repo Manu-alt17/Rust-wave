@@ -438,10 +438,14 @@ pub mod espidf {
         where
             M: WifiModemPeripheral + 'static,
         {
+            let nvs_span = crate::boot_profile::span("wifi-event-loop-nvs-take");
             let sys_loop = EspSystemEventLoop::take()?;
             let nvs = EspDefaultNvsPartition::take()?;
+            nvs_span.end();
+            let driver_span = crate::boot_profile::span("wifi-driver-new");
             let mut wifi =
                 BlockingWifi::wrap(EspWifi::new(modem, sys_loop.clone(), Some(nvs))?, sys_loop)?;
+            driver_span.end();
             let first = config
                 .networks
                 .first()
@@ -451,7 +455,9 @@ pub mod espidf {
             // `esp_wifi_start()` and returns. `tick`/`advance_boot_phase`
             // observes the driver reaching "started" and then requests
             // `esp_wifi_connect()` itself.
+            let start_span = crate::boot_profile::span("wifi-start");
             wifi.wifi_mut().start()?;
+            start_span.end();
             // Scan before committing to a candidate: with more than one
             // saved network, blindly trying `WIFI.TXT`'s order wastes the
             // full `WIFI_BOOT_TIMEOUT` on an out-of-range network before

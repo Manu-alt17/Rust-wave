@@ -101,7 +101,9 @@ pub mod espidf {
     use esp_idf_svc::sys::{
         esp_deep_sleep_start, esp_pm_config_t, esp_pm_configure, esp_sleep_enable_ext1_wakeup_io,
         esp_sleep_ext1_wakeup_mode_t_ESP_EXT1_WAKEUP_ANY_LOW, esp_sleep_get_wakeup_cause,
-        rtc_gpio_deinit, rtc_gpio_pulldown_dis, rtc_gpio_pullup_en, ESP_OK,
+        esp_sleep_pd_config, esp_sleep_pd_domain_t_ESP_PD_DOMAIN_RTC_PERIPH,
+        esp_sleep_pd_option_t_ESP_PD_OPTION_ON, rtc_gpio_deinit, rtc_gpio_pulldown_dis,
+        rtc_gpio_pullup_en, ESP_OK,
     };
 
     /// Toggle ESP-IDF's automatic light sleep, keeping the same DFS
@@ -175,6 +177,23 @@ pub mod espidf {
             bail!("rtc_gpio_pulldown_dis(GPIO{DEEP_SLEEP_WAKE_GPIO}) failed: {pulldown_status}");
         }
 
+        // ESP-IDF powers the RTC peripheral domain down during deep sleep
+        // unless something requests it, and with it go the RTC IO pull
+        // resistors configured just above: an ext1 wakeup does not keep the
+        // domain on by itself (only ext0 does). SELECT would then float for
+        // the whole sleep instead of idling high, which can leave the one
+        // wake source this fallback has unable to fire. Costs a few uA, and
+        // only on this fallback path -- the normal path cuts all power via
+        // the PMIC instead.
+        let domain_status = unsafe {
+            esp_sleep_pd_config(
+                esp_sleep_pd_domain_t_ESP_PD_DOMAIN_RTC_PERIPH,
+                esp_sleep_pd_option_t_ESP_PD_OPTION_ON,
+            )
+        };
+        if domain_status != ESP_OK {
+            bail!("esp_sleep_pd_config(RTC_PERIPH, ON) failed: {domain_status}");
+        }
         let wake_mask = 1_u64 << DEEP_SLEEP_WAKE_GPIO;
         let wakeup_status = unsafe {
             esp_sleep_enable_ext1_wakeup_io(

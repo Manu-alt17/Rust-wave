@@ -60,6 +60,13 @@ impl FrameBuffer {
         self.bytes.fill(0xFF);
     }
 
+    /// Swap black and white across the whole image, a byte at a time.
+    pub fn invert(&mut self) {
+        for byte in self.bytes.iter_mut() {
+            *byte = !*byte;
+        }
+    }
+
     /// Read a packed panel pixel. Out-of-range coordinates return `None`.
     #[must_use]
     pub fn is_black(&self, point: Point) -> Option<bool> {

@@ -16,6 +16,10 @@ use crate::framebuffer::{FrameBuffer, FRAMEBUFFER_SIZE, HEIGHT, ROW_BYTES, WIDTH
 
 /// Runtime directory containing removable-SD sleep images.
 pub const SLEEP_IMAGE_DIRECTORY: &str = "/sdcard/RUSTMIX/SLEEP";
+/// Name of the last sleep image shown. Deep sleep is a full MCU reboot, so
+/// the in-order rotation (and random anti-repeat) must survive on SD rather
+/// than in RAM. Kept outside the SLEEP directory so it is never a candidate.
+pub const SLEEP_IMAGE_CURSOR_PATH: &str = "/sdcard/RUSTMIX/SLEEPIDX.TXT";
 /// Bounded number of files examined on each entry to sleep mode.
 pub const MAX_SLEEP_IMAGE_CANDIDATES: usize = 32;
 const BMP_FILE_HEADER_BYTES: usize = 14;
@@ -64,12 +68,13 @@ pub struct SleepImageSelection {
 #[derive(Clone, Debug)]
 pub struct SleepImageCatalog {
     directory: PathBuf,
+    cursor_path: Option<PathBuf>,
     last_selected_file_name: Option<String>,
 }
 
 impl Default for SleepImageCatalog {
     fn default() -> Self {
-        Self::new(SLEEP_IMAGE_DIRECTORY)
+        Self::new(SLEEP_IMAGE_DIRECTORY).with_cursor_file(SLEEP_IMAGE_CURSOR_PATH)
     }
 }
 
@@ -78,7 +83,85 @@ impl SleepImageCatalog {
     pub fn new(directory: impl Into<PathBuf>) -> Self {
         Self {
             directory: directory.into(),
+            cursor_path: None,
             last_selected_file_name: None,
+        }
+    }
+
+    /// Persist the last shown file name to `path` so the rotation carries
+    /// across deep-sleep reboots. Best-effort: an unreadable or unwritable
+    /// cursor only restarts the rotation from the first image.
+    #[must_use]
+    pub fn with_cursor_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.cursor_path = Some(path.into());
+        self
+    }
+
+    fn previous_file_name(&mut self) -> Option<String> {
+        if self.last_selected_file_name.is_none() {
+            self.last_selected_file_name = self
+                .cursor_path
+                .as_ref()
+                .and_then(|path| fs::read_to_string(path).ok())
+                .map(|text| text.trim().to_string())
+                .filter(|name| !name.is_empty());
+        }
+        self.last_selected_file_name.clone()
+    }
+
+    fn remember_selected(&mut self, file_name: &str) {
+        self.last_selected_file_name = Some(file_name.to_string());
+        if let Some(path) = &self.cursor_path {
+            if let Err(error) = fs::write(path, file_name) {
+                log::warn!(
+                    "rustmix-wave=sleep-image-cursor status=write-failed path={} error={error}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// Scan read-only assets and select the valid image that follows the
+    /// previously shown one in file-name order, wrapping back to the first.
+    /// Keyed by name rather than index so adding or removing files never
+    /// skips ahead or repeats. Same built-in fallback as [`Self::select_random`].
+    pub fn select_next(&mut self) -> SleepImageSelection {
+        match self.scan_valid_images() {
+            Ok((valid, mut stats)) if !valid.is_empty() => {
+                let previous = self.previous_file_name();
+                let previous_index = previous.as_deref().and_then(|previous| {
+                    valid
+                        .iter()
+                        .position(|path| file_name_label(path) == previous)
+                });
+                let index = next_sequential_index(&valid, previous.as_deref());
+                let path = &valid[index];
+                let file_name = file_name_label(path);
+                self.remember_selected(&file_name);
+                let choice = Some(SleepImageChoice {
+                    random_word: 0,
+                    previous_index,
+                    selected_index: index,
+                    anti_repeat: false,
+                });
+                match decode_sleep_bmp_file(path) {
+                    Ok(frame) => {
+                        self.selection(file_name, frame, valid.len(), stats, None, choice, false)
+                    }
+                    Err(error) => {
+                        stats.rejected_entries = stats.rejected_entries.saturating_add(1);
+                        self.fallback(
+                            stats,
+                            Some(format!("selected BMP decode failed: {error:#}")),
+                        )
+                    }
+                }
+            }
+            Ok((_valid, stats)) => self.fallback(stats, None),
+            Err(error) => self.fallback(
+                SleepImageScanStats::default(),
+                Some(format!("directory scan failed: {error}")),
+            ),
         }
     }
 
@@ -95,19 +178,17 @@ impl SleepImageCatalog {
     pub fn select_random(&mut self, random_word: u32) -> SleepImageSelection {
         match self.scan_valid_images() {
             Ok((valid, mut stats)) if !valid.is_empty() => {
-                let previous_index = self
-                    .last_selected_file_name
-                    .as_deref()
-                    .and_then(|previous| {
-                        valid
-                            .iter()
-                            .position(|path| file_name_label(path) == previous)
-                    });
+                let previous = self.previous_file_name();
+                let previous_index = previous.as_deref().and_then(|previous| {
+                    valid
+                        .iter()
+                        .position(|path| file_name_label(path) == previous)
+                });
                 let (index, anti_repeat) =
                     choose_random_index(valid.len(), previous_index, random_word);
                 let path = &valid[index];
                 let file_name = file_name_label(path);
-                self.last_selected_file_name = Some(file_name.clone());
+                self.remember_selected(&file_name);
                 let choice = Some(SleepImageChoice {
                     random_word,
                     previous_index,
@@ -224,6 +305,19 @@ impl SleepImageCatalog {
             fallback,
         }
     }
+}
+
+/// First valid image sorting after `previous` (case-insensitively, the same
+/// order `scan_valid_images` sorts by), wrapping to the first. A previous
+/// name that has since been deleted still advances to its successor.
+fn next_sequential_index(valid: &[PathBuf], previous: Option<&str>) -> usize {
+    let Some(previous) = previous.map(str::to_ascii_uppercase) else {
+        return 0;
+    };
+    valid
+        .iter()
+        .position(|path| file_name_label(path).to_ascii_uppercase() > previous)
+        .unwrap_or(0)
 }
 
 /// Choose a bounded random slot while excluding the previous slot when possible.
@@ -472,6 +566,28 @@ mod tests {
         assert!(!first.choice.unwrap().anti_repeat);
         assert!(second.choice.unwrap().anti_repeat);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sequential_selection_cycles_in_name_order_and_survives_reboot() {
+        let root = unique_temp_dir("sequential");
+        fs::create_dir_all(&root).unwrap();
+        for name in ["B.BMP", "A.BMP", "C.BMP"] {
+            fs::write(root.join(name), fixture()).unwrap();
+        }
+        let cursor = root.with_extension("idx");
+        let mut catalog = SleepImageCatalog::new(&root).with_cursor_file(&cursor);
+        assert_eq!(catalog.select_next().file_name, "A.BMP");
+        assert_eq!(catalog.select_next().file_name, "B.BMP");
+        // A fresh catalog models the deep-sleep reboot: only SD survives.
+        let mut rebooted = SleepImageCatalog::new(&root).with_cursor_file(&cursor);
+        assert_eq!(rebooted.select_next().file_name, "C.BMP");
+        assert_eq!(rebooted.select_next().file_name, "A.BMP");
+        // Removing the last-shown image still advances to its successor.
+        fs::remove_file(root.join("A.BMP")).unwrap();
+        assert_eq!(rebooted.select_next().file_name, "B.BMP");
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(cursor);
     }
 
     #[test]

@@ -39,6 +39,10 @@ pub enum PanelGlobalReason {
     /// text, both on the image when it appears over a text page and on the
     /// text page drawn over it afterwards.
     FullPageImageTransition,
+    /// The screen leaves an inverted (white-on-black, High Contrast) Reader
+    /// page. A partial refresh from a mostly black frame back to the white
+    /// UI leaves the whole page ghosted behind it.
+    InvertedPageExit,
 }
 
 impl PanelGlobalReason {
@@ -52,6 +56,7 @@ impl PanelGlobalReason {
             Self::SafetyFallback => "safety-fallback",
             Self::SleepImage => "sleep-image",
             Self::FullPageImageTransition => "full-page-image-transition",
+            Self::InvertedPageExit => "inverted-page-exit",
         }
     }
 
@@ -65,13 +70,17 @@ impl PanelGlobalReason {
     /// worth trading the standard waveform's sensor-read accuracy for a
     /// single flash. Initial boot, manual cleanup, the safety fallback and
     /// the sleep image are rare or deliberately cautious events, so they
-    /// keep the full refresh. A full-page image transition is the same
-    /// ghost cleanup as the periodic one, just triggered by content.
+    /// keep the full refresh. A full-page image transition and leaving an
+    /// inverted page are the same ghost cleanup as the periodic one, just
+    /// triggered by content.
     #[must_use]
     pub const fn uses_fast_waveform(self) -> bool {
         matches!(
             self,
-            Self::AfterWake | Self::PeriodicCleanup | Self::FullPageImageTransition
+            Self::AfterWake
+                | Self::PeriodicCleanup
+                | Self::FullPageImageTransition
+                | Self::InvertedPageExit
         )
     }
 }
@@ -89,6 +98,8 @@ pub struct PanelRefreshCoordinator {
     partial_count: u8,
     /// Whether the last frame planned showed a full-page image.
     showing_full_page_image: bool,
+    /// Whether the last frame planned was drawn inverted (High Contrast).
+    showing_inverted: bool,
 }
 
 impl PanelRefreshCoordinator {
@@ -103,26 +114,37 @@ impl PanelRefreshCoordinator {
 
     #[must_use]
     pub fn plan(&mut self, request: PanelRefreshRequest) -> PanelRefreshPlan {
-        self.plan_for_frame(request, self.showing_full_page_image)
+        self.plan_for_frame(request, self.showing_full_page_image, self.showing_inverted)
     }
 
     /// Like [`Self::plan`], for a frame that does (`full_page_image`) or does
-    /// not show a full-page image. Entering or leaving such a frame turns a
-    /// normal refresh into a fast global one, exactly like the periodic
-    /// cleanup, and restarts the partial counter.
+    /// not show a full-page image, and is (`inverted`) or is not drawn
+    /// inverted. Entering or leaving a full-page image, or leaving an
+    /// inverted frame, turns a normal refresh into a fast global one,
+    /// exactly like the periodic cleanup, and restarts the partial counter.
     #[must_use]
     pub fn plan_for_frame(
         &mut self,
         request: PanelRefreshRequest,
         full_page_image: bool,
+        inverted: bool,
     ) -> PanelRefreshPlan {
         let image_transition = full_page_image != self.showing_full_page_image;
+        let inverted_exit = self.showing_inverted && !inverted;
         self.showing_full_page_image = full_page_image;
-        if image_transition && request == PanelRefreshRequest::Normal {
-            self.partial_count = 0;
-            return PanelRefreshPlan::GlobalBase {
-                reason: PanelGlobalReason::FullPageImageTransition,
+        self.showing_inverted = inverted;
+        if request == PanelRefreshRequest::Normal {
+            let reason = if inverted_exit {
+                Some(PanelGlobalReason::InvertedPageExit)
+            } else if image_transition {
+                Some(PanelGlobalReason::FullPageImageTransition)
+            } else {
+                None
             };
+            if let Some(reason) = reason {
+                self.partial_count = 0;
+                return PanelRefreshPlan::GlobalBase { reason };
+            }
         }
         let forced = match request {
             PanelRefreshRequest::Normal => None,
@@ -203,19 +225,19 @@ mod tests {
             reason: PanelGlobalReason::FullPageImageTransition,
         };
         assert_eq!(
-            coordinator.plan_for_frame(PanelRefreshRequest::Normal, false),
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, false),
             PanelRefreshPlan::PartialFullscreen { partial_count: 1 }
         );
         // Entering the cover.
-        assert_eq!(coordinator.plan_for_frame(PanelRefreshRequest::Normal, true), transition);
+        assert_eq!(coordinator.plan_for_frame(PanelRefreshRequest::Normal, true, false), transition);
         assert_eq!(coordinator.partial_count(), 0);
         // Redrawing the cover itself (clock tick, overlay) stays partial.
         assert_eq!(
-            coordinator.plan_for_frame(PanelRefreshRequest::Normal, true),
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, true, false),
             PanelRefreshPlan::PartialFullscreen { partial_count: 1 }
         );
         // Leaving the cover.
-        assert_eq!(coordinator.plan_for_frame(PanelRefreshRequest::Normal, false), transition);
+        assert_eq!(coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, false), transition);
         assert!(PanelGlobalReason::FullPageImageTransition.uses_fast_waveform());
     }
 
@@ -223,14 +245,41 @@ mod tests {
     fn a_forced_global_on_an_image_transition_keeps_its_own_reason() {
         let mut coordinator = PanelRefreshCoordinator::default();
         assert_eq!(
-            coordinator.plan_for_frame(PanelRefreshRequest::AfterWake, true),
+            coordinator.plan_for_frame(PanelRefreshRequest::AfterWake, true, false),
             PanelRefreshPlan::GlobalBase {
                 reason: PanelGlobalReason::AfterWake
             }
         );
         // The transition was already covered by that global refresh.
         assert_eq!(
-            coordinator.plan_for_frame(PanelRefreshRequest::Normal, true),
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, true, false),
+            PanelRefreshPlan::PartialFullscreen { partial_count: 1 }
+        );
+    }
+
+    #[test]
+    fn leaving_an_inverted_page_forces_a_fast_global_refresh() {
+        let mut coordinator = PanelRefreshCoordinator::default();
+        // Entering and turning inverted pages stays partial.
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, true),
+            PanelRefreshPlan::PartialFullscreen { partial_count: 1 }
+        );
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, true),
+            PanelRefreshPlan::PartialFullscreen { partial_count: 2 }
+        );
+        // Leaving for the normal white UI.
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, false),
+            PanelRefreshPlan::GlobalBase {
+                reason: PanelGlobalReason::InvertedPageExit
+            }
+        );
+        assert_eq!(coordinator.partial_count(), 0);
+        assert!(PanelGlobalReason::InvertedPageExit.uses_fast_waveform());
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, false),
             PanelRefreshPlan::PartialFullscreen { partial_count: 1 }
         );
     }

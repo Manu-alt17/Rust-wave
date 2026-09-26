@@ -18,12 +18,11 @@ use std::{
 
 use crate::buttons::ButtonEvent;
 
-/// Larger than `RemoteEventQueue`'s capacity: remote page-turns are a
-/// single-viewer "latest wins" stream, but button-menu navigation is a
-/// discrete step counter where a human rapid-clicking Up/Down expects every
-/// press to eventually land in order, so more headroom is given before any
-/// drop policy kicks in.
-pub const INPUT_EVENT_QUEUE_CAPACITY: usize = 16;
+/// Kept deliberately tiny: the e-paper redraw between presses is slow, so a
+/// deep backlog makes the device keep turning pages / moving the cursor long
+/// after the user stopped pressing. At most two presses are held; older ones
+/// are dropped in favour of the most recent (see [`InputEventQueue::push`]).
+pub const INPUT_EVENT_QUEUE_CAPACITY: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputEvent {
@@ -58,9 +57,8 @@ impl InputEventQueue {
 
     /// Push an event from the input-polling thread.
     ///
-    /// If the queue is full, the oldest event is dropped. This is only
-    /// reachable under sustained, pathological button mashing far beyond
-    /// normal use.
+    /// If the queue is full, the oldest event is dropped, so rapid presses
+    /// during a slow redraw collapse to the latest two.
     pub fn push(&self, event: InputEvent) {
         let (events, ready) = &*self.inner;
         let mut events = events.lock().unwrap();

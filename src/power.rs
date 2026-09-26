@@ -66,6 +66,11 @@ const PMIC_SHUTDOWN_MARKER: u8 = 0x5A;
 /// on. Logged at boot as corroborating evidence alongside the
 /// [`DATA_BUFFER1`] marker, never as the sole signal.
 const PWRON_STATUS: u8 = 0x20;
+/// `PWRON_STATUS` bit 0: the PWRON (Power key) pin was held low for the
+/// ONLEVEL time. Bit layout per XPowersLib's `xpower_power_on_source_t`.
+const PWRON_SOURCE_POWER_KEY: u8 = 1 << 0;
+/// `PWRON_STATUS` bit 2: VBUS was inserted and good (USB cable plugged in).
+const PWRON_SOURCE_VBUS_INSERT: u8 = 1 << 2;
 /// Power-off source (read-only): which event most recently powered the PMIC
 /// off. Logged at boot for the same reason as [`PWRON_STATUS`].
 const PWROFF_STATUS: u8 = 0x21;
@@ -408,6 +413,15 @@ where
     }
 }
 
+/// True when a raw `PWRON_STATUS` byte says the PMIC powered on because a
+/// USB cable was plugged in, not because the Power key was pressed. Used at
+/// boot to send a firmware-powered-off device straight back off instead of
+/// waking it just because it was connected to a charger.
+#[must_use]
+pub const fn is_vbus_insert_power_on(pwron_status: u8) -> bool {
+    pwron_status & PWRON_SOURCE_VBUS_INSERT != 0 && pwron_status & PWRON_SOURCE_POWER_KEY == 0
+}
+
 fn decode_battery_voltage_mv(high: u8, low: u8) -> u16 {
     (u16::from(high & 0x1F) << 8) | u16::from(low)
 }
@@ -435,6 +449,7 @@ fn encode_aldo3_voltage_mv(millivolts: u16) -> Result<u8> {
 mod tests {
     use super::{
         decode_battery_voltage_mv, encode_aldo3_voltage_mv, is_actively_charging,
+        is_vbus_insert_power_on,
         BatteryPercentFilter, ALDO1_ENABLE_BIT, ALDO2_ENABLE_BIT, ALDO3_ENABLE_BIT,
         ALDO4_ENABLE_BIT, BLDO1_ENABLE_BIT, BLDO2_ENABLE_BIT, CPUSLDO_ENABLE_BIT,
         DCDC2_ENABLE_BIT, DCDC3_ENABLE_BIT, DCDC4_ENABLE_BIT, DLDO1_ENABLE_BIT, DLDO2_ENABLE_BIT,
@@ -442,6 +457,16 @@ mod tests {
         IRQ_OFF_ON_LEVEL_CTRL, PMIC_SHUTDOWN_MARKER, PWROFF_EN, PWROFF_STATUS, PWRON_STATUS,
         SOFT_POWER_OFF_BIT,
     };
+
+    #[test]
+    fn vbus_insert_power_on_only_when_power_key_bit_is_clear() {
+        assert!(is_vbus_insert_power_on(0x04));
+        assert!(is_vbus_insert_power_on(0x14));
+        assert!(!is_vbus_insert_power_on(0x01));
+        assert!(!is_vbus_insert_power_on(0x05));
+        assert!(!is_vbus_insert_power_on(0x10));
+        assert!(!is_vbus_insert_power_on(0x00));
+    }
 
     #[test]
     fn decodes_reference_battery_voltage_registers() {

@@ -53,18 +53,27 @@ pub fn render_display(
         body,
     )?;
 
+    draw_setting_row(
+        display,
+        336,
+        t(locale, "Sleep screen", "Sfondo riposo"),
+        prefs.sleep_screen.label_i18n(locale),
+        state.display_action_selected == 2,
+        body,
+    )?;
+
     Text::new(
         t(locale, "Live preview", "Anteprima live"),
-        Point::new(22, 364),
+        Point::new(22, 454),
         heading,
     )
     .draw(display)?;
-    Rectangle::new(Point::new(22, 392), Size::new(436, 160))
+    Rectangle::new(Point::new(22, 482), Size::new(436, 160))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
     Text::new(
         t(locale, "Reader", "Lettore"),
-        Point::new(44, 454),
+        Point::new(44, 544),
         prefs.navigation_style(),
     )
     .draw(display)?;
@@ -74,7 +83,7 @@ pub fn render_display(
             "Books, progress and bookmarks",
             "Libri, progressi e segnalibri",
         ),
-        Point::new(44, 502),
+        Point::new(44, 592),
         body,
     )
     .draw(display)?;
@@ -84,7 +93,7 @@ pub fn render_display(
             "Press BOOT to return to Settings.",
             "Premi BOOT per tornare a Impostazioni.",
         ),
-        Point::new(22, 620),
+        Point::new(22, 700),
         body,
     )
     .draw(display)?;

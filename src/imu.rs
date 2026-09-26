@@ -90,7 +90,9 @@ const STATUS1_TAP_EVENT_BIT: u8 = 0x02;
 const CTRL_CMD_ACK: u8 = 0x00;
 const CTRL_CMD_CONFIGURE_TAP: u8 = 0x0C;
 /// Iterations of a 1 ms delay to wait for a CTRL9 command handshake step.
-const CTRL9_COMMAND_TIMEOUT_ITERATIONS: u32 = 50;
+/// 500 keeps the ~500 ms bound this had when each 1 ms delay actually slept
+/// a whole 10 ms FreeRTOS tick; a normal handshake finishes in a few ms.
+const CTRL9_COMMAND_TIMEOUT_ITERATIONS: u32 = 500;
 /// Fixed IIR filter coefficients (Q1.7 fixed point) used by the reference
 /// tap-detection driver: alpha=0.0625, gamma=0.25. The reference driver does
 /// not expose these for tuning, so neither does this port.

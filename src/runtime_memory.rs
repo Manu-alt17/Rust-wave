@@ -62,8 +62,26 @@ impl RuntimeMemorySnapshot {
 }
 
 pub fn log_runtime_memory(boundary: &str) {
+    log_runtime_memory_at(log::Level::Info, boundary);
+}
+
+/// [`log_runtime_memory`] at debug level, for boundaries hit on hot or
+/// user-visible paths (background book warm-up, boot): at 115200 baud the
+/// ~300-character line costs ~25-30 ms of blocking console time, measured
+/// four times per warmed book. Free (no snapshot, no formatting) unless
+/// debug logging is enabled.
+pub fn debug_runtime_memory(boundary: &str) {
+    log_runtime_memory_at(log::Level::Debug, boundary);
+}
+
+fn log_runtime_memory_at(level: log::Level, boundary: &str) {
+    if !log::log_enabled!(level) {
+        return;
+    }
+    let _span = crate::boot_profile::span("log-runtime-memory");
     let snapshot = RuntimeMemorySnapshot::capture();
-    log::info!(
+    log::log!(
+        level,
         "rustmix-wave=runtime-memory boundary={} main-stack-high-water-bytes={} heap-free-internal-bytes={} heap-largest-internal-block-bytes={} heap-free-psram-bytes={} heap-internal-free-blocks={} heap-internal-minimum-free-bytes={} heap-largest-dma-block-bytes={}",
         sanitize_marker(boundary),
         snapshot.main_stack_high_water_bytes,

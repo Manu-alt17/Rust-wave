@@ -124,6 +124,7 @@ where
     /// Initialize optional sample-app services independently so a missing
     /// sensor never prevents the verified e-paper shell from booting.
     pub fn initialize<D: DelayNs>(&mut self, delay: &mut D) -> BoardInitReport {
+        let rtc_span = crate::boot_profile::span("board-rtc-init");
         match self.rtc.initialize() {
             Ok(report) => {
                 self.init_report.rtc_available = true;
@@ -132,6 +133,8 @@ where
             Err(error) => warn!("sample-services: RTC init unavailable: {error:#}"),
         }
 
+        rtc_span.end();
+        let environment_span = crate::boot_profile::span("board-shtc3-init");
         match self.environment.initialize(delay) {
             Ok(id) => {
                 self.init_report.environment_available = true;
@@ -140,11 +143,15 @@ where
             Err(error) => warn!("sample-services: SHTC3 init unavailable: {error:#}"),
         }
 
+        environment_span.end();
+        let power_span = crate::boot_profile::span("board-pmic-monitoring-init");
         match self.power.initialize_sample_monitoring() {
             Ok(()) => self.init_report.power_monitoring_available = true,
             Err(error) => warn!("sample-services: AXP2101 monitoring unavailable: {error:#}"),
         }
 
+        power_span.end();
+        let imu_span = crate::boot_profile::span("board-imu-init");
         match self.imu.initialize() {
             Ok(report) => {
                 self.init_report.imu_available = true;
@@ -154,7 +161,9 @@ where
             Err(error) => warn!("sample-services: QMI8658 init unavailable: {error:#}"),
         }
 
+        imu_span.end();
         if self.init_report.imu_available {
+            let _tap_span = crate::boot_profile::span("board-imu-tap-config");
             match self.imu.configure_tap_detection(TapConfig::default(), delay) {
                 Ok(()) => match self.imu.enable_tap_detection() {
                     Ok(()) => self.init_report.tap_diagnostics_available = true,

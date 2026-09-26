@@ -38,6 +38,10 @@ const BUSY_SETTLE_MS: u32 = 10;
 /// produced the inverted black/white output seen on real hardware.
 const FAST_GLOBAL_TEMPERATURE: u8 = 0x6A;
 
+/// Wait after releasing EPD_RST before polling BUSY, from the vendor
+/// reference's reset sequence.
+pub const RESET_RECOVERY_MS: u32 = 50;
+
 /// Controller driver with explicit ownership of the panel bus and pins.
 pub struct Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER> {
     spi: SPI,
@@ -97,14 +101,39 @@ where
 
     /// Power the panel and configure the controller for global refresh.
     pub fn initialize(&mut self) -> Result<()> {
+        self.begin_initialize()?;
+        self.delay.delay_ms(RESET_RECOVERY_MS);
+        self.finish_initialize()
+    }
+
+    /// First half of [`Self::initialize`]: power the panel rail and pulse
+    /// the controller's hardware reset, then return without waiting for the
+    /// controller to come out of reset. Boot calls this early and runs
+    /// unrelated work (SD config loads, sensor bring-up) during the
+    /// controller's own reset time instead of sleeping through it; the caller
+    /// must let at least `RESET_RECOVERY_MS` pass before
+    /// [`Self::finish_initialize`], which then only has to confirm BUSY.
+    pub fn begin_initialize(&mut self) -> Result<()> {
         info!("epd397: enable ALDO3 and initialize panel");
+        let rail_span = crate::boot_profile::span("epd-rail-enable");
         self.power.enable_panel_rail()?;
         self.delay.delay_ms(10);
-        self.hardware_reset()?;
-        self.wait_until_idle()?;
+        rail_span.end();
+        let _reset_span = crate::boot_profile::span("epd-hardware-reset-pulse");
+        self.hardware_reset_pulse()
+    }
 
+    /// Second half of [`Self::initialize`]; see [`Self::begin_initialize`].
+    pub fn finish_initialize(&mut self) -> Result<()> {
+        let reset_wait_span = crate::boot_profile::span("epd-reset-busy-wait");
+        self.wait_until_idle()?;
+        reset_wait_span.end();
+
+        let swreset_span = crate::boot_profile::span("epd-swreset");
         self.command(0x12)?; // SWRESET
         self.wait_until_idle()?;
+        swreset_span.end();
+        let _config_span = crate::boot_profile::span("epd-controller-config");
 
         self.command_data(0x18, &[0x80])?;
         self.command_data(0x0C, &[0xAE, 0xC7, 0xC3, 0xC0, 0x80])?;
@@ -142,10 +171,13 @@ where
     pub fn show_base(&mut self, frame: &[u8]) -> Result<()> {
         validate_frame(frame)?;
         debug!("epd397: global base refresh");
+        let transfer_span = crate::boot_profile::span("epd-global-spi-transfer");
         self.command(0x24)?;
         self.data(frame)?;
         self.command(0x26)?;
         self.data(frame)?;
+        transfer_span.end();
+        let _refresh_span = crate::boot_profile::span("epd-global-refresh-wait");
         self.turn_on_display(0xF7)
     }
 
@@ -160,6 +192,7 @@ where
     pub fn show_base_fast(&mut self, frame: &[u8]) -> Result<()> {
         validate_frame(frame)?;
         debug!("epd397: global base refresh (fast waveform)");
+        let _span = crate::boot_profile::span("epd-fast-global-refresh");
         self.command_data(0x3C, &[0x01])?;
         self.command_data(0x4E, &[0x00, 0x00])?;
         self.command_data(0x4F, &[0x00, 0x00])?;
@@ -192,6 +225,7 @@ where
     pub fn show_partial_fullscreen(&mut self, frame: &[u8]) -> Result<()> {
         validate_frame(frame)?;
         debug!("epd397: partial full-screen refresh");
+        let _span = crate::boot_profile::span("epd-partial-refresh");
         self.command_data(0x18, &[0x80])?;
         self.command_data(0x3C, &[0x80])?;
         self.command_data(0x44, &[0x00, 0x00, 0x18, 0x03])?; // 0 .. 792
@@ -222,7 +256,9 @@ where
         Ok(())
     }
 
-    fn hardware_reset(&mut self) -> Result<()> {
+    /// Reset pulse without the vendor sequence's trailing recovery delay,
+    /// which callers apply themselves (`RESET_RECOVERY_MS`).
+    fn hardware_reset_pulse(&mut self) -> Result<()> {
         self.reset
             .set_high()
             .map_err(|error| anyhow!("EPD_RST high failed: {error:?}"))?;
@@ -233,9 +269,7 @@ where
         self.delay.delay_ms(2);
         self.reset
             .set_high()
-            .map_err(|error| anyhow!("EPD_RST high failed: {error:?}"))?;
-        self.delay.delay_ms(50);
-        Ok(())
+            .map_err(|error| anyhow!("EPD_RST high failed: {error:?}"))
     }
 
     fn turn_on_display(&mut self, refresh_control: u8) -> Result<()> {

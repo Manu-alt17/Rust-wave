@@ -148,6 +148,7 @@ impl CoverCache {
     /// has to handle, since a miss just means "(re)generate it".
     #[must_use]
     pub fn load_cached_thumbnail(&self, book: &ReaderBook) -> Option<CachedThumbnail> {
+        let _span = crate::boot_profile::span("cover-load-cached-thumbnail");
         let bytes = fs::read(self.cache_path(book)).ok()?;
         parse_cache_bytes(&bytes, book)
     }
@@ -167,6 +168,7 @@ impl CoverCache {
     /// synchronously for a handful of books, and the unit callers of
     /// [`pump_pending`] rely on this bound to keep button polling reactive.
     pub fn generate_thumbnail(&self, book: &ReaderBook) -> CachedThumbnail {
+        let _span = crate::boot_profile::span("cover-generate-thumbnail");
         let cache_path = self.cache_path(book);
         let worker_book = book.clone();
         let result = crate::runtime_worker::run_named_worker_in_psram(
@@ -206,6 +208,73 @@ impl CoverCache {
         let book = visible.iter().find(|book| self.invalidate_if_stale(book))?;
         let thumbnail = self.generate_thumbnail(book);
         Some((book.clone(), thumbnail))
+    }
+
+    fn fullscreen_cache_path(&self, book: &ReaderBook, width: u16, height: u16) -> PathBuf {
+        self.root.join(format!(
+            "{:08X}.SLC",
+            fullscreen_cover_fingerprint(book, width, height) as u32
+        ))
+    }
+
+    /// Book cover decoded to exactly `width x height`, center-cropped to that
+    /// aspect ratio rather than stretched, for the sleep screen. Served from
+    /// an SD `.SLC` entry when one matches, else extracted and decoded on a
+    /// PSRAM worker and cached. `None` for a non-EPUB book or one with no
+    /// usable cover; that outcome is cached too so it is not retried on every
+    /// sleep.
+    #[must_use]
+    pub fn load_or_generate_fullscreen_cover(
+        &self,
+        book: &ReaderBook,
+        width: u16,
+        height: u16,
+    ) -> Option<CachedThumbnail> {
+        let fingerprint = fullscreen_cover_fingerprint(book, width, height);
+        let cache_path = self.fullscreen_cache_path(book, width, height);
+        let cached = fs::read(&cache_path)
+            .ok()
+            .and_then(|bytes| parse_inline_image_cache_bytes(&bytes, fingerprint))
+            .filter(|cover| cover.width == width && cover.height == height);
+        let cover = match cached {
+            Some(cover) => cover,
+            None => {
+                let worker_book = book.clone();
+                let result = crate::runtime_worker::run_named_worker_in_psram(
+                    "sleep-cover",
+                    COVER_WORKER_STACK_BYTES,
+                    move || -> Result<CachedThumbnail, String> {
+                        if worker_book.format != BookFormat::Epub {
+                            return Err("not an EPUB".into());
+                        }
+                        let cover = crate::epub::extract_cover(&worker_book.path)?
+                            .ok_or_else(|| String::from("no cover in manifest"))?;
+                        decode_and_dither_fill(
+                            &cover.bytes,
+                            &cover.media_type,
+                            u32::from(width),
+                            u32::from(height),
+                        )
+                    },
+                );
+                let cover = result.unwrap_or_else(|error| {
+                    log::warn!(
+                        "rustmix-wave=sleep-cover status=unavailable path={} error={error}",
+                        book.path
+                    );
+                    blank_placeholder(width, height)
+                });
+                let bytes = write_inline_image_cache_bytes(fingerprint, &cover);
+                if let Err(error) = atomic_write(&cache_path, &bytes) {
+                    log::warn!(
+                        "rustmix-wave=sleep-cover status=write-failed path={} error={error}",
+                        book.path
+                    );
+                }
+                cover
+            }
+        };
+        (!cover.placeholder).then_some(cover)
     }
 }
 
@@ -563,6 +632,60 @@ fn decode_and_dither_to_size(
         bits,
         placeholder: false,
     })
+}
+
+/// Decode + center-crop + resize + dither to exactly `target_width x
+/// target_height`: the "fill" counterpart of [`decode_and_dither_fit_within`]
+/// used for the full-screen sleep cover, where letterbox bars would waste
+/// panel area and stretching would distort the art.
+fn decode_and_dither_fill(
+    bytes: &[u8],
+    media_type: &str,
+    target_width: u32,
+    target_height: u32,
+) -> Result<CachedThumbnail, String> {
+    let target_width_u16 = u16::try_from(target_width)
+        .map_err(|_| format!("target width exceeds u16: {target_width}"))?;
+    let target_height_u16 = u16::try_from(target_height)
+        .map_err(|_| format!("target height exceeds u16: {target_height}"))?;
+    let gray = decode_gray(bytes, media_type, target_width_u16, target_height_u16)?;
+    let cropped = crop_to_aspect(gray, target_width, target_height);
+    let resized = resize_area_average(&cropped, target_width, target_height);
+    drop(cropped);
+    let bits = floyd_steinberg_to_1bpp(resized);
+    Ok(CachedThumbnail {
+        width: target_width_u16,
+        height: target_height_u16,
+        bits,
+        placeholder: false,
+    })
+}
+
+/// Largest centered region of `src` with the `aspect_w:aspect_h` ratio.
+fn crop_to_aspect(src: GrayImage, aspect_w: u32, aspect_h: u32) -> GrayImage {
+    let (source_w, source_h) = (u64::from(src.width), u64::from(src.height));
+    let (aspect_w, aspect_h) = (u64::from(aspect_w.max(1)), u64::from(aspect_h.max(1)));
+    let (crop_w, crop_h) = if source_w * aspect_h > source_h * aspect_w {
+        ((source_h * aspect_w / aspect_h).max(1), source_h)
+    } else {
+        (source_w, (source_w * aspect_h / aspect_w).max(1))
+    };
+    if crop_w == source_w && crop_h == source_h {
+        return src;
+    }
+    let x0 = ((source_w - crop_w) / 2) as usize;
+    let y0 = ((source_h - crop_h) / 2) as usize;
+    let (crop_w, crop_h) = (crop_w as usize, crop_h as usize);
+    let source_width = src.width as usize;
+    let mut pixels = Vec::with_capacity(crop_w * crop_h);
+    for row in src.pixels.chunks_exact(source_width).skip(y0).take(crop_h) {
+        pixels.extend_from_slice(&row[x0..x0 + crop_w]);
+    }
+    GrayImage {
+        width: crop_w as u32,
+        height: crop_h as u32,
+        pixels,
+    }
 }
 
 /// Decode + resize + dither one embedded EPUB image to fit within
@@ -1090,6 +1213,28 @@ fn cover_fingerprint(book: &ReaderBook) -> u64 {
     hash
 }
 
+/// Bumped whenever the `.SLC` full-screen sleep cover decode or format
+/// changes in a way that must invalidate every existing entry.
+const FULLSCREEN_COVER_FORMAT_VERSION: &str = "1";
+
+fn fullscreen_cover_fingerprint(book: &ReaderBook, width: u16, height: u16) -> u64 {
+    let mut hash = CACHE_FNV_OFFSET;
+    fn feed(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(CACHE_FNV_PRIME);
+        }
+    }
+    feed(&mut hash, b"sleep-cover");
+    feed(&mut hash, book.path.as_bytes());
+    feed(&mut hash, &book.size_bytes.to_le_bytes());
+    feed(&mut hash, &book.modified_seconds.to_le_bytes());
+    feed(&mut hash, &width.to_le_bytes());
+    feed(&mut hash, &height.to_le_bytes());
+    feed(&mut hash, FULLSCREEN_COVER_FORMAT_VERSION.as_bytes());
+    hash
+}
+
 /// Small local copy of `ReaderBook`'s format tag: `BookFormat::marker` exists
 /// in [`crate::reader`] but is private to that module.
 fn book_format_marker(format: BookFormat) -> &'static str {
@@ -1175,6 +1320,28 @@ mod tests {
         MAX_PNG_DECODED_BUFFER_BYTES, THUMB_BITMAP_BYTES, THUMB_HEIGHT, THUMB_WIDTH,
     };
     use crate::reader::{BookFormat, ReaderBook};
+
+    #[test]
+    fn crop_to_aspect_keeps_the_centered_region() {
+        // 6x2 source, columns numbered 0..6; a 1:1 crop keeps columns 2..4.
+        let wide = GrayImage {
+            width: 6,
+            height: 2,
+            pixels: vec![0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5],
+        };
+        let cropped = super::crop_to_aspect(wide, 1, 1);
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        assert_eq!(cropped.pixels, vec![2, 3, 2, 3]);
+        // 2x6 source, rows numbered 0..6; a 1:1 crop keeps rows 2..4.
+        let tall = GrayImage {
+            width: 2,
+            height: 6,
+            pixels: vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+        };
+        let cropped = super::crop_to_aspect(tall, 1, 1);
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        assert_eq!(cropped.pixels, vec![2, 2, 3, 3]);
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()

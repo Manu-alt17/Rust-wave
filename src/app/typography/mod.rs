@@ -437,6 +437,7 @@ mod tests {
         let preferences = DisplayPreferences {
             font_family: UiFontFamily::AtkinsonHyperlegible,
             font_size: UiFontSize::Large,
+            ..DisplayPreferences::default()
         };
         assert!(
             preferences.heading_style().line_height() >= preferences.body_style().line_height()

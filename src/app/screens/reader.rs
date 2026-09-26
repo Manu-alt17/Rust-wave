@@ -1161,15 +1161,6 @@ pub fn render_page(
     draw_reading_progress(display, state, session, width)?;
     draw_reader_wheel(display, &body, body_style, &state.reader.dictionary_mode)?;
 
-    if state.reader.preferences.theme == ReadingTheme::HighContrast {
-        Rectangle::new(
-            Point::new(body.frame.left, body.frame.top),
-            Size::new(body.frame.width() as u32, body.frame.height() as u32),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
-        .draw(display)?;
-    }
-
     if let Some(page) = session.current_cached_page() {
         let line_step = i32::from(body_style.line_height()) + 2;
         let first_baseline = body.text.top + i32::from(body_style.line_height());
@@ -1213,7 +1204,15 @@ pub fn render_page(
         .draw_clipped(display, body.text)?;
     }
 
-    draw_reader_footer(display, state, width, height, footer_line)
+    draw_reader_footer(display, state, width, height, footer_line)?;
+
+    // HighContrast is a night mode: the page is drawn exactly as Classic,
+    // then the whole panel is flipped to white-on-black so the e-paper
+    // reflects far less light when reading in the dark.
+    if state.reader.preferences.theme == ReadingTheme::HighContrast {
+        display.invert_all();
+    }
+    Ok(())
 }
 
 /// Diagnostic for field reports of pages that rendered fine once and later
@@ -1756,17 +1755,12 @@ impl ReaderFrameBounds {
     const fn width(self) -> i32 {
         self.right - self.left
     }
-
-    #[must_use]
-    const fn height(self) -> i32 {
-        self.bottom - self.top
-    }
 }
 
 impl ReaderBodyGeometry {
-    /// Shared Reader body rectangle used by Classic and High Contrast. The
-    /// stronger High Contrast frame stays outside this viewport, so switching
-    /// themes never changes TXT pagination or cache fingerprints. The left
+    /// Shared Reader body rectangle used by Classic and High Contrast. High
+    /// Contrast only inverts the finished frame, so switching themes never
+    /// changes TXT pagination or cache fingerprints. The left
     /// and right margins match `crate::reader::READER_BODY_MARGIN_PX`, which
     /// TXT/EPUB pagination also uses to compute `ReaderLayout::available_width_px`
     /// -- keeping the two in sync is what lets pagination wrap lines to fill
@@ -2208,12 +2202,13 @@ fn render_theme_editor(
             theme.label_i18n(locale),
             specimen_style,
         )?;
-        // Same border `render_page` draws around the body for HighContrast
-        // ([render_page]), reused here unchanged so the preview matches.
+        // Same inversion `render_page` applies for HighContrast, limited to
+        // the inside of the row's selection border so the preview matches.
         if theme == ReadingTheme::HighContrast {
-            Rectangle::new(Point::new(28, top + 6), Size::new(424, 52))
-                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
-                .draw(display)?;
+            display.invert_logical_rect(&Rectangle::new(
+                Point::new(24, top + 4),
+                Size::new(432, 56),
+            ));
         }
     }
     Ok(())

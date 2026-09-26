@@ -232,6 +232,10 @@ fn append_session(stats_root: &str, session: ReadingSession) -> Result<(), Strin
 }
 
 fn read_month_log(stats_root: &str, year: u16, month: u8) -> Vec<ReadingSession> {
+    let mut span = crate::boot_profile::span("reading-stats-read-month");
+    if crate::boot_profile::is_active() {
+        span.detail(format_args!("{year:04}-{month:02}"));
+    }
     let path = month_log_path(stats_root, year, month);
     let Ok(file) = File::open(&path) else {
         return Vec::new();
@@ -243,20 +247,21 @@ fn read_month_log(stats_root: &str, year: u16, month: u8) -> Vec<ReadingSession>
         .collect()
 }
 
-/// Read the current month's log plus `months_back` preceding months' logs.
-/// Bounded and exact: it walks calendar months by field arithmetic rather
-/// than jumping fixed day counts, so it never skips a short month.
-fn read_sessions_recent_months(
+/// Read the current month's log plus `months_back` preceding months' logs,
+/// one entry per month, newest first. Bounded and exact: it walks calendar
+/// months by field arithmetic rather than jumping fixed day counts, so it
+/// never skips a short month.
+fn read_recent_month_logs(
     stats_root: &str,
     months_back: u32,
     now: u64,
-) -> Vec<ReadingSession> {
+) -> Vec<Vec<ReadingSession>> {
     let start = ntp::utc_from_unix_seconds(now);
     let mut year = start.year;
     let mut month = start.month;
-    let mut sessions = Vec::new();
+    let mut months = Vec::new();
     for _ in 0..=months_back {
-        sessions.extend(read_month_log(stats_root, year, month));
+        months.push(read_month_log(stats_root, year, month));
         if month == 1 {
             month = 12;
             year = year.saturating_sub(1);
@@ -264,7 +269,7 @@ fn read_sessions_recent_months(
             month -= 1;
         }
     }
-    sessions
+    months
 }
 
 fn aggregate_daily(sessions: &[ReadingSession]) -> Vec<DailyStats> {
@@ -444,10 +449,13 @@ pub fn compute_snapshot(
     now: u64,
     book_progress: Option<CurrentBookProgress>,
 ) -> ReadingStatsSnapshot {
+    let _span = crate::boot_profile::span("reading-stats-compute");
     let today = yyyymmdd_from_unix_seconds(now);
 
-    let current_month = ntp::utc_from_unix_seconds(now);
-    let month_sessions = read_month_log(stats_root, current_month.year, current_month.month);
+    // Every log is read once: the current month, the recent window and the
+    // streak window below are all prefixes of this newest-first list.
+    let months = read_recent_month_logs(stats_root, STREAK_LOOKBACK_MONTHS, now);
+    let month_sessions = months.first().map_or(&[][..], Vec::as_slice);
     let month_seconds: u32 = month_sessions
         .iter()
         .map(ReadingSession::duration_seconds)
@@ -457,7 +465,7 @@ pub fn compute_snapshot(
     // Current + previous month always covers any trailing 7-day window and
     // the 10-session speed window, regardless of where in the month `now`
     // falls.
-    let recent_sessions = read_sessions_recent_months(stats_root, 1, now);
+    let recent_sessions: Vec<ReadingSession> = months.iter().take(2).flatten().copied().collect();
     let recent_daily = aggregate_daily(&recent_sessions);
     let today_stats = recent_daily.iter().find(|day| day.date == today).copied();
     let week_start = now.saturating_sub(6 * 86_400);
@@ -468,7 +476,7 @@ pub fn compute_snapshot(
         .sum::<u64>()
         .min(u64::from(u32::MAX)) as u32;
 
-    let streak_sessions = read_sessions_recent_months(stats_root, STREAK_LOOKBACK_MONTHS, now);
+    let streak_sessions: Vec<ReadingSession> = months.iter().flatten().copied().collect();
     let streak_daily = aggregate_daily(&streak_sessions);
     let streak_days = current_streak_days(&streak_daily, now);
 
@@ -499,7 +507,7 @@ pub fn compute_snapshot(
         remaining_chapter_seconds,
         remaining_book_seconds,
         last_7_days: last_7_days_bars(&recent_daily, now),
-        books_this_month: top_books_this_month(&month_sessions),
+        books_this_month: top_books_this_month(month_sessions),
     }
 }
 

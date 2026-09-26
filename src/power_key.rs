@@ -83,16 +83,17 @@ impl SleepWakeGuard {
     }
 }
 
-/// Minimum time after boot before a PMIC Power-key event is acted on. The
-/// physical press that just powered the board back on can still be latched
-/// (or physically ongoing) when the event loop starts; `initialize_power_key_events`
-/// already clears any stale `INTSTS2` bits before the loop begins, but this
-/// guard is defense in depth against a fresh event landing in that same
-/// narrow window and immediately shutting the board back down.
+/// Minimum time after the event loop starts polling the Power key before a
+/// PMIC Power-key event is acted on. The physical press that just powered
+/// the board back on can still be physically ongoing when polling starts:
+/// the loop already discards anything latched during boot, and this guard
+/// covers a release that lands just after that. Measured from the start of
+/// polling, not from boot: boot time varies (and polling used to start
+/// seconds after this window had already expired, so it never applied).
 pub const POWER_KEY_BOOT_GUARD_QUIET_MS: u64 = 900;
 
 /// Suppresses PMIC Power-key events for [`POWER_KEY_BOOT_GUARD_QUIET_MS`]
-/// after boot. Unlike [`SleepWakeGuard`] (armed on entry into sleep, reset on
+/// after polling starts. Unlike [`SleepWakeGuard`] (armed on entry into sleep, reset on
 /// wake), this guard only ever needs to open once per boot and then stays
 /// open, so it carries no re-arming state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -102,14 +103,14 @@ pub struct BootPowerKeyGuard {
 
 impl BootPowerKeyGuard {
     /// True while a Power-key event landing right now should be ignored.
-    /// Once `elapsed_since_boot_ms` first reaches the quiet window the guard
-    /// opens permanently, so later calls never need to keep re-checking the
-    /// clock.
+    /// Once `elapsed_since_polling_ms` first reaches the quiet window the
+    /// guard opens permanently, so later calls never need to keep
+    /// re-checking the clock.
     #[must_use]
-    pub fn should_ignore(&mut self, elapsed_since_boot_ms: u64) -> bool {
+    pub fn should_ignore(&mut self, elapsed_since_polling_ms: u64) -> bool {
         if self.armed {
             false
-        } else if elapsed_since_boot_ms < POWER_KEY_BOOT_GUARD_QUIET_MS {
+        } else if elapsed_since_polling_ms < POWER_KEY_BOOT_GUARD_QUIET_MS {
             true
         } else {
             self.armed = true;

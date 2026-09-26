@@ -16,7 +16,7 @@ mod firmware {
     use esp_idf_svc::{
         fs::fatfs::Fatfs,
         hal::{
-            delay::FreeRtos,
+            delay::{Ets, FreeRtos},
             gpio::{AnyIOPin, PinDriver, Pull},
             i2c::{I2cConfig, I2cDriver},
             i2s::{
@@ -42,15 +42,17 @@ mod firmware {
         log::EspLogger,
         sys,
     };
-    use log::{info, warn};
+    use log::{debug, info, warn};
     #[cfg(feature = "rustmix-remote-ble")]
     use waveshare_epd397_rust_app::rustmix_remote::{
         ble_gatt::RustmixRemoteBleGattService, RemoteEvent, RemoteEventQueue,
     };
     use waveshare_epd397_rust_app::{
         alarm::{AlarmEngine, AlarmSnapshot, AlarmUiOutcome, ALARMS_CONFIG_PATH, ALARMS_ENABLED},
+        boot_profile,
         app::{
-            display::{DisplayPreferences, DISPLAY_CONFIG_PATH},
+            display::{DisplayPreferences, SleepScreenMode, DISPLAY_CONFIG_PATH},
+            menu::{CategoryUsage, MENU_USAGE_CONFIG_PATH},
             render_current_screen,
             screens::reader::library_visible_books,
             AppState, ScreenRoute, ALARM_POLL_SECONDS, AUTO_DEEP_SLEEP_IDLE_SECONDS,
@@ -77,7 +79,7 @@ mod firmware {
         },
         cover_cache::CoverCache,
         dictionary::{DICTIONARY_ROOT, DICTIONARY_SHARD_MAX_BYTES},
-        epaper::Epaper397,
+        epaper::{self, Epaper397},
         framebuffer::FrameBuffer,
         games::dirty_regions::MAX_DIRTY_REGIONS,
         imu::TapKind,
@@ -108,12 +110,12 @@ mod firmware {
             PanelGlobalReason, PanelRefreshCoordinator, PanelRefreshPlan, PanelRefreshRequest,
             PANEL_PARTIAL_REFRESH_LIMIT,
         },
-        power::Axp2101,
+        power::{self, Axp2101},
         power_key::{
             BootPowerKeyGuard, PowerKeyEvent, SleepWakeGuard, SleepWakeGuardDecision,
             POWER_KEY_BOOT_GUARD_QUIET_MS, POWER_KEY_POLL_MS, POWER_KEY_WAKE_GUARD_QUIET_MS,
         },
-        reader::{ReaderDictionaryMode, ReaderTickOutcome},
+        reader::{ReaderDictionaryMode, ReaderTickOutcome, ReadingTheme},
         reading_stats::{
             book_id_for, compute_snapshot, resolve_unix_timestamp, ReadingStatsSnapshot,
             ReadingStatsTracker, STATS_DIRECTORY,
@@ -122,8 +124,9 @@ mod firmware {
         rtc::RtcDateTime,
         rtc_alarm_interrupt::{espidf::RtcAlarmInterruptMonitor, RTC_ALARM_INTERRUPT_GPIO},
         power_profile::{self, PowerProfileTracker, POWER_PROFILE_LOG_SECONDS},
-        runtime_memory::log_runtime_memory,
+        runtime_memory::{debug_runtime_memory, log_runtime_memory},
         shared_i2c::SharedI2cBus,
+        sleep_cover::{compose_cover_sleep_frame, SLEEP_COVER_HEIGHT, SLEEP_COVER_WIDTH},
         sleep_images::{SleepImageCatalog, SleepImageSelection, SLEEP_IMAGE_DIRECTORY},
         sleep_mode::{SleepModeState, SleepWakeCause},
         sleep_network::SleepNetworkState,
@@ -223,6 +226,24 @@ mod firmware {
         }
     }
 
+    /// Append the post-boot phase of the boot profile to SD and print the
+    /// whole report to serial. Printing is deferred to here because the
+    /// report itself is ~100 lines: logging it during boot would add most of
+    /// a second of blocking UART time to what it measures.
+    fn finish_boot_profile(reason: &str, sd_mounted: bool) {
+        boot_profile::mark_with("boot-profile-finish", Some(reason));
+        if sd_mounted {
+            let header = format!("=== boot-profile phase=post-boot reason={reason}");
+            if let Err(error) = boot_profile::flush_to_file(BOOT_TIMING_LOG_PATH, &header) {
+                warn!("rustmix-wave=boot-profile status=flush-failed error={error}");
+            }
+        }
+        for line in boot_profile::finish() {
+            info!("{line}");
+        }
+        info!("rustmix-wave=boot-profile status=finished reason={reason}");
+    }
+
     fn append_boot_timing_log(line: &str) {
         if let Some(parent) = std::path::Path::new(BOOT_TIMING_LOG_PATH).parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -249,6 +270,10 @@ mod firmware {
         // time can be measured end to end (e.g. to compare with the overlay
         // disabled) without needing an external stopwatch on the UART log.
         let boot_started = Instant::now();
+        // Its timestamp is also the time spent in ROM, bootloader and
+        // ESP-IDF startup before this function was entered.
+        boot_profile::mark("run-entered");
+        let early_span = boot_profile::span("logger-pm-bootcause");
         sys::link_patches();
         EspLogger::initialize_default();
         info!("rustmix-wave=epd397-rust-app-start");
@@ -270,23 +295,24 @@ mod firmware {
             light_sleep_enable: true,
         };
         match unsafe { sys::esp_pm_configure((&raw const pm_config).cast::<core::ffi::c_void>()) } {
-            sys::ESP_OK => info!(
+            sys::ESP_OK => debug!(
                 "rustmix-wave=power-management status=enabled max-mhz={} min-mhz={} light-sleep={}",
                 pm_config.max_freq_mhz, pm_config.min_freq_mhz, pm_config.light_sleep_enable
             ),
             error => warn!("rustmix-wave=power-management status=failed error-code={error}"),
         }
         power_profile::log_build_status();
-        info!(
+        debug!(
             "rustmix-wave=product-ui-shell-start product={PRODUCT_SLUG} version={FIRMWARE_VERSION} milestone={UI_SHELL_MILESTONE}"
         );
         let mut boot_cause = mcu_deep_sleep::espidf::boot_cause();
-        info!(
+        debug!(
             "rustmix-wave=boot-cause status=classified cause={} wake-gpio={}",
             boot_cause.marker(),
             mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO
         );
 
+        early_span.end();
         let peripherals = Peripherals::take()?;
 
         #[cfg(feature = "rustmix-remote-ble")]
@@ -296,6 +322,7 @@ mod firmware {
         // CMD GPIO17, CLK GPIO16, D0 GPIO15, D1 GPIO7, D2 GPIO8, D3 GPIO18.
         // Mount failure is non-fatal so the verified product shell still boots
         // when no card is inserted.
+        let sd_span = boot_profile::span("sd-mount");
         let mounted_sd = (|| {
             let host = SdMmcHostDriver::new_4bits(
                 peripherals.sdmmc1,
@@ -318,7 +345,7 @@ mod firmware {
         })();
         let mounted_sd = match mounted_sd {
             Ok(mounted) => {
-                info!(
+                debug!(
                     "rustmix-wave=sdmmc-mount status=ready mount={SD_MOUNT_POINT} mode=4bit-fat access=ui-readonly speed-khz={SDMMC_STABLE_SPEED_KHZ} timeout-ms={SDMMC_COMMAND_TIMEOUT_MS} retry-attempts={STORAGE_IO_RETRY_ATTEMPTS}"
                 );
                 Some(mounted)
@@ -330,7 +357,10 @@ mod firmware {
                 None
             }
         };
+        sd_span.end();
+        let reset_reason_span = boot_profile::span("reset-reason-record");
         record_reset_reason(mounted_sd.is_some());
+        reset_reason_span.end();
         let mut storage_browser = StorageBrowser::new(SD_MOUNT_POINT, mounted_sd.is_some());
         let _mounted_sd = mounted_sd;
 
@@ -352,6 +382,7 @@ mod firmware {
         // transaction so a wedged bus surfaces as a recoverable I2C error
         // instead of a silent, total lockup.
         const I2C_BUS_TIMEOUT_MS: u64 = 20;
+        let i2c_span = boot_profile::span("i2c-init");
         let i2c_config = I2cConfig::new()
             .baudrate(400.kHz().into())
             .timeout(Duration::from_millis(I2C_BUS_TIMEOUT_MS).into());
@@ -363,6 +394,8 @@ mod firmware {
         )?;
         let shared_i2c = SharedI2cBus::new(i2c);
         let mut panel_power = Axp2101::new(shared_i2c.clone());
+        i2c_span.end();
+        let pmic_span = boot_profile::span("pmic-boot-reads");
 
         // PMIC-side corroboration for `boot_cause`: the ESP32-S3's own
         // wakeup-cause register cannot tell a PMIC power-key wake (a real
@@ -373,27 +406,85 @@ mod firmware {
         // `panel_power` moves into `Epaper397::new` below and before
         // anything else can touch that register, so a stale marker can never
         // survive into a later, unrelated reset.
-        match panel_power.take_shutdown_marker() {
-            Ok(true) => {
-                if boot_cause == mcu_deep_sleep::BootCause::PowerOnOrReset {
-                    boot_cause = mcu_deep_sleep::BootCause::PmicPowerKeyOn;
-                }
+        let pmic_shutdown_marker = match panel_power.take_shutdown_marker() {
+            Ok(marker) => marker,
+            Err(error) => {
+                warn!("rustmix-wave=pmic-shutdown-marker status=read-failed error={error:#}");
+                false
             }
-            Ok(false) => {}
-            Err(error) => warn!(
-                "rustmix-wave=pmic-shutdown-marker status=read-failed error={error:#}"
-            ),
+        };
+        if pmic_shutdown_marker && boot_cause == mcu_deep_sleep::BootCause::PowerOnOrReset {
+            boot_cause = mcu_deep_sleep::BootCause::PmicPowerKeyOn;
         }
-        match panel_power.read_power_on_off_source() {
-            Ok((pwron, pwroff)) => info!(
-                "rustmix-wave=pmic-power-source status=logged pwron=0x{pwron:02X} pwroff=0x{pwroff:02X}"
-            ),
-            Err(error) => warn!("rustmix-wave=pmic-power-source status=read-failed error={error:#}"),
+        let pwron_status = match panel_power.read_power_on_off_source() {
+            Ok((pwron, pwroff)) => {
+                info!(
+                    "rustmix-wave=pmic-power-source status=logged pwron=0x{pwron:02X} pwroff=0x{pwroff:02X}"
+                );
+                boot_profile::mark_with(
+                    "pmic-power-source",
+                    Some(format!(
+                        "pwron=0x{pwron:02X} pwroff=0x{pwroff:02X} shutdown-marker={pmic_shutdown_marker}"
+                    )),
+                );
+                Some(pwron)
+            }
+            Err(error) => {
+                warn!("rustmix-wave=pmic-power-source status=read-failed error={error:#}");
+                None
+            }
+        };
+
+        // Plugging a USB cable into a device the firmware powered off makes
+        // the AXP2101 power the board back on by itself (VBUS insert is a
+        // hardware power-on source). The user did not ask for that, so go
+        // straight back off before the panel is touched: the sleep image
+        // stays on the glass and charging continues with the rails down.
+        // The marker is rewritten first so the next real Power-key press
+        // still resumes like any other PMIC wake. Limited to a genuine
+        // ESP32-S3 power-on reset so a flash/monitor reset over USB (which
+        // leaves `PWRON_STATUS` untouched) never bounces the board off.
+        if pmic_shutdown_marker
+            && pwron_status.is_some_and(power::is_vbus_insert_power_on)
+            && unsafe { sys::esp_reset_reason() } == sys::esp_reset_reason_t_ESP_RST_POWERON
+        {
+            info!("rustmix-wave=pmic-vbus-power-on status=returning-off shutdown=pmic");
+            match panel_power.write_shutdown_marker() {
+                Ok(()) => {
+                    if let Err(error) = panel_power.power_off() {
+                        warn!("rustmix-wave=pmic-power-off status=failed reason=vbus-insert error={error:#}");
+                    } else {
+                        warn!("rustmix-wave=pmic-power-off status=returned-unexpectedly reason=vbus-insert");
+                    }
+                    // Same fallback as the sleep path: real MCU deep sleep,
+                    // woken by SELECT. Only returns if it could not be armed,
+                    // in which case boot simply continues as normal.
+                    if let Err(error) = mcu_deep_sleep::espidf::enter() {
+                        warn!("rustmix-wave=mcu-deep-sleep status=failed reason=vbus-insert error={error:#}");
+                        if let Err(error) = mcu_deep_sleep::espidf::set_light_sleep_enabled(true) {
+                            warn!(
+                                "rustmix-wave=power-management status=light-sleep-restore-failed error={error:#}"
+                            );
+                        }
+                    }
+                }
+                Err(error) => warn!(
+                    "rustmix-wave=pmic-shutdown-marker status=write-failed reason=vbus-insert error={error:#}"
+                ),
+            }
         }
         match panel_power.read_power_key_timing_config() {
-            Ok((pwroff_en, irq_off_on_level)) => info!(
-                "rustmix-wave=pmic-power-key-timing status=logged pwroff-en=0x{pwroff_en:02X} irq-off-on-level=0x{irq_off_on_level:02X}"
-            ),
+            Ok((pwroff_en, irq_off_on_level)) => {
+                info!(
+                    "rustmix-wave=pmic-power-key-timing status=logged pwroff-en=0x{pwroff_en:02X} irq-off-on-level=0x{irq_off_on_level:02X}"
+                );
+                boot_profile::mark_with(
+                    "pmic-power-key-timing",
+                    Some(format!(
+                        "pwroff-en=0x{pwroff_en:02X} irq-off-on-level=0x{irq_off_on_level:02X}"
+                    )),
+                );
+            }
             Err(error) => warn!(
                 "rustmix-wave=pmic-power-key-timing status=read-failed error={error:#}"
             ),
@@ -404,6 +495,8 @@ mod firmware {
             mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO
         );
 
+        pmic_span.end();
+        let panel_construct_span = boot_profile::span("spi-gpio-panel-construct");
         let spi_driver_config = SpiDriverConfig::new().dma(Dma::Auto(4096));
         let spi_driver = SpiDriver::new(
             peripherals.spi3,
@@ -430,6 +523,7 @@ mod firmware {
         // by `mcu_deep_sleep::espidf::enter` on the previous cycle. Release it
         // back to the digital domain before the SELECT PinDriver claims it.
         mcu_deep_sleep::espidf::release_wake_pin()?;
+        panel_construct_span.end();
 
         // Real deep sleep is a full reboot: nothing in RAM survived, but the
         // e-paper image itself needs no redraw to "stay" since it is still
@@ -443,9 +537,10 @@ mod firmware {
         // rest of boot (see the removed `wake-overlay-timing` log), not
         // worth keeping for that little.
 
+        let config_span = boot_profile::span("config-display");
         let display_preferences = match DisplayPreferences::load_from_path(DISPLAY_CONFIG_PATH) {
             Ok(preferences) => {
-                info!(
+                debug!(
                     "rustmix-wave=display-config status=ready path={DISPLAY_CONFIG_PATH} font-family={} font-size={}",
                     preferences.font_family.marker(),
                     preferences.font_size.marker()
@@ -466,9 +561,11 @@ mod firmware {
         // Credentials are read from removable storage. Never log the password.
         // Mutable so a save from the on-device Wi-Fi setup screen keeps this
         // cache in sync for later sleep/wake reconnects.
+        config_span.end();
+        let config_span = boot_profile::span("config-wifi");
         let mut network_config = match NetworkConfig::load_from_path(WIFI_CONFIG_PATH) {
             Ok(config) => {
-                info!(
+                debug!(
                     "rustmix-wave=wifi-config status=ready path={WIFI_CONFIG_PATH} ssid={} saved-networks={} timezone={} ntp-server={}",
                     first_saved_ssid(&config), config.networks.len(), config.timezone, config.ntp_server
                 );
@@ -482,9 +579,11 @@ mod firmware {
             }
         };
 
+        config_span.end();
+        let config_span = boot_profile::span("config-weather");
         let weather_config = match WeatherConfig::load_from_path(WEATHER_CONFIG_PATH) {
             Ok(config) => {
-                info!(
+                debug!(
                     "rustmix-wave=weather-config status=ready path={WEATHER_CONFIG_PATH} provider={} location={} latitude={:.4} longitude={:.4} timezone={} refresh-minutes={}",
                     config.provider,
                     config.location,
@@ -503,10 +602,12 @@ mod firmware {
             }
         };
 
+        config_span.end();
+        let config_span = boot_profile::span("config-alarms");
         let mut alarm_engine = match AlarmEngine::load_from_path(ALARMS_CONFIG_PATH) {
             Ok(engine) => {
                 let snapshot = engine.snapshot();
-                info!(
+                debug!(
                     "rustmix-wave=alarm-config status=ready path={ALARMS_CONFIG_PATH} schedules={} snooze-minutes={}",
                     snapshot.alarms.len(), snapshot.snooze_minutes
                 );
@@ -520,6 +621,7 @@ mod firmware {
             }
         };
 
+        config_span.end();
         let mut board_services = BoardServices::new(shared_i2c.clone());
 
         // Schematic trace confirmed ALDO1, ALDO4, BLDO1, BLDO2, CPUSLDO,
@@ -528,13 +630,16 @@ mod firmware {
         // disable them once at boot regardless of the PMIC's power-on
         // default. DCDC1 (system VCC3V3) and DCDC5 are never touched.
         let mut misc_power = Axp2101::new(shared_i2c.clone());
+        let rails_span = boot_profile::span("pmic-unused-rails-disable");
         match misc_power.disable_unused_pmic_rails() {
-            Ok(()) => info!("rustmix-wave=pmic-unused-rails-disable status=done rails=aldo1,aldo4,bldo1,bldo2,cpusldo,dldo1,dldo2,dcdc2,dcdc3,dcdc4"),
+            Ok(()) => debug!("rustmix-wave=pmic-unused-rails-disable status=done rails=aldo1,aldo4,bldo1,bldo2,cpusldo,dldo1,dldo2,dcdc2,dcdc3,dcdc4"),
             Err(error) => {
                 warn!("rustmix-wave=pmic-unused-rails-disable status=failed error={error:#}")
             }
         }
 
+        rails_span.end();
+        let inputs_span = boot_profile::span("gpio-inputs-and-input-thread");
         let buttons = Buttons::new(
             PinDriver::input(peripherals.pins.gpio4, Pull::Up)?,
             PinDriver::input(peripherals.pins.gpio6, Pull::Up)?,
@@ -542,10 +647,10 @@ mod firmware {
         let select_button =
             SelectHoldButton::new(PinDriver::input(peripherals.pins.gpio5, Pull::Up)?);
         let back_button = BootBackButton::new(PinDriver::input(peripherals.pins.gpio0, Pull::Up)?);
-        info!(
+        debug!(
             "rustmix-wave=boot-button-back status=ready gpio=0 active-low=true press=short action=back"
         );
-        info!(
+        debug!(
             "rustmix-wave=select-button-hold status=ready gpio=5 active-low=true short-press=confirm hold-ms={SELECT_LONG_PRESS_MS} long-press=contextual-navigation"
         );
         // The uploaded BSP routes the PCF85063 active-low alarm output to
@@ -553,9 +658,25 @@ mod firmware {
         // deep-sleep entry in the following isolated power milestone.
         let mut rtc_alarm_interrupt =
             RtcAlarmInterruptMonitor::new(PinDriver::input(peripherals.pins.gpio45, Pull::Up)?);
-        info!(
+        debug!(
             "rustmix-wave=rtc-alarm-int status=ready gpio={RTC_ALARM_INTERRUPT_GPIO} active-low=true wake-policy=active-loop-readiness"
         );
+        // Every boot-time pin driver is configured by now (audio's are only
+        // claimed later, lazily). Automatic light sleep has been allowed
+        // since `esp_pm_configure` at the top of `run`, so keep the awake
+        // pin configuration from here on rather than only once the main loop
+        // starts: the panel's RST line is held from the next statement on,
+        // across the rest of boot.
+        keep_gpio_state_in_light_sleep();
+
+        // Power the panel and pulse its hardware reset now, then let the
+        // controller finish resetting while the config loads and sensor
+        // bring-up below run, instead of sleeping through that time right
+        // before the first paint (`finish_initialize` further down).
+        let panel_begin_span = boot_profile::span("panel-begin-initialize");
+        panel.begin_initialize()?;
+        let panel_reset_released_at = Instant::now();
+        panel_begin_span.end();
 
         // Button GPIOs are polled on a dedicated background thread so a
         // press is never dropped while the main loop is stuck busy-waiting
@@ -589,6 +710,7 @@ mod firmware {
                         let mut activity = false;
                         match back_button.poll(&mut delay) {
                             Ok(true) => {
+                                boot_profile::mark_with("input-detected", Some("back"));
                                 input_queue.push(InputEvent::Back);
                                 activity = true;
                             }
@@ -599,10 +721,12 @@ mod firmware {
                         }
                         match select_button.poll(&mut delay) {
                             Ok(Some(SelectPressEvent::LongPress)) => {
+                                boot_profile::mark_with("input-detected", Some("select-long"));
                                 input_queue.push(InputEvent::SelectLongPress);
                                 activity = true;
                             }
                             Ok(Some(SelectPressEvent::ShortPress)) => {
+                                boot_profile::mark_with("input-detected", Some("select"));
                                 input_queue.push(InputEvent::Button(ButtonEvent::Select));
                                 activity = true;
                             }
@@ -613,6 +737,7 @@ mod firmware {
                         }
                         match buttons.poll(&mut delay) {
                             Ok(Some(event)) => {
+                                boot_profile::mark_with("input-detected", Some("up-down"));
                                 input_queue.push(InputEvent::Button(event));
                                 activity = true;
                             }
@@ -629,10 +754,12 @@ mod firmware {
                     }
                 })?;
         }
-        info!(
+        debug!(
             "rustmix-wave=input-poll-thread status=ready stack-bytes={INPUT_POLL_STACK_BYTES} idle-sleep-ms={INPUT_POLL_IDLE_SLEEP_MS}"
         );
 
+        inputs_span.end();
+        let appstate_span = boot_profile::span("appstate-and-regional-init");
         let mut service_delay = FreeRtosDelay;
         let mut frame = FrameBuffer::new_white();
         // Keep the growing product UI state off the firmware main-task stack.
@@ -643,6 +770,10 @@ mod firmware {
         let mut panel_refresh = PanelRefreshCoordinator::default();
         sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
         state.display = display_preferences;
+        // A missing file (first boot) just keeps the default history.
+        if let Ok(usage) = CategoryUsage::load_from_path(MENU_USAGE_CONFIG_PATH) {
+            state.category_usage = usage;
+        }
         // Reader/voice-notes/Lua SD catalog scans, and the audio codec
         // bring-up right after them, are deferred until after the first
         // e-paper frame is visible (see below the panel draw). The Home
@@ -672,14 +803,14 @@ mod firmware {
             Ok(saved) => {
                 state.regional.timezone = saved.timezone;
                 state.regional.locale = saved.locale;
-                info!(
+                debug!(
                     "rustmix-wave=clock-config status=ready path={CLOCK_CONFIG_PATH} timezone={} locale={}",
                     saved.timezone_name(),
                     saved.locale.name()
                 );
             }
             Err(error) => {
-                info!(
+                debug!(
                     "rustmix-wave=clock-config status=unavailable path={CLOCK_CONFIG_PATH} error={error:#}"
                 );
             }
@@ -690,7 +821,7 @@ mod firmware {
         state.update_alarm_snapshot(alarm_engine.snapshot());
         state.update_storage_snapshot(storage_browser.snapshot());
         log_storage_snapshot(&state.storage);
-        info!(
+        debug!(
             "rustmix-wave=regional-profile timezone={} display-offset={} rtc-storage-offset={} temperature-unit={}",
             state.regional.timezone_name(),
             state.regional.timezone_label_for_rtc(state.board.rtc),
@@ -698,8 +829,11 @@ mod firmware {
             state.regional.temperature_unit.marker()
         );
 
+        appstate_span.end();
+        let board_init_span = boot_profile::span("board-services-init");
         let init = board_services.initialize(&mut service_delay);
-        info!(
+        board_init_span.end();
+        debug!(
             "rustmix-wave=sample-board-services-init rtc={} environment={} power={} imu={} rtc-integrity-lost={} shtc3-id={} qmi8658-address={} qmi8658-revision={}",
             init.rtc_available,
             init.environment_available,
@@ -713,9 +847,10 @@ mod firmware {
             init.imu_revision
                 .map_or_else(|| "unavailable".into(), |value| format!("0x{value:02X}"))
         );
+        let power_key_span = boot_profile::span("power-key-init");
         let mut power_key_available = match board_services.initialize_power_key_events() {
             Ok(()) => {
-                info!("rustmix-wave=power-key status=ready source=axp2101-pek events=short-sleep,long-menu poll-ms={POWER_KEY_POLL_MS}");
+                debug!("rustmix-wave=power-key status=ready source=axp2101-pek events=short-sleep,long-menu poll-ms={POWER_KEY_POLL_MS}");
                 true
             }
             Err(error) => {
@@ -725,7 +860,10 @@ mod firmware {
                 false
             }
         };
+        power_key_span.end();
+        let snapshot_span = boot_profile::span("board-snapshot-read");
         state.update_board_snapshot(board_services.read_snapshot(&mut service_delay));
+        snapshot_span.end();
         log_board_snapshot(state.board, state.regional);
         if let Some(rtc) = state.board.rtc {
             alarm_engine.recompute_next(state.regional.localize_rtc(rtc));
@@ -740,17 +878,21 @@ mod firmware {
 
         // A real hardware deep-sleep wake is a full reboot: nothing in RAM,
         // including the router's route, survived. Reader persistence is
-        // normally deferred until after the first frame (see below) to keep
-        // every other boot fast, but when the durable marker recorded at the
-        // last deep-sleep entry (see the short-press handler below) says the
-        // Reader was active, load it now so the very first frame can route
-        // straight into resuming the last book instead of Home.
-        let mut reader_persistence_preloaded = None;
-        if boot_cause.is_sleep_resume()
+        // loaded before the first frame on every boot: ~45 ms of small text
+        // reads, against the ~530 ms partial refresh (plus a visible flash)
+        // it took to correct Home's Continue Reading card when it was loaded
+        // after the first frame instead. When the durable marker recorded at
+        // the last deep-sleep entry (see the short-press handler below) says
+        // the Reader was active, the book is also reopened here so the very
+        // first frame routes straight into it instead of Home.
+        let marker_span = boot_profile::span("reader-deep-sleep-marker-check");
+        let resume_reader_on_wake = boot_cause.is_sleep_resume()
             && _mounted_sd.is_some()
-            && state.reader.deep_sleep_marker_indicates_active()
-        {
-            let report = state.reader.load_persistent_state();
+            && state.reader.deep_sleep_marker_indicates_active();
+        marker_span.end();
+        let reader_persistence = state.reader.load_persistent_state();
+        if resume_reader_on_wake {
+            let _reopen_span = boot_profile::span("reader-reopen");
             if state.reader.request_continue() {
                 // Drive the reopen to completion right here instead of just
                 // queuing it for the main loop: the book being resumed was
@@ -770,7 +912,11 @@ mod firmware {
                     if state.reader.loading.is_none() || Instant::now() >= deadline {
                         break;
                     }
-                    if state.tick_reader() == ReaderTickOutcome::Failed {
+                    let mut tick_span = boot_profile::span("reader-tick");
+                    let outcome = state.tick_reader();
+                    tick_span.detail(format_args!("{outcome:?}"));
+                    tick_span.end();
+                    if outcome == ReaderTickOutcome::Failed {
                         break;
                     }
                 }
@@ -787,10 +933,34 @@ mod firmware {
             } else {
                 info!("rustmix-wave=deep-sleep-restore status=no-resumable-book");
             }
-            reader_persistence_preloaded = Some(report);
         }
 
-        panel.initialize()?;
+        // Everything Home's Continue Reading card draws, so the first frame
+        // is already complete: the reading stats behind its remaining-time
+        // clause, and the book cover. Only an already-cached thumbnail is
+        // used here -- generating one can take seconds -- and a missing one
+        // is built by the main loop's Continue Reading block, which repaints
+        // the card once it exists.
+        let stats_span = boot_profile::span("reading-stats-snapshot");
+        refresh_reading_stats_snapshot_now(&mut state);
+        stats_span.end();
+        if state.active_route() == ScreenRoute::Home {
+            if let Some(book) = state.reader.continue_reading_book() {
+                if let Some(thumbnail) =
+                    CoverCache::new(state.reader.cache_directory()).load_cached_thumbnail(&book)
+                {
+                    state.reader.continue_reading_thumbnail = Some((book.path, thumbnail));
+                }
+            }
+        }
+
+        let panel_finish_span = boot_profile::span("panel-finish-initialize");
+        let reset_recovery = Duration::from_millis(u64::from(epaper::RESET_RECOVERY_MS));
+        if let Some(remaining) = reset_recovery.checked_sub(panel_reset_released_at.elapsed()) {
+            std::thread::sleep(remaining);
+        }
+        panel.finish_initialize()?;
+        panel_finish_span.end();
         // This is the single global refresh that shows the real first
         // screen, on every boot cause. None of the work above (display/
         // network/weather/alarm config loads, board services, the
@@ -803,20 +973,17 @@ mod firmware {
         // has), so a press between this paint and then is queued, not
         // dropped or silently ignored.
         if boot_cause.is_sleep_resume() {
-            // Reader persistence (and so `continue_reading_progress()`) is
-            // already loaded by this point, but nothing has computed
-            // `state.reading_stats` yet on this fresh boot -- without this,
-            // the Home card's remaining-time clause renders blank until the
-            // reader is opened and left again (see
-            // `refresh_reading_stats_snapshot_now`).
-            refresh_reading_stats_snapshot_now(&mut state);
+            let render_span = boot_profile::span("render-first-frame");
             render_current_screen(&mut frame, &state)?;
+            render_span.end();
             // Timed the same way as `wake-overlay-timing`'s partial-refresh
             // phase, so the two can be compared directly: this is the global
             // refresh the overlay's cheaper partial refresh stands in for
             // until everything else is ready.
             let global_refresh_started = Instant::now();
+            let show_span = boot_profile::span("show-base-first-frame");
             panel.show_base(frame.as_bytes())?;
+            show_span.end();
             let global_refresh_ms = global_refresh_started.elapsed().as_millis();
             panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
             sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
@@ -828,10 +995,16 @@ mod firmware {
                 boot_started.elapsed().as_millis()
             );
             info!("{boot_to_ready_line}");
+            let timing_log_span = boot_profile::span("boot-timing-log-append");
             append_boot_timing_log(&boot_to_ready_line);
+            timing_log_span.end();
         } else {
+            let render_span = boot_profile::span("render-first-frame");
             render_current_screen(&mut frame, &state)?;
+            render_span.end();
+            let show_span = boot_profile::span("show-base-first-frame");
             panel.show_base(frame.as_bytes())?;
+            show_span.end();
             panel_refresh.reset_after_external_global(PanelGlobalReason::InitialBoot);
             sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
             info!(
@@ -839,12 +1012,15 @@ mod firmware {
             );
         }
         info!("rustmix-wave=epd397-rust-display-ready");
+        boot_profile::mark_with("first-frame-visible", Some(state.active_route().marker()));
+        let alarm_sync_span = boot_profile::span("rtc-alarm-hardware-sync");
         // Deferred alongside the reader/voice/audio work below: this I2C
         // write to the RTC's alarm registers has no effect on what was just
         // drawn, only on whether the physical RTC will raise its interrupt
         // line for the next scheduled alarm -- which only matters once the
         // device goes back to sleep, far later than this point.
         sync_alarm_hardware(&mut alarm_engine, &mut board_services, state.regional);
+        alarm_sync_span.end();
 
         // Reader/voice-notes/Lua SD catalog scans and the audio codec
         // bring-up happen only after the first e-paper frame is visible.
@@ -852,61 +1028,13 @@ mod firmware {
         // are a static const list), and on a real deep-sleep wake this is a
         // full reboot, so keeping them off the path to the first frame and
         // the button-polling main loop matters every time the device wakes.
-        // Skipped here when the block above already loaded it to decide
-        // whether to auto-resume the Reader before that first frame.
-        let reader_persistence = match reader_persistence_preloaded {
-            Some(report) => report,
-            None => {
-                let report = state.reader.load_persistent_state();
-                // On a real deep-sleep GPIO wake where the device was *not*
-                // actively reading when it slept (so the block above never
-                // preloaded this), the very first frame already painted
-                // above was drawn before this load ran -- so a Home screen's
-                // Continue Reading card showed "No book" even when a
-                // resumable book exists, and nothing would correct it until
-                // the user happened to navigate away from and back to Home.
-                // One quick partial refresh now that the real data is in
-                // fixes that without slowing down every deep-sleep wake's
-                // first frame the way preloading this unconditionally would.
-                if boot_cause.is_sleep_resume()
-                    && state.active_route() == ScreenRoute::Home
-                    && state.reader.continue_reading_progress().is_some()
-                {
-                    refresh_reading_stats_snapshot_now(&mut state);
-                    // Same book-cover load the main loop's own Continue
-                    // Reading tile block does every tick on Home (below,
-                    // past the `loop {` this runs before) -- without it,
-                    // this correction would show the right title/progress
-                    // text but still a blank cover for one more tick, until
-                    // that block's own refresh caught up and repainted a
-                    // second time right after this one.
-                    if let Some(book) = state.reader.continue_reading_book() {
-                        let cover_cache = CoverCache::new(state.reader.cache_directory());
-                        let thumbnail = cover_cache
-                            .load_cached_thumbnail(&book)
-                            .unwrap_or_else(|| cover_cache.generate_thumbnail(&book));
-                        state.reader.continue_reading_thumbnail = Some((book.path, thumbnail));
-                    }
-                    refresh_screen(
-                        &mut panel,
-                        &mut frame,
-                        &mut state,
-                        &mut panel_refresh,
-                        RefreshRequest::Normal,
-                    )?;
-                    info!(
-                        "rustmix-wave=wake-global-refresh reason=deep-sleep-continue-reading-card-correction"
-                    );
-                }
-                report
-            }
-        };
         // Queue Recent's other books for silent background warm-up into
         // `session_cache` (see `tick_background_warmup` below), so switching
         // to one of them later in this session is an instant swap instead of
         // a fresh SD reopen. Skips whichever book the block above just
         // queued for immediate foreground resume, if any, so it isn't warmed
         // twice.
+        let warmup_span = boot_profile::span("reader-seed-background-warmup");
         let active_on_open = state
             .reader
             .loading
@@ -915,6 +1043,7 @@ mod firmware {
         state
             .reader
             .seed_background_warmup(active_on_open.as_deref());
+        warmup_span.end();
         // The Reader/Voice Notes/Lua library scans themselves (as opposed to
         // the cheap STATE/POSITS/RECENT text-file reads above) are not run
         // here at all: `apply_category` already calls exactly these same
@@ -1071,6 +1200,7 @@ mod firmware {
         // In the r1 feature build, BLE owns the ESP32-S3 modem so Wi-Fi startup
         // is skipped. This keeps the accepted default firmware path unchanged
         // while validating the BLE GATT command path first.
+        let network_span = boot_profile::span("network-setup");
         #[cfg(feature = "rustmix-remote-ble")]
         let (mut network_runtime, _rustmix_remote_ble) = {
             let ble_service = (|| -> Result<RustmixRemoteBleGattService> {
@@ -1145,6 +1275,7 @@ mod firmware {
         };
         state.update_network_snapshot(network_runtime.snapshot());
         log_network_snapshot(&state.network);
+        network_span.end();
         let mut last_network_log = Instant::now();
         let mut last_network_fingerprint = state.network.log_fingerprint();
         // Explicitly activated only. Normal boot never starts the portal.
@@ -1168,116 +1299,120 @@ mod firmware {
         let mut voice_playback: Option<VoicePlaybackSession> = None;
         let mut voice_stereo_buffer = vec![0_u8; VOICE_PCM_STEREO_CAPTURE_BYTES];
         let mut voice_mono_buffer = vec![0_u8; VOICE_PCM_MONO_CHUNK_BYTES];
-        info!("rustmix-wave=open-meteo-weather-forecast-ready");
-        info!("rustmix-wave=open-meteo-fixed-point-json-parser-ready");
-        info!("rustmix-wave=open-meteo-whitespace-parser-repair-ready");
-        info!("rustmix-wave=rtc-alarm-scheduling-ui-ready");
-        info!("rustmix-wave=es8311-audio-diagnostics-audible-alarm-ready");
-        info!("rustmix-wave=es8311-pindriver-output-mode-repair-ready");
-        info!("rustmix-wave=es8311-i2s-data-route-repair-ready");
-        info!("rustmix-wave=es8311-waveshare-codec-profile-repair-ready");
-        info!(
+        // Measures the cost of the static readiness banner below on the
+        // blocking 115200-baud console, as a whole.
+        let banner_span = boot_profile::span("banner-logs");
+        debug!("rustmix-wave=open-meteo-weather-forecast-ready");
+        debug!("rustmix-wave=open-meteo-fixed-point-json-parser-ready");
+        debug!("rustmix-wave=open-meteo-whitespace-parser-repair-ready");
+        debug!("rustmix-wave=rtc-alarm-scheduling-ui-ready");
+        debug!("rustmix-wave=es8311-audio-diagnostics-audible-alarm-ready");
+        debug!("rustmix-wave=es8311-pindriver-output-mode-repair-ready");
+        debug!("rustmix-wave=es8311-i2s-data-route-repair-ready");
+        debug!("rustmix-wave=es8311-waveshare-codec-profile-repair-ready");
+        debug!(
             "rustmix-wave=wifi-monitor-log-quieting-ready policy=state-change-or-heartbeat heartbeat-seconds={NETWORK_LOG_HEARTBEAT_SECONDS} rssi-immediate=false"
         );
-        info!("rustmix-wave=rtc-alarm-int-readiness-ready gpio={RTC_ALARM_INTERRUPT_GPIO} active-low=true");
-        info!("rustmix-wave=power-key-sleep-image-mode-ready path={SLEEP_IMAGE_DIRECTORY} format=native-800x480-1bpp-bmp shutdown=pmic fallback=deep-sleep wake-gpio={} rtc-alarm-wake=disabled", mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO);
-        info!("rustmix-wave=power-key-short-sleep-long-menu-ready short-press=sleep-image long-press=display-maintenance-menu wake=power-key menu-action=manual-global-refresh");
-        info!("rustmix-wave=release-flash-workflow-safety-ready docs=consolidated workflow=ci release-artifact=elf supported-flash=espflash-flash factory-image=deferred");
-        info!("rustmix-wave=text-editor-layout-alignment-ready voice-title-editor=shared-grid-keyboard calendar-editor-status=compact-date keyboard=select-hold-hv-axis footer=width-safe");
-        info!("rustmix-wave=sleep-image-directory-classification-fix-ready policy=fat-metadata-fallback");
-        info!("rustmix-wave=network-suspended-sleep-image-mode-ready wifi=stop-on-sleep sntp=paused weather=paused shutdown=pmic fallback=deep-sleep");
-        info!("rustmix-wave=random-sleep-image-selection-ready source=esp-random policy=avoid-immediate-repeat-when-multiple");
-        info!("rustmix-wave=main-category-navigation-ready categories=5");
-        info!("rustmix-wave=reader-category-ready entries=3");
-        info!("rustmix-wave=productivity-category-ready entries=2");
-        info!("rustmix-wave=games-category-ready entries=1 status=sd-lua-catalog");
-        info!("rustmix-wave=tools-category-ready entries=3");
-        info!("rustmix-wave=settings-category-ready entries=9 display=true");
-        info!("rustmix-wave=display-settings-ready default-family=inter alternate-family=atkinson-hyperlegible default-size=standard profiles=compact,standard,large persistence={DISPLAY_CONFIG_PATH} scope=all-user-facing-screens");
-        info!("rustmix-wave=global-ui-typography-ready default-family=inter alternate-family=atkinson-hyperlegible default-size=standard profiles=compact,standard,large persistence={DISPLAY_CONFIG_PATH} scope=all-user-facing-screens");
-        info!("rustmix-wave=boot-button-hierarchical-back-ready gpio=0 active-low=true press=short policy=short-press-back");
-        info!("rustmix-wave=category-back-row-removal-ready policy=boot-press");
-        info!("rustmix-wave=global-typography-scale-increase-ready shift=two-raster-steps settings-page-size=6 display-copy=compact default-family=inter default-size=standard");
-        info!("rustmix-wave=secondary-screen-readability-reflow-ready detail-role=technical-tokens-only pagination=device-info-3-pages details=weather,audio,rtc,environment,motion,network synthetic-back-rows=removed");
-        info!("rustmix-wave=weather-fetch-resilience-ready retries=3 backoff-seconds=2,5,15 cache=last-known-good-in-memory retryable=tls-eof,http-connect,timeout,http-429,http-500,http-502,http-503,http-504");
-        info!("rustmix-wave=home-dashboard-redesign-ready header=simplified-dark date-time-row=true summary-strip=weather,battery,wifi cards=high-contrast footer=fixed categories=5 developer-notes=removed");
-        info!("rustmix-wave=calendar-foundation-ready mode=read-only monthly-view=true selected-day-summary=true range=2000-2099");
-        info!(
+        debug!("rustmix-wave=rtc-alarm-int-readiness-ready gpio={RTC_ALARM_INTERRUPT_GPIO} active-low=true");
+        debug!("rustmix-wave=power-key-sleep-image-mode-ready path={SLEEP_IMAGE_DIRECTORY} format=native-800x480-1bpp-bmp shutdown=pmic fallback=deep-sleep wake-gpio={} rtc-alarm-wake=disabled", mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO);
+        debug!("rustmix-wave=power-key-short-sleep-long-menu-ready short-press=sleep-image long-press=display-maintenance-menu wake=power-key menu-action=manual-global-refresh");
+        debug!("rustmix-wave=release-flash-workflow-safety-ready docs=consolidated workflow=ci release-artifact=elf supported-flash=espflash-flash factory-image=deferred");
+        debug!("rustmix-wave=text-editor-layout-alignment-ready voice-title-editor=shared-grid-keyboard calendar-editor-status=compact-date keyboard=select-hold-hv-axis footer=width-safe");
+        debug!("rustmix-wave=sleep-image-directory-classification-fix-ready policy=fat-metadata-fallback");
+        debug!("rustmix-wave=network-suspended-sleep-image-mode-ready wifi=stop-on-sleep sntp=paused weather=paused shutdown=pmic fallback=deep-sleep");
+        debug!("rustmix-wave=random-sleep-image-selection-ready source=esp-random policy=avoid-immediate-repeat-when-multiple");
+        debug!("rustmix-wave=main-category-navigation-ready categories=5");
+        debug!("rustmix-wave=reader-category-ready entries=3");
+        debug!("rustmix-wave=productivity-category-ready entries=2");
+        debug!("rustmix-wave=games-category-ready entries=1 status=sd-lua-catalog");
+        debug!("rustmix-wave=tools-category-ready entries=3");
+        debug!("rustmix-wave=settings-category-ready entries=9 display=true");
+        debug!("rustmix-wave=display-settings-ready default-family=inter alternate-family=atkinson-hyperlegible default-size=standard profiles=compact,standard,large persistence={DISPLAY_CONFIG_PATH} scope=all-user-facing-screens");
+        debug!("rustmix-wave=global-ui-typography-ready default-family=inter alternate-family=atkinson-hyperlegible default-size=standard profiles=compact,standard,large persistence={DISPLAY_CONFIG_PATH} scope=all-user-facing-screens");
+        debug!("rustmix-wave=boot-button-hierarchical-back-ready gpio=0 active-low=true press=short policy=short-press-back");
+        debug!("rustmix-wave=category-back-row-removal-ready policy=boot-press");
+        debug!("rustmix-wave=global-typography-scale-increase-ready shift=two-raster-steps settings-page-size=6 display-copy=compact default-family=inter default-size=standard");
+        debug!("rustmix-wave=secondary-screen-readability-reflow-ready detail-role=technical-tokens-only pagination=device-info-3-pages details=weather,audio,rtc,environment,motion,network synthetic-back-rows=removed");
+        debug!("rustmix-wave=weather-fetch-resilience-ready retries=3 backoff-seconds=2,5,15 cache=last-known-good-in-memory retryable=tls-eof,http-connect,timeout,http-429,http-500,http-502,http-503,http-504");
+        debug!("rustmix-wave=home-dashboard-redesign-ready header=simplified-dark date-time-row=true summary-strip=weather,battery,wifi cards=high-contrast footer=fixed categories=5 developer-notes=removed");
+        debug!("rustmix-wave=calendar-foundation-ready mode=read-only monthly-view=true selected-day-summary=true range=2000-2099");
+        debug!(
             "rustmix-wave=calendar-local-date-ready timezone=regional-profile source=rtc-localized"
         );
-        info!("rustmix-wave=calendar-navigation-ready modes=day,month select=toggle-mode select-hold=agenda back=boot-press");
-        info!("rustmix-wave=calendar-us-events-daily-agenda-ready root={CALENDAR_ROOT} personal={CALENDAR_EVENTS_FILE} us={CALENDAR_US_EVENTS_FILE} hindu=excluded markers=month-grid agenda=scrollable details=personal-editor missing-files=safe alarms=separate");
-        info!("rustmix-wave=calendar-personal-event-editor-ready writable=EVENTS.TXT temp=EVENTS.TMP backup=EVENTS.BAK operations=create,edit,delete us-holidays=read-only keyboard=select-hold-hv-axis alarms=separate");
-        info!("rustmix-wave=power-key-sleep-entry-wake-guard-ready source=axp2101-pek minimum-quiet-ms={POWER_KEY_WAKE_GUARD_QUIET_MS} policy=suppress-stale-until-quiet-window");
-        info!("rustmix-wave=unit-converter-foundation-ready categories=length,mass,temperature,volume mode=offline fixed-point=true precision=thousandths");
-        info!("rustmix-wave=unit-converter-navigation-ready fields=category,from-unit,value,to-unit,step-size back=boot-press");
-        info!("rustmix-wave=unit-converter-host-tests-ready coverage=length,mass,temperature,volume,bounds");
-        info!("rustmix-wave=reader-library-txt-foundation-ready path=/sdcard/RUSTMIX/BOOKS formats=txt,epub encoding=utf8,bom,windows-1252 opening=staged-first-page-first cache=ram-nearby-pages");
-        info!("rustmix-wave=reader-state-persistence-ready path=/sdcard/RUSTMIX/READER files=STATE.TXT,POSITS.TXT,RECENT.TXT,MARKS.TXT cache=CACHE atomic-replace=tmp-primary-backup fallback=corrupt-record-safe");
-        info!("rustmix-wave=reader-bookmarks-ready add-remove=true list=true recent=true continue-reading=true cache-fingerprint=path,size,modified,format,layout");
-        info!("rustmix-wave=reader-loading-ui-ready stages=open,encoding,resume,first-page,cache cancel=boot-press refresh=coarse-stage-boundaries");
-        info!("rustmix-wave=reader-options-shell-ready toc=none-for-txt,list-for-epub bookmarks=persistent clear-ghosting=manual-global-refresh");
-        info!("rustmix-wave=reader-ux-repair-ready menu=continue,library,bookmarks-ready normalization=utf8-punctuation,latin1,underscore-emphasis byte-offsets=preserved");
-        info!("rustmix-wave=reader-preferences-ready path=/sdcard/RUSTMIX/READER/PREFS.TXT theme=classic,high-contrast orientation=portrait,landscape font-size=small,medium,large,xlarge book-font=inter,atkinson-hyperlegible,serif,literata paragraph-alignment=justified,left,center,right show-progress=on,off atomic-replace=tmp-primary-backup");
-        info!("rustmix-wave=reader-high-contrast-layout-ready viewport=shared border=outside-text top-padding=true clip=right,bottom theme-change=redraw-only ghost-refresh=global-base");
-        info!("rustmix-wave=reader-txt-emphasis-cleanup-ready multiline-gutenberg=true word-internal-underscores=preserved repeated-separators=preserved byte-offsets=preserved");
-        info!("rustmix-wave=reader-per-book-resume-ready path=/sdcard/RUSTMIX/READER/POSITS.TXT records=64 fingerprint=path,size,modified,format atomic-replace=tmp-primary-backup routes=continue,books,files,bookmark");
-        info!("rustmix-wave=reader-controls-alignment-ready navigation=up-down-move-select-activate preferences=up-down-move-select-change back=boot-press");
-        info!("rustmix-wave=reader-options-split-ready actions=bookmark,toc,preferences,clear-ghosting,library,home editor=theme,orientation,font-size,font,paragraph-alignment,show-progress");
-        info!("rustmix-wave=reader-preferences-settings-navigation-ready move=up-down change=select back=boot-press persistence=immediate rows=theme,orientation,font-size,font,paragraph-alignment,show-progress");
-        info!("rustmix-wave=reader-preferences-editor-preview-ready open=select browse=up-down commit=select cancel=boot-press persistence=on-commit-only preview=icons-orientation-alignment,live-sample-text-font-size-font-theme rows=theme,orientation,font-size,font,paragraph-alignment");
-        info!("rustmix-wave=reader-fat83-persistence-ready positions=POSITS.TXT legacy-read=POSITIONS.TXT cache-basename=8hex extensions=CCH,TMP,BAK atomic-replace=true");
-        info!("rustmix-wave=reader-fat83-runtime-ready positions-write=POSITS.TXT legacy-read=POSITIONS.TXT cache-write=8hex-no-prefix extensions=CCH,TMP,BAK duplicate-degraded-log=suppressed");
-        info!("rustmix-wave=reader-bookmark-page-labels-ready anchor=byte-offset display=page-number layout-aware=true fallback=stored-page");
-        info!("rustmix-wave=library-bookmark-tab-rendering-ready status=saved-marks source=MARKS.TXT rows=title,page-number anchors=byte-offset page-label=layout-aware-fallback-stored books-files=txt-open preserved=true");
-        info!("rustmix-wave=reader-epub-reflowable-foundation-ready archive=zip-central-directory compression=stored,deflate package=container-xml,opf spine=xhtml reflow=bounded-utf8 cache=ram-nearby-pages");
-        info!("rustmix-wave=reader-epub-toc-ready sources=epub3-nav,epub2-ncx,fallback-spine route=reader-toc selection=byte-offset");
-        info!("rustmix-wave=reader-epub-parser-stack-isolation-ready worker=epub-parser stack-bytes=65536 main-task-stack-bytes=16384 policy=short-lived-worker-join");
-        info!("rustmix-wave=reader-epub-chapter-aware-presentation-ready page-label=chapter,page-of-total bookmarks=chapter,page-of-total library-title=opf-metadata fallback=fat-filename txt-path=preserved");
-        info!("rustmix-wave=reader-epub-watchdog-memory-pressure-repair-ready index-yield-every-pages=4 index-yield-ms=1 session-release=before-book-open layout-rebuild=move-document toc-jump=no-document-clone parser-worker-stack-bytes=65536 title-worker-stack-bytes=32768");
-        info!("rustmix-wave=reader-eink-font-pack-ready fonts=inter,atkinson-hyperlegible,serif,literata atkinson-source=atkinson-hyperlegible-next-medium literata-source=literata-medium glyphs=printable-ascii persisted-keys=serif,atkinson-hyperlegible cache-fingerprint=book-font epub-repagination=layout-rebuild bookmarks=byte-offset txt-epub-aligned=true");
-        info!("rustmix-wave=lua-runtime-foundation-ready mode=bootstrap-static,event-bridge root={LUA_APPS_DIRECTORY} manifest=APP.TOM entry=MAIN.LUA script-max-bytes=65536 vm-callbacks=sudoku,minesweeper,tilt-maze,motion-2048,sokoban-tilt-bounded-native");
-        info!("rustmix-wave=lua-native-dirty-region-canvas-ready commands=256 text-bytes=160 dirty-regions={MAX_DIRTY_REGIONS} partial-limit={PANEL_PARTIAL_REFRESH_LIMIT} transport=existing-fullscreen-partial panel-api=rust-owned");
-        info!("rustmix-wave=panel-refresh-coordinator-ready partial-limit={PANEL_PARTIAL_REFRESH_LIMIT} transport=existing-fullscreen-partial state=main-loop-owned lua-route-global-refresh=false");
-        info!("rustmix-wave=runtime-worker-boundary-ready workers=weather-fetch,lua-loader policy=short-lived-named-stack panel-spi=main-task-only");
-        info!("rustmix-wave=lua-loader-stack-isolation-ready worker=lua-loader stack-bytes={LUA_LOADER_WORKER_STACK_BYTES} main-task-stack-bytes=16384 policy=short-lived-worker-join");
-        info!("rustmix-wave=lua-sudoku-event-bridge-ready sample=SUDOKU input=up,down,select,select-hold-context board=native dirty=old-cell,new-cell,status refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        info!("rustmix-wave=lua-sudoku-boot-axis-navigation-ready long-press=select nav=axis-toggle edit=cancel default-axis=horizontal back=boot-press dirty=status-or-cell refresh=shared-panel-coordinator");
-        info!("rustmix-wave=lua-sudoku-boot-mode-ux-repair-ready nav=select-hold-axis-toggle edit=select-hold-cancel back=boot-press dirty=axis-status-or-edit-cell-status refresh=shared-panel-coordinator");
-        info!("rustmix-wave=lua-minesweeper-event-bridge-ready sample=MINES board=beginner-9x9 mines=10 first-reveal=safe input=up,down,select,select-hold-context action=reveal,flag dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        info!("rustmix-wave=imu-event-bridge-ready events=tilt,shake,rotate,level sampling=motion-events-or-motion-game sample-ms={IMU_EVENT_SAMPLE_INTERVAL_MS} diagnostics=thresholds,debounce,counters redraw=event-or-{IMU_EVENT_SCREEN_REFRESH_SECONDS}s-heartbeat raw-i2c=rust-owned lua-api=none");
-        info!("rustmix-wave=imu-event-thresholds tilt-mg={} shake-delta-mg={} rotate-dps={} level-tolerance-mg={} debounce-ms={}", state.imu_events.thresholds.tilt_enter_mg, state.imu_events.thresholds.shake_delta_mg, state.imu_events.thresholds.rotate_dps, state.imu_events.thresholds.level_tolerance_mg, state.imu_events.thresholds.debounce_ms);
-        info!("rustmix-wave=imu-event-discrete-latching-ready tilt=release-to-neutral rotate=release-to-neutral level=edge-only shake=cooldown raw-i2c=rust-owned");
-        info!(
+        debug!("rustmix-wave=calendar-navigation-ready modes=day,month select=toggle-mode select-hold=agenda back=boot-press");
+        debug!("rustmix-wave=calendar-us-events-daily-agenda-ready root={CALENDAR_ROOT} personal={CALENDAR_EVENTS_FILE} us={CALENDAR_US_EVENTS_FILE} hindu=excluded markers=month-grid agenda=scrollable details=personal-editor missing-files=safe alarms=separate");
+        debug!("rustmix-wave=calendar-personal-event-editor-ready writable=EVENTS.TXT temp=EVENTS.TMP backup=EVENTS.BAK operations=create,edit,delete us-holidays=read-only keyboard=select-hold-hv-axis alarms=separate");
+        debug!("rustmix-wave=power-key-sleep-entry-wake-guard-ready source=axp2101-pek minimum-quiet-ms={POWER_KEY_WAKE_GUARD_QUIET_MS} policy=suppress-stale-until-quiet-window");
+        debug!("rustmix-wave=unit-converter-foundation-ready categories=length,mass,temperature,volume mode=offline fixed-point=true precision=thousandths");
+        debug!("rustmix-wave=unit-converter-navigation-ready fields=category,from-unit,value,to-unit,step-size back=boot-press");
+        debug!("rustmix-wave=unit-converter-host-tests-ready coverage=length,mass,temperature,volume,bounds");
+        debug!("rustmix-wave=reader-library-txt-foundation-ready path=/sdcard/RUSTMIX/BOOKS formats=txt,epub encoding=utf8,bom,windows-1252 opening=staged-first-page-first cache=ram-nearby-pages");
+        debug!("rustmix-wave=reader-state-persistence-ready path=/sdcard/RUSTMIX/READER files=STATE.TXT,POSITS.TXT,RECENT.TXT,MARKS.TXT cache=CACHE atomic-replace=tmp-primary-backup fallback=corrupt-record-safe");
+        debug!("rustmix-wave=reader-bookmarks-ready add-remove=true list=true recent=true continue-reading=true cache-fingerprint=path,size,modified,format,layout");
+        debug!("rustmix-wave=reader-loading-ui-ready stages=open,encoding,resume,first-page,cache cancel=boot-press refresh=coarse-stage-boundaries");
+        debug!("rustmix-wave=reader-options-shell-ready toc=none-for-txt,list-for-epub bookmarks=persistent clear-ghosting=manual-global-refresh");
+        debug!("rustmix-wave=reader-ux-repair-ready menu=continue,library,bookmarks-ready normalization=utf8-punctuation,latin1,underscore-emphasis byte-offsets=preserved");
+        debug!("rustmix-wave=reader-preferences-ready path=/sdcard/RUSTMIX/READER/PREFS.TXT theme=classic,high-contrast orientation=portrait,landscape font-size=small,medium,large,xlarge book-font=inter,atkinson-hyperlegible,serif,literata paragraph-alignment=justified,left,center,right show-progress=on,off atomic-replace=tmp-primary-backup");
+        debug!("rustmix-wave=reader-high-contrast-layout-ready viewport=shared border=outside-text top-padding=true clip=right,bottom theme-change=redraw-only ghost-refresh=global-base");
+        debug!("rustmix-wave=reader-txt-emphasis-cleanup-ready multiline-gutenberg=true word-internal-underscores=preserved repeated-separators=preserved byte-offsets=preserved");
+        debug!("rustmix-wave=reader-per-book-resume-ready path=/sdcard/RUSTMIX/READER/POSITS.TXT records=64 fingerprint=path,size,modified,format atomic-replace=tmp-primary-backup routes=continue,books,files,bookmark");
+        debug!("rustmix-wave=reader-controls-alignment-ready navigation=up-down-move-select-activate preferences=up-down-move-select-change back=boot-press");
+        debug!("rustmix-wave=reader-options-split-ready actions=bookmark,toc,preferences,clear-ghosting,library,home editor=theme,orientation,font-size,font,paragraph-alignment,show-progress");
+        debug!("rustmix-wave=reader-preferences-settings-navigation-ready move=up-down change=select back=boot-press persistence=immediate rows=theme,orientation,font-size,font,paragraph-alignment,show-progress");
+        debug!("rustmix-wave=reader-preferences-editor-preview-ready open=select browse=up-down commit=select cancel=boot-press persistence=on-commit-only preview=icons-orientation-alignment,live-sample-text-font-size-font-theme rows=theme,orientation,font-size,font,paragraph-alignment");
+        debug!("rustmix-wave=reader-fat83-persistence-ready positions=POSITS.TXT legacy-read=POSITIONS.TXT cache-basename=8hex extensions=CCH,TMP,BAK atomic-replace=true");
+        debug!("rustmix-wave=reader-fat83-runtime-ready positions-write=POSITS.TXT legacy-read=POSITIONS.TXT cache-write=8hex-no-prefix extensions=CCH,TMP,BAK duplicate-degraded-log=suppressed");
+        debug!("rustmix-wave=reader-bookmark-page-labels-ready anchor=byte-offset display=page-number layout-aware=true fallback=stored-page");
+        debug!("rustmix-wave=library-bookmark-tab-rendering-ready status=saved-marks source=MARKS.TXT rows=title,page-number anchors=byte-offset page-label=layout-aware-fallback-stored books-files=txt-open preserved=true");
+        debug!("rustmix-wave=reader-epub-reflowable-foundation-ready archive=zip-central-directory compression=stored,deflate package=container-xml,opf spine=xhtml reflow=bounded-utf8 cache=ram-nearby-pages");
+        debug!("rustmix-wave=reader-epub-toc-ready sources=epub3-nav,epub2-ncx,fallback-spine route=reader-toc selection=byte-offset");
+        debug!("rustmix-wave=reader-epub-parser-stack-isolation-ready worker=epub-parser stack-bytes=65536 main-task-stack-bytes=16384 policy=short-lived-worker-join");
+        debug!("rustmix-wave=reader-epub-chapter-aware-presentation-ready page-label=chapter,page-of-total bookmarks=chapter,page-of-total library-title=opf-metadata fallback=fat-filename txt-path=preserved");
+        debug!("rustmix-wave=reader-epub-watchdog-memory-pressure-repair-ready index-yield-every-pages=4 index-yield-ms=1 session-release=before-book-open layout-rebuild=move-document toc-jump=no-document-clone parser-worker-stack-bytes=65536 title-worker-stack-bytes=32768");
+        debug!("rustmix-wave=reader-eink-font-pack-ready fonts=inter,atkinson-hyperlegible,serif,literata atkinson-source=atkinson-hyperlegible-next-medium literata-source=literata-medium glyphs=printable-ascii persisted-keys=serif,atkinson-hyperlegible cache-fingerprint=book-font epub-repagination=layout-rebuild bookmarks=byte-offset txt-epub-aligned=true");
+        debug!("rustmix-wave=lua-runtime-foundation-ready mode=bootstrap-static,event-bridge root={LUA_APPS_DIRECTORY} manifest=APP.TOM entry=MAIN.LUA script-max-bytes=65536 vm-callbacks=sudoku,minesweeper,tilt-maze,motion-2048,sokoban-tilt-bounded-native");
+        debug!("rustmix-wave=lua-native-dirty-region-canvas-ready commands=256 text-bytes=160 dirty-regions={MAX_DIRTY_REGIONS} partial-limit={PANEL_PARTIAL_REFRESH_LIMIT} transport=existing-fullscreen-partial panel-api=rust-owned");
+        debug!("rustmix-wave=panel-refresh-coordinator-ready partial-limit={PANEL_PARTIAL_REFRESH_LIMIT} transport=existing-fullscreen-partial state=main-loop-owned lua-route-global-refresh=false");
+        debug!("rustmix-wave=runtime-worker-boundary-ready workers=weather-fetch,lua-loader policy=short-lived-named-stack panel-spi=main-task-only");
+        debug!("rustmix-wave=lua-loader-stack-isolation-ready worker=lua-loader stack-bytes={LUA_LOADER_WORKER_STACK_BYTES} main-task-stack-bytes=16384 policy=short-lived-worker-join");
+        debug!("rustmix-wave=lua-sudoku-event-bridge-ready sample=SUDOKU input=up,down,select,select-hold-context board=native dirty=old-cell,new-cell,status refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
+        debug!("rustmix-wave=lua-sudoku-boot-axis-navigation-ready long-press=select nav=axis-toggle edit=cancel default-axis=horizontal back=boot-press dirty=status-or-cell refresh=shared-panel-coordinator");
+        debug!("rustmix-wave=lua-sudoku-boot-mode-ux-repair-ready nav=select-hold-axis-toggle edit=select-hold-cancel back=boot-press dirty=axis-status-or-edit-cell-status refresh=shared-panel-coordinator");
+        debug!("rustmix-wave=lua-minesweeper-event-bridge-ready sample=MINES board=beginner-9x9 mines=10 first-reveal=safe input=up,down,select,select-hold-context action=reveal,flag dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
+        debug!("rustmix-wave=imu-event-bridge-ready events=tilt,shake,rotate,level sampling=motion-events-or-motion-game sample-ms={IMU_EVENT_SAMPLE_INTERVAL_MS} diagnostics=thresholds,debounce,counters redraw=event-or-{IMU_EVENT_SCREEN_REFRESH_SECONDS}s-heartbeat raw-i2c=rust-owned lua-api=none");
+        debug!("rustmix-wave=imu-event-thresholds tilt-mg={} shake-delta-mg={} rotate-dps={} level-tolerance-mg={} debounce-ms={}", state.imu_events.thresholds.tilt_enter_mg, state.imu_events.thresholds.shake_delta_mg, state.imu_events.thresholds.rotate_dps, state.imu_events.thresholds.level_tolerance_mg, state.imu_events.thresholds.debounce_ms);
+        debug!("rustmix-wave=imu-event-discrete-latching-ready tilt=release-to-neutral rotate=release-to-neutral level=edge-only shake=cooldown raw-i2c=rust-owned");
+        debug!(
             "rustmix-wave=tap-diagnostics-ready enabled={TAP_DIAGNOSTICS_ENABLED} available={} sample-ms={TAP_DIAGNOSTICS_POLL_INTERVAL_MS} scope=burst-sample-logging zone-mapping=not-implemented",
             init.tap_diagnostics_available
         );
-        info!(
+        debug!(
             "rustmix-wave=reader-tap-page-turn-ready available={} enabled={} single-tap=next-page double-tap=previous-page route=reader-page-only source=qmi8658-hardware-tap-engine setting=reader-preferences-tap-page-turn battery-when-off=pre-feature-imu-low-power-restored",
             init.tap_diagnostics_available,
             state.reader.preferences.tap_page_turn_enabled
         );
-        info!("rustmix-wave=lua-tilt-maze-event-bridge-ready sample=TILTMAZE board=9x9 motion=debounced-tilt-only dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        info!("rustmix-wave=lua-tilt-maze-portrait-axis-repair-ready logical=portrait mapping=raw:+x->down,-x->up,+y->left,-y->right diagnostics=logical-direction,raw-axis");
-        info!("rustmix-wave=lua-motion-2048-event-bridge-ready sample=M2048 board=4x4 motion=debounced-tilt-swipe dirty=board,status refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        info!("rustmix-wave=lua-sokoban-tilt-event-bridge-ready sample=SOKOBAN board=9x9 motion=debounced-tilt-only dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        info!("rustmix-wave=weather-fetch-stack-isolation-ready worker=weather-fetch stack-bytes=65536 main-task-stack-bytes=16384 response-max-bytes=8192 state=heap-boxed policy=short-lived-worker-join");
-        info!("rustmix-wave=wifi-transfer-web-portal-ready activation=home-tile-or-settings-network-shortcut auto-start=false root={WIFI_TRANSFER_ROOT} transport=http-lan-or-bootstrap-hotspot token=required server-stack-bytes={WIFI_TRANSFER_SERVER_STACK_BYTES} main-task-stack-bytes=16384 upload=streamed-atomic-tmp fat83=true protected-config=true inactivity-seconds={WIFI_TRANSFER_INACTIVITY_SECONDS}");
-        log_runtime_memory("boot-complete");
-        info!("rustmix-wave=hierarchical-router-ready policy=category-subcategory-feature-details");
-        info!("rustmix-wave=wifi-transfer-lifecycle-ready state=off-until-settings-network-toggle server=temporary-http-task sd-root=/sdcard/RUSTMIX stop=switch-off,back,sleep,wifi-loss,inactivity");
-        info!("rustmix-wave=wifi-transfer-immediate-start-redraw-repair-ready dispatch=ordinary-button-event-before-refresh snapshot=ready-url-code refresh=single-normal-partial");
-        info!("rustmix-wave=voice-notes-foundation-ready root={VOICE_NOTES_ROOT} format=wav-pcm16-mono-16khz storage=streamed-tmp-rename capture=cooperative-bounded-i2s-rx chunk-bytes={VOICE_PCM_MONO_CHUNK_BYTES} main-task-stack-bytes=16384 audio-owner=native");
-        info!("rustmix-wave=voice-notes-microphone-gain-ready profiles=low,normal,high,boost default=high multipliers=1x,2x,3x,4x clipping=per-recording-saturated-sample-count wav-format=unchanged");
-        info!("rustmix-wave=voice-notes-fat-metadata-catalog-repair-ready policy=stat-metadata-final-classification overwrite=refuse-existing-target");
-        info!("rustmix-wave=voice-notes-catalog-scrolling-saved-wav-playback-ready visible-rows=6 format=wav-pcm16-mono-16khz playback=bounded-sd-stream mono-to-stereo=true volume=existing-codec-setting audio-owner=native stale-tmp-cleanup=boot alarms=interrupt");
-        info!("rustmix-wave=voice-notes-organizer-controls-export-ready gain-persistence=SETTINGS.TXT metadata=META.TXT titles=friendly-sidecar filenames=fat83-wav recording-date-time=rtc-local storage=esp-vfs-fat-info delete-confirmation=true pause-resume=rx-discard export=wifi-transfer-shortcut");
-        info!("rustmix-wave=offline-dictionary-x4-pack-native-foundation-ready root={DICTIONARY_ROOT} index=INDEX.TXT shards=DATA/*.JSN shard-max-bytes={DICTIONARY_SHARD_MAX_BYTES} lookup=exact-prefix-fallback wildcard=true ui=native-rust");
-        info!("rustmix-wave=dictionary-keyboard-boot-axis-navigation-ready short-press=boot toggle=horizontal,vertical default-axis=horizontal selected-key=preserved long-press=hierarchical-back helper=keyboard-grid-navigation");
-        info!(
+        debug!("rustmix-wave=lua-tilt-maze-event-bridge-ready sample=TILTMAZE board=9x9 motion=debounced-tilt-only dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
+        debug!("rustmix-wave=lua-tilt-maze-portrait-axis-repair-ready logical=portrait mapping=raw:+x->down,-x->up,+y->left,-y->right diagnostics=logical-direction,raw-axis");
+        debug!("rustmix-wave=lua-motion-2048-event-bridge-ready sample=M2048 board=4x4 motion=debounced-tilt-swipe dirty=board,status refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
+        debug!("rustmix-wave=lua-sokoban-tilt-event-bridge-ready sample=SOKOBAN board=9x9 motion=debounced-tilt-only dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
+        debug!("rustmix-wave=weather-fetch-stack-isolation-ready worker=weather-fetch stack-bytes=65536 main-task-stack-bytes=16384 response-max-bytes=8192 state=heap-boxed policy=short-lived-worker-join");
+        debug!("rustmix-wave=wifi-transfer-web-portal-ready activation=home-tile-or-settings-network-shortcut auto-start=false root={WIFI_TRANSFER_ROOT} transport=http-lan-or-bootstrap-hotspot token=required server-stack-bytes={WIFI_TRANSFER_SERVER_STACK_BYTES} main-task-stack-bytes=16384 upload=streamed-atomic-tmp fat83=true protected-config=true inactivity-seconds={WIFI_TRANSFER_INACTIVITY_SECONDS}");
+        debug_runtime_memory("boot-complete");
+        debug!("rustmix-wave=hierarchical-router-ready policy=category-subcategory-feature-details");
+        debug!("rustmix-wave=wifi-transfer-lifecycle-ready state=off-until-settings-network-toggle server=temporary-http-task sd-root=/sdcard/RUSTMIX stop=switch-off,back,sleep,wifi-loss,inactivity");
+        debug!("rustmix-wave=wifi-transfer-immediate-start-redraw-repair-ready dispatch=ordinary-button-event-before-refresh snapshot=ready-url-code refresh=single-normal-partial");
+        debug!("rustmix-wave=voice-notes-foundation-ready root={VOICE_NOTES_ROOT} format=wav-pcm16-mono-16khz storage=streamed-tmp-rename capture=cooperative-bounded-i2s-rx chunk-bytes={VOICE_PCM_MONO_CHUNK_BYTES} main-task-stack-bytes=16384 audio-owner=native");
+        debug!("rustmix-wave=voice-notes-microphone-gain-ready profiles=low,normal,high,boost default=high multipliers=1x,2x,3x,4x clipping=per-recording-saturated-sample-count wav-format=unchanged");
+        debug!("rustmix-wave=voice-notes-fat-metadata-catalog-repair-ready policy=stat-metadata-final-classification overwrite=refuse-existing-target");
+        debug!("rustmix-wave=voice-notes-catalog-scrolling-saved-wav-playback-ready visible-rows=6 format=wav-pcm16-mono-16khz playback=bounded-sd-stream mono-to-stereo=true volume=existing-codec-setting audio-owner=native stale-tmp-cleanup=boot alarms=interrupt");
+        debug!("rustmix-wave=voice-notes-organizer-controls-export-ready gain-persistence=SETTINGS.TXT metadata=META.TXT titles=friendly-sidecar filenames=fat83-wav recording-date-time=rtc-local storage=esp-vfs-fat-info delete-confirmation=true pause-resume=rx-discard export=wifi-transfer-shortcut");
+        debug!("rustmix-wave=offline-dictionary-x4-pack-native-foundation-ready root={DICTIONARY_ROOT} index=INDEX.TXT shards=DATA/*.JSN shard-max-bytes={DICTIONARY_SHARD_MAX_BYTES} lookup=exact-prefix-fallback wildcard=true ui=native-rust");
+        debug!("rustmix-wave=dictionary-keyboard-boot-axis-navigation-ready short-press=boot toggle=horizontal,vertical default-axis=horizontal selected-key=preserved long-press=hierarchical-back helper=keyboard-grid-navigation");
+        debug!(
             "rustmix-wave=voice-notes-catalog status=completed notes={} root={VOICE_NOTES_ROOT}",
             state.voice_notes.notes.len()
         );
+        banner_span.end();
 
         let mut last_activity = Instant::now();
         let mut last_status_refresh = Instant::now();
@@ -1352,11 +1487,57 @@ mod firmware {
         // power-key poll and the 250 ms Reader tick it paces.
         const MAIN_LOOP_ACTIVE_TICK_MS: u64 = 20;
         const MAIN_LOOP_IDLE_WAIT_MS: u64 = 100;
-        keep_gpio_state_in_light_sleep();
         let mut light_sleep_guard = LightSleepGuard::new();
         // Diagnostic PM-profiling build only (see `power_profile`).
         let mut power_profile_tracker = PowerProfileTracker::default();
         let mut last_power_profile_log = Instant::now();
+        boot_profile::mark("main-loop-entered");
+        if _mounted_sd.is_some() {
+            let header = format!(
+                "=== boot-profile phase=boot version={FIRMWARE_VERSION} cause={} reset-reason={} boot-to-loop-ms={}",
+                boot_cause.marker(),
+                unsafe { sys::esp_reset_reason() },
+                boot_started.elapsed().as_millis()
+            );
+            if let Err(error) = boot_profile::flush_to_file(BOOT_TIMING_LOG_PATH, &header) {
+                warn!("rustmix-wave=boot-profile status=flush-failed error={error}");
+            }
+        }
+        info!("rustmix-wave=boot-profile status=boot-phase-recorded path={BOOT_TIMING_LOG_PATH}");
+        // The report is finished (post-boot phase appended to SD, full report
+        // printed to serial) a few seconds after Wi-Fi resolves, after
+        // `BOOT_PROFILE_MAX_SECONDS` without that, or at sleep entry.
+        const BOOT_PROFILE_SETTLE_SECONDS: u64 = 5;
+        const BOOT_PROFILE_MAX_SECONDS: u64 = 60;
+        let boot_profile_loop_started = Instant::now();
+        let mut boot_profile_wifi_resolved_at: Option<Instant> = None;
+        let mut first_loop_idle_marked = false;
+        // Nothing reads the PMIC Power-key status during boot, so anything
+        // latched between `initialize_power_key_events` and here is the
+        // press that just powered the board on (its release lands after
+        // that early clear whenever the finger stays down a little longer
+        // than boot takes to get there) or a press made while the first
+        // frame was still drawing. Acting on it would send the device
+        // straight back to sleep right after waking -- observed in the field
+        // once boot got fast enough to clear the status before a normal
+        // release. Drop it, and start the boot guard's quiet window from
+        // here, where polling actually begins.
+        if power_key_available {
+            match board_services.take_power_key_event() {
+                Ok(Some(event)) => {
+                    info!(
+                        "rustmix-wave=power-key-boot-guard event=boot-latched-press-discarded press={}",
+                        event.marker()
+                    );
+                    boot_profile::mark_with("power-key-boot-latched-discarded", Some(event.marker()));
+                }
+                Ok(None) => {}
+                Err(error) => warn!(
+                    "rustmix-wave=power-key-boot-guard status=read-failed error={error:#}"
+                ),
+            }
+        }
+        let power_key_polling_started = Instant::now();
         loop {
             if power_profile::ENABLED
                 && last_power_profile_log.elapsed()
@@ -1389,6 +1570,19 @@ mod firmware {
             {
                 mark_running_slot_valid();
                 ota_self_test_confirmed = true;
+                boot_profile::mark_with(
+                    "wifi-resolved",
+                    Some(format!("{:?}", state.network.wifi_state)),
+                );
+                boot_profile_wifi_resolved_at = Some(Instant::now());
+            }
+            if boot_profile::is_active()
+                && (boot_profile_wifi_resolved_at.is_some_and(|at| {
+                    at.elapsed() >= Duration::from_secs(BOOT_PROFILE_SETTLE_SECONDS)
+                }) || boot_profile_loop_started.elapsed()
+                    >= Duration::from_secs(BOOT_PROFILE_MAX_SECONDS))
+            {
+                finish_boot_profile("settled", _mounted_sd.is_some());
             }
 
             let portal_snapshot_before = state.wifi_transfer.clone();
@@ -1767,6 +1961,12 @@ mod firmware {
                     }
                 }
                 let latest_fingerprint = state.network.log_fingerprint();
+                if latest_fingerprint != last_network_fingerprint && boot_profile::is_active() {
+                    boot_profile::mark_with(
+                        "network-state",
+                        Some(format!("{:?}", state.network.wifi_state)),
+                    );
+                }
                 if latest_fingerprint != last_network_fingerprint
                     || last_network_log.elapsed()
                         >= Duration::from_secs(NETWORK_LOG_HEARTBEAT_SECONDS)
@@ -2073,10 +2273,16 @@ mod firmware {
                             "rustmix-wave=power-key event={} source=axp2101-pek",
                             event.marker()
                         );
-                        let elapsed_since_boot_ms = boot_started.elapsed().as_millis() as u64;
-                        if boot_power_key_guard.should_ignore(elapsed_since_boot_ms) {
+                        boot_profile::mark_with("power-key-event", Some(event.marker()));
+                        let elapsed_since_polling_ms =
+                            power_key_polling_started.elapsed().as_millis() as u64;
+                        if boot_power_key_guard.should_ignore(elapsed_since_polling_ms) {
                             info!(
-                                "rustmix-wave=power-key-boot-guard event=residual-press-suppressed elapsed-ms={elapsed_since_boot_ms} minimum-quiet-ms={POWER_KEY_BOOT_GUARD_QUIET_MS}"
+                                "rustmix-wave=power-key-boot-guard event=residual-press-suppressed elapsed-ms={elapsed_since_polling_ms} minimum-quiet-ms={POWER_KEY_BOOT_GUARD_QUIET_MS}"
+                            );
+                            boot_profile::mark_with(
+                                "power-key-boot-guard-suppressed",
+                                Some(event.marker()),
                             );
                             last_power_key_poll = Instant::now();
                             continue;
@@ -2616,10 +2822,18 @@ mod firmware {
             // One book per idle loop iteration, and only cache-hit reads
             // (never a cold parse) -- see `tick_background_warmup`. Gated on
             // `loading.is_none()` so it never competes with a book the user
-            // is actually waiting on right now.
+            // is actually waiting on right now. Also held off until the user
+            // has been idle for `READER_WARMUP_IDLE_SECONDS` with no key
+            // queued: one book costs 0.6-0.85 s of blocked loop, which the
+            // boot profile measured running back to back right after boot
+            // (~2.2 s for three books) exactly when the user starts pressing
+            // keys.
+            const READER_WARMUP_IDLE_SECONDS: u64 = 10;
             if !sleep_mode.is_sleeping()
                 && _mounted_sd.is_some()
                 && state.reader.loading.is_none()
+                && last_activity.elapsed() >= Duration::from_secs(READER_WARMUP_IDLE_SECONDS)
+                && input_queue.is_empty()
                 && state.wifi_transfer.state
                     == waveshare_epd397_rust_app::wifi_transfer::WifiTransferState::Off
             {
@@ -2631,7 +2845,7 @@ mod firmware {
                     // specific book's cache-hit reopen rather than to
                     // Wi-Fi, which the association-requested/connected
                     // traces already showed isn't the initial cause.
-                    log_runtime_memory("after-reader-background-warmup");
+                    debug_runtime_memory("after-reader-background-warmup");
                 }
             }
 
@@ -2858,6 +3072,14 @@ mod firmware {
             }
 
             if let Some(input_event) = input_queue.pop() {
+                // Whole handling of one key, including the refresh it causes:
+                // any gap between this span's start and its nested
+                // `epd-*` span is work done before the panel is touched.
+                let mut dispatch_span = boot_profile::span("input-dispatch");
+                if boot_profile::is_active() {
+                    boot_profile::mark_with("input-handled", Some(format!("{input_event:?}")));
+                    dispatch_span.detail(format_args!("{input_event:?}"));
+                }
                 match input_event {
                     InputEvent::Back => {
                         info!("rustmix-wave=boot-button event=press action=back");
@@ -3113,6 +3335,7 @@ mod firmware {
                         state.update_board_snapshot(board_services.read_light_snapshot());
                         let previous_route = state.active_route();
                         let previous_display = state.display;
+                        let previous_category_usage = state.category_usage.clone();
                         let previous_regional = state.regional;
                         if previous_route == ScreenRoute::Files {
                             apply_storage_event(&mut storage_browser, &mut state, event);
@@ -3263,6 +3486,15 @@ mod firmware {
                         state.display.font_family.marker(),
                         state.display.font_size.marker()
                     );
+                        }
+                        if state.category_usage != previous_category_usage {
+                            if let Err(error) =
+                                state.category_usage.save_to_path(MENU_USAGE_CONFIG_PATH)
+                            {
+                                warn!(
+                                    "rustmix-wave=menu-usage-write status=failed path={MENU_USAGE_CONFIG_PATH} error={error:#}"
+                                );
+                            }
                         }
                         if state.regional != previous_regional {
                             match state.regional.save_to_path(CLOCK_CONFIG_PATH) {
@@ -3432,6 +3664,10 @@ mod firmware {
             // does not support across light sleep (opening Upload with no
             // Wi-Fi configured hung the device in the field).
             light_sleep_guard.set(needs_fast_tick);
+            if !first_loop_idle_marked {
+                boot_profile::mark("first-loop-iteration-done");
+                first_loop_idle_marked = true;
+            }
             input_queue.wait_timeout(Duration::from_millis(if needs_fast_tick {
                 MAIN_LOOP_ACTIVE_TICK_MS
             } else {
@@ -4321,27 +4557,30 @@ mod firmware {
         PmicI2c: embedded_hal::i2c::I2c,
         PmicI2c::Error: core::fmt::Debug,
     {
+        if boot_profile::is_active() {
+            finish_boot_profile("sleep-entry", true);
+        }
         // Draw the sleep-confirmation image first, before any of the slower
         // teardown below (Wi-Fi transfer server, voice/audio cleanup,
         // network suspend). The user pressed power (or, for the idle-timeout
         // trigger, simply stopped interacting) to get immediate visual
         // confirmation the command was received; making them wait through
         // network suspend first defeats that.
-        let selection = sleep_images.select_random(unsafe { sys::esp_random() });
-        log_sleep_image_selection(&selection);
+        let restore_route = state.power_key_sleep_restore_route();
+        let (sleep_frame, sleep_label) =
+            select_sleep_frame(state, sleep_images, restore_route.is_reader_active());
         if !state.panel_awake {
             panel.initialize()?;
             state.panel_awake = true;
         }
-        let restore_route = state.power_key_sleep_restore_route();
-        *frame = selection.frame;
+        *frame = sleep_frame;
         panel.show_base(frame.as_bytes())?;
         panel_refresh.reset_after_external_global(PanelGlobalReason::SleepImage);
         sync_panel_refresh_diagnostics(state, &*panel_refresh);
         info!(
             "rustmix-wave=panel-refresh plan=global-base reason=sleep-image transport=global-base"
         );
-        sleep_mode.enter(restore_route, selection.file_name.clone());
+        sleep_mode.enter(restore_route, sleep_label.clone());
         // Real deep sleep is a full reboot, so nothing in RAM survives a
         // SELECT-key wake. Record whether the device was actively reading a
         // book so a real hardware deep-sleep wake (a full reboot) can
@@ -4446,7 +4685,7 @@ mod firmware {
         *audio_suspended_for_reading = false;
         info!(
             "rustmix-wave=sleep-mode-enter image={} restore-route={} display=global-refresh panel=deep-sleep aldo3=off aldo2=off imu=low-power wifi=off network-services=paused shutdown=pmic fallback=deep-sleep",
-            selection.file_name,
+            sleep_label,
             restore_route.marker()
         );
         info!(
@@ -4484,6 +4723,18 @@ mod firmware {
         // `power_off()` entirely and fall through to the deep-sleep fallback
         // below, which is self-classifying via the ESP32-S3's own wakeup
         // register and does not depend on the PMIC marker at all.
+        // SD breadcrumbs for the shutdown itself: a device that "won't wake"
+        // leaves no serial log on battery, and without these a PMIC
+        // power-off that silently failed (leaving the board in the MCU
+        // deep-sleep fallback, which only SELECT wakes -- the Power key does
+        // nothing there) is indistinguishable afterwards from one that
+        // worked. Each line is closed before the next step, so it is on the
+        // card even if the very next call cuts power.
+        let uptime_ms = boot_profile::now_us() / 1000;
+        append_boot_timing_log(&format!(
+            "rustmix-wave=sleep-entry uptime-ms={uptime_ms} restore-route={} method=pmic-power-off",
+            restore_route.marker()
+        ));
         let pmic_shutdown_attempted = match misc_power.write_shutdown_marker() {
             Ok(()) => {
                 // `power_off()` does not return on real hardware: the rails
@@ -4492,15 +4743,26 @@ mod firmware {
                 // moment before power is actually cut), treat that exactly
                 // like an error -- fall through to the deep-sleep fallback
                 // rather than assuming the device is already off.
-                if let Err(error) = misc_power.power_off() {
-                    warn!("rustmix-wave=pmic-power-off status=failed error={error:#}");
-                } else {
-                    warn!("rustmix-wave=pmic-power-off status=returned-unexpectedly");
-                }
+                let outcome = match misc_power.power_off() {
+                    Err(error) => {
+                        warn!("rustmix-wave=pmic-power-off status=failed error={error:#}");
+                        format!("failed error={error:#}")
+                    }
+                    Ok(()) => {
+                        warn!("rustmix-wave=pmic-power-off status=returned-unexpectedly");
+                        "returned-unexpectedly".to_string()
+                    }
+                };
+                append_boot_timing_log(&format!(
+                    "rustmix-wave=pmic-power-off status={outcome} fallback=mcu-deep-sleep wake=select-only"
+                ));
                 true
             }
             Err(error) => {
                 warn!("rustmix-wave=pmic-shutdown-marker status=write-failed error={error:#}");
+                append_boot_timing_log(&format!(
+                    "rustmix-wave=pmic-shutdown-marker status=write-failed error={error:#} fallback=mcu-deep-sleep wake=select-only"
+                ));
                 false
             }
         };
@@ -4518,6 +4780,9 @@ mod firmware {
         // no way to wake it.
         if let Err(error) = mcu_deep_sleep::espidf::enter() {
             warn!("rustmix-wave=mcu-deep-sleep status=fallback-software-only error={error:#}");
+            append_boot_timing_log(&format!(
+                "rustmix-wave=mcu-deep-sleep status=fallback-software-only error={error:#}"
+            ));
             // `enter` only ever turns light sleep off, so whether it failed
             // before or after doing so, the running loop below needs it
             // back.
@@ -5179,7 +5444,11 @@ mod firmware {
                 .session
                 .as_ref()
                 .is_some_and(|session| session.current_page_is_full_page_image());
-        let plan = coordinator.plan_for_frame(coordinator_request, full_page_image);
+        // Must match the inversion `reader::render_page` applies.
+        let inverted = state.active_route() == ScreenRoute::ReaderPage
+            && state.reader.session.is_some()
+            && state.reader.preferences.theme == ReadingTheme::HighContrast;
+        let plan = coordinator.plan_for_frame(coordinator_request, full_page_image, inverted);
         sync_panel_refresh_diagnostics(state, coordinator);
         render_current_screen(frame, state)?;
 
@@ -5212,7 +5481,8 @@ mod firmware {
                     }
                     PanelGlobalReason::InitialBoot
                     | PanelGlobalReason::SleepImage
-                    | PanelGlobalReason::FullPageImageTransition => {}
+                    | PanelGlobalReason::FullPageImageTransition
+                    | PanelGlobalReason::InvertedPageExit => {}
                 }
             }
             PanelRefreshPlan::PartialFullscreen { partial_count } => {
@@ -5249,6 +5519,56 @@ mod firmware {
         if let Some(event) = state.reader.take_persistence_event() {
             info!("rustmix-wave=reader-persistence {event}");
         }
+    }
+
+    /// Pick the deep-sleep frame per the Display setting. Book cover mode
+    /// shows the cover only when sleep interrupts reading (`reading`); from
+    /// any other screen, or when the cover is unusable, it falls back to the
+    /// in-order SD images. Returns the frame and a label for sleep-mode
+    /// diagnostics.
+    fn select_sleep_frame(
+        state: &AppState,
+        sleep_images: &mut SleepImageCatalog,
+        reading: bool,
+    ) -> (FrameBuffer, String) {
+        let mode = state.display.sleep_screen;
+        if mode == SleepScreenMode::BookCover && !reading {
+            info!("rustmix-wave=sleep-cover status=fallback reason=not-reading");
+        } else if mode == SleepScreenMode::BookCover {
+            if let Some(book) = state.reader.continue_reading_book() {
+                let started = Instant::now();
+                let cover = CoverCache::new(state.reader.cache_directory())
+                    .load_or_generate_fullscreen_cover(&book, SLEEP_COVER_WIDTH, SLEEP_COVER_HEIGHT);
+                if let Some(cover) = cover {
+                    let percent = state.reader.continue_reading_percent().unwrap_or(0);
+                    let (frame, tab) = compose_cover_sleep_frame(
+                        &cover,
+                        percent,
+                        state.display.font_family,
+                        state.regional.locale,
+                    );
+                    info!(
+                        "rustmix-wave=sleep-cover status=ready path={} percent={percent} tab-left={} tab-top={} tab-bottom={} elapsed-ms={}",
+                        book.path,
+                        tab.left,
+                        tab.top,
+                        tab.bottom,
+                        started.elapsed().as_millis()
+                    );
+                    return (frame, format!("cover:{}", book.title));
+                }
+                info!("rustmix-wave=sleep-cover status=fallback reason=no-usable-cover path={}", book.path);
+            } else {
+                info!("rustmix-wave=sleep-cover status=fallback reason=no-book");
+            }
+        }
+        let selection = if mode == SleepScreenMode::Random {
+            sleep_images.select_random(unsafe { sys::esp_random() })
+        } else {
+            sleep_images.select_next()
+        };
+        log_sleep_image_selection(&selection);
+        (selection.frame, selection.file_name)
     }
 
     fn log_sleep_image_selection(selection: &SleepImageSelection) {
@@ -5528,17 +5848,23 @@ mod firmware {
         }
     }
 
-    /// FreeRTOS-backed delays are sufficient for the millisecond timings used
-    /// by the panel and sample-board reference sequences. Round sub-millisecond
-    /// requests up so short sensor waits remain conservative.
+    /// Delays of at least one FreeRTOS tick yield the CPU; shorter ones
+    /// busy-wait instead. At `CONFIG_FREERTOS_HZ=100` a `vTaskDelay` can't be
+    /// shorter than one 10 ms tick, so the sensor/panel sequences' 300 us and
+    /// 1-2 ms waits used to cost up to 10 ms each (~80 ms per boot measured:
+    /// SHTC3 init and sample, QMI8658 CTRL9 handshakes, e-paper reset pulse).
     #[derive(Clone, Copy, Debug, Default)]
     struct FreeRtosDelay;
 
+    const FREERTOS_TICK_US: u32 = 1_000_000 / sys::configTICK_RATE_HZ;
+
     impl DelayNs for FreeRtosDelay {
         fn delay_ns(&mut self, nanoseconds: u32) {
-            let milliseconds = nanoseconds.saturating_add(999_999) / 1_000_000;
-            if milliseconds > 0 {
-                FreeRtos::delay_ms(milliseconds);
+            let microseconds = nanoseconds.saturating_add(999) / 1_000;
+            if microseconds >= FREERTOS_TICK_US {
+                FreeRtos::delay_ms(microseconds.div_ceil(1_000));
+            } else if microseconds > 0 {
+                Ets::delay_us(microseconds);
             }
         }
     }
