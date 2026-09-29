@@ -46,8 +46,8 @@ mod firmware {
             menu::{CategoryUsage, MENU_USAGE_CONFIG_PATH},
             render_current_screen,
             screens::reader::library_visible_books,
-            AppState, ScreenRoute, ALARM_POLL_SECONDS, AUTO_DEEP_SLEEP_IDLE_SECONDS,
-            CHARGING_STATUS_POLL_SECONDS, IMU_EVENT_SCREEN_REFRESH_SECONDS,
+            AppState, ScreenRoute, ALARM_POLL_SECONDS, AUTO_DEEP_SLEEP_ENABLED,
+            AUTO_DEEP_SLEEP_IDLE_SECONDS, DEV_BENCH_BUILD, CHARGING_STATUS_POLL_SECONDS, IMU_EVENT_SCREEN_REFRESH_SECONDS,
             LIBRARY_THUMBNAIL_REFRESH_SECONDS,
             MOTION_LIVE_REFRESH_SECONDS, NETWORK_LIVE_REFRESH_SECONDS,
             NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
@@ -264,6 +264,9 @@ mod firmware {
         sys::link_patches();
         EspLogger::initialize_default();
         info!("rustmix-wave=epd397-rust-app-start");
+        if DEV_BENCH_BUILD {
+            warn!("rustmix-wave=dev-bench-build auto-sleep=off dfs=off light-sleep=off");
+        }
 
         // Battery optimization: let the CPU drop to XTAL frequency (40 MHz)
         // and, whenever every FreeRTOS task is blocked/suspended for long
@@ -276,10 +279,16 @@ mod firmware {
         // real-deep-sleep attempt fails and the software-only fallback loop
         // keeps running instead. Wi-Fi's own modem sleep already defaults to
         // WIFI_PS_MIN_MODEM and is unaffected by this call.
+        // A development bench build (see `DEV_BENCH_BUILD`) keeps the CPU at
+        // full speed and out of light sleep instead, for a reliable USB log.
         let pm_config = sys::esp_pm_config_t {
             max_freq_mhz: mcu_deep_sleep::CPU_MAX_FREQ_MHZ,
-            min_freq_mhz: mcu_deep_sleep::CPU_MIN_FREQ_MHZ,
-            light_sleep_enable: true,
+            min_freq_mhz: if DEV_BENCH_BUILD {
+                mcu_deep_sleep::CPU_MAX_FREQ_MHZ
+            } else {
+                mcu_deep_sleep::CPU_MIN_FREQ_MHZ
+            },
+            light_sleep_enable: !DEV_BENCH_BUILD,
         };
         match unsafe { sys::esp_pm_configure((&raw const pm_config).cast::<core::ffi::c_void>()) } {
             sys::ESP_OK => debug!(
@@ -2224,7 +2233,8 @@ mod firmware {
             // being true (a prior sleep-image entry, whether from this timer
             // or a power-key press, that has not yet resumed) blocks a
             // repeat call every subsequent loop tick.
-            if !sleep_mode.is_sleeping()
+            if AUTO_DEEP_SLEEP_ENABLED
+                && !sleep_mode.is_sleeping()
                 && state.alarms.active.is_none()
                 && last_activity.elapsed() >= Duration::from_secs(AUTO_DEEP_SLEEP_IDLE_SECONDS)
             {
