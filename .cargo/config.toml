@@ -6,6 +6,14 @@
 # pin it explicitly instead, per embuild's own documented escape hatch
 # (embuild::cargo::workspace_dir doc comment).
 CARGO_WORKSPACE_DIR = { value = "", relative = true }
+# ESP-IDF resolves CONFIG_PARTITION_TABLE_CUSTOM_FILENAME relative to the C
+# project esp-idf-sys generates inside its OUT_DIR, not relative to this
+# crate, and nothing copies partitions.csv there: a clean build fails with
+# "partitions.csv ... missing and no known rule to make it" (a build dir
+# left over from an earlier, differently configured build can hide this).
+# esp-idf-sys copies globbed files into that project (ESP_IDF_GLOB_*).
+ESP_IDF_GLOB_PARTITIONS_BASE = { value = ".", relative = true }
+ESP_IDF_GLOB_PARTITIONS_CSV = "partitions.csv"
 
 [build]
 target = "xtensa-esp32s3-espidf"
