@@ -66,13 +66,11 @@ mod firmware {
         },
         calendar::{
             create_personal_event, delete_personal_event, update_personal_event, CalendarUiRequest,
-            CALENDAR_EVENTS_FILE, CALENDAR_ROOT, CALENDAR_US_EVENTS_FILE,
+            CALENDAR_ROOT,
         },
         cover_cache::CoverCache,
-        dictionary::{DICTIONARY_ROOT, DICTIONARY_SHARD_MAX_BYTES},
         epaper::{self, Epaper397},
         framebuffer::FrameBuffer,
-        games::dirty_regions::MAX_DIRTY_REGIONS,
         imu::TapKind,
         imu_events::IMU_EVENT_SAMPLE_INTERVAL_MS,
         imu_tap_diagnostics::{
@@ -80,7 +78,6 @@ mod firmware {
             TAP_DIAGNOSTICS_ENABLED, TAP_DIAGNOSTICS_POLL_INTERVAL_MS,
         },
         input_events::{InputEvent, InputEventQueue},
-        lua_runtime::{catalog::LUA_APPS_DIRECTORY, loader::LUA_LOADER_WORKER_STACK_BYTES},
         mcu_deep_sleep,
         network::{
             espidf::NetworkRuntime, NetworkLogFingerprint, NetworkSnapshot, WifiConnectionState,
@@ -143,8 +140,7 @@ mod firmware {
         weather_config::{WeatherConfig, WEATHER_CONFIG_PATH},
         wifi_transfer::{
             espidf::WifiTransferServer, WifiTransferSnapshot, WifiTransferUiRequest,
-            NETWORK_PROVISION_RESCAN_SECONDS, WIFI_TRANSFER_INACTIVITY_SECONDS, WIFI_TRANSFER_ROOT,
-            WIFI_TRANSFER_SERVER_STACK_BYTES,
+            NETWORK_PROVISION_RESCAN_SECONDS, WIFI_TRANSFER_ROOT, WIFI_TRANSFER_SERVER_STACK_BYTES,
         },
     };
 
@@ -663,9 +659,9 @@ mod firmware {
         // press is never dropped while the main loop is stuck busy-waiting
         // inside a slow e-paper panel refresh (`Epaper397::wait_until_idle`
         // can block for hundreds of ms up to ~1.5s). The thread only detects
-        // and enqueues events (same boundary contract as the BLE remote
-        // queue below); the main loop remains the sole owner of `AppState`
-        // and all rendering, draining one event per tick in FIFO order.
+        // and enqueues events; the main loop remains the sole owner of
+        // `AppState` and all rendering, draining one event per tick in FIFO
+        // order.
         const INPUT_POLL_STACK_BYTES: usize = 8 * 1024;
         // Sampling period while no key is down. Only the *first* sample of a
         // press depends on it -- each `poll` follows a detected press at
@@ -1244,120 +1240,7 @@ mod firmware {
         let mut voice_playback: Option<VoicePlaybackSession> = None;
         let mut voice_stereo_buffer = vec![0_u8; VOICE_PCM_STEREO_CAPTURE_BYTES];
         let mut voice_mono_buffer = vec![0_u8; VOICE_PCM_MONO_CHUNK_BYTES];
-        // Measures the cost of the static readiness banner below on the
-        // blocking 115200-baud console, as a whole.
-        let banner_span = boot_profile::span("banner-logs");
-        debug!("rustmix-wave=open-meteo-weather-forecast-ready");
-        debug!("rustmix-wave=open-meteo-fixed-point-json-parser-ready");
-        debug!("rustmix-wave=open-meteo-whitespace-parser-repair-ready");
-        debug!("rustmix-wave=rtc-alarm-scheduling-ui-ready");
-        debug!("rustmix-wave=es8311-audio-diagnostics-audible-alarm-ready");
-        debug!("rustmix-wave=es8311-pindriver-output-mode-repair-ready");
-        debug!("rustmix-wave=es8311-i2s-data-route-repair-ready");
-        debug!("rustmix-wave=es8311-waveshare-codec-profile-repair-ready");
-        debug!(
-            "rustmix-wave=wifi-monitor-log-quieting-ready policy=state-change-or-heartbeat heartbeat-seconds={NETWORK_LOG_HEARTBEAT_SECONDS} rssi-immediate=false"
-        );
-        debug!("rustmix-wave=rtc-alarm-int-readiness-ready gpio={RTC_ALARM_INTERRUPT_GPIO} active-low=true");
-        debug!("rustmix-wave=power-key-sleep-image-mode-ready path={SLEEP_IMAGE_DIRECTORY} format=native-800x480-1bpp-bmp shutdown=pmic fallback=deep-sleep wake-gpio={} rtc-alarm-wake=disabled", mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO);
-        debug!("rustmix-wave=power-key-short-sleep-long-menu-ready short-press=sleep-image long-press=display-maintenance-menu wake=power-key menu-action=manual-global-refresh");
-        debug!("rustmix-wave=release-flash-workflow-safety-ready docs=consolidated workflow=ci release-artifact=elf supported-flash=espflash-flash factory-image=deferred");
-        debug!("rustmix-wave=text-editor-layout-alignment-ready voice-title-editor=shared-grid-keyboard calendar-editor-status=compact-date keyboard=select-hold-hv-axis footer=width-safe");
-        debug!("rustmix-wave=sleep-image-directory-classification-fix-ready policy=fat-metadata-fallback");
-        debug!("rustmix-wave=network-suspended-sleep-image-mode-ready wifi=stop-on-sleep sntp=paused weather=paused shutdown=pmic fallback=deep-sleep");
-        debug!("rustmix-wave=random-sleep-image-selection-ready source=esp-random policy=avoid-immediate-repeat-when-multiple");
-        debug!("rustmix-wave=main-category-navigation-ready categories=5");
-        debug!("rustmix-wave=reader-category-ready entries=3");
-        debug!("rustmix-wave=productivity-category-ready entries=2");
-        debug!("rustmix-wave=games-category-ready entries=1 status=sd-lua-catalog");
-        debug!("rustmix-wave=tools-category-ready entries=3");
-        debug!("rustmix-wave=settings-category-ready entries=9 display=true");
-        debug!("rustmix-wave=display-settings-ready default-family=inter alternate-family=atkinson-hyperlegible default-size=standard profiles=compact,standard,large persistence={DISPLAY_CONFIG_PATH} scope=all-user-facing-screens");
-        debug!("rustmix-wave=global-ui-typography-ready default-family=inter alternate-family=atkinson-hyperlegible default-size=standard profiles=compact,standard,large persistence={DISPLAY_CONFIG_PATH} scope=all-user-facing-screens");
-        debug!("rustmix-wave=boot-button-hierarchical-back-ready gpio=0 active-low=true press=short policy=short-press-back");
-        debug!("rustmix-wave=category-back-row-removal-ready policy=boot-press");
-        debug!("rustmix-wave=global-typography-scale-increase-ready shift=two-raster-steps settings-page-size=6 display-copy=compact default-family=inter default-size=standard");
-        debug!("rustmix-wave=secondary-screen-readability-reflow-ready detail-role=technical-tokens-only pagination=device-info-3-pages details=weather,audio,rtc,environment,motion,network synthetic-back-rows=removed");
-        debug!("rustmix-wave=weather-fetch-resilience-ready retries=3 backoff-seconds=2,5,15 cache=last-known-good-in-memory retryable=tls-eof,http-connect,timeout,http-429,http-500,http-502,http-503,http-504");
-        debug!("rustmix-wave=home-dashboard-redesign-ready header=simplified-dark date-time-row=true summary-strip=weather,battery,wifi cards=high-contrast footer=fixed categories=5 developer-notes=removed");
-        debug!("rustmix-wave=calendar-foundation-ready mode=read-only monthly-view=true selected-day-summary=true range=2000-2099");
-        debug!(
-            "rustmix-wave=calendar-local-date-ready timezone=regional-profile source=rtc-localized"
-        );
-        debug!("rustmix-wave=calendar-navigation-ready modes=day,month select=toggle-mode select-hold=agenda back=boot-press");
-        debug!("rustmix-wave=calendar-us-events-daily-agenda-ready root={CALENDAR_ROOT} personal={CALENDAR_EVENTS_FILE} us={CALENDAR_US_EVENTS_FILE} hindu=excluded markers=month-grid agenda=scrollable details=personal-editor missing-files=safe alarms=separate");
-        debug!("rustmix-wave=calendar-personal-event-editor-ready writable=EVENTS.TXT temp=EVENTS.TMP backup=EVENTS.BAK operations=create,edit,delete us-holidays=read-only keyboard=select-hold-hv-axis alarms=separate");
-        debug!("rustmix-wave=power-key-sleep-entry-wake-guard-ready source=axp2101-pek minimum-quiet-ms={POWER_KEY_WAKE_GUARD_QUIET_MS} policy=suppress-stale-until-quiet-window");
-        debug!("rustmix-wave=unit-converter-foundation-ready categories=length,mass,temperature,volume mode=offline fixed-point=true precision=thousandths");
-        debug!("rustmix-wave=unit-converter-navigation-ready fields=category,from-unit,value,to-unit,step-size back=boot-press");
-        debug!("rustmix-wave=unit-converter-host-tests-ready coverage=length,mass,temperature,volume,bounds");
-        debug!("rustmix-wave=reader-library-txt-foundation-ready path=/sdcard/RUSTMIX/BOOKS formats=txt,epub encoding=utf8,bom,windows-1252 opening=staged-first-page-first cache=ram-nearby-pages");
-        debug!("rustmix-wave=reader-state-persistence-ready path=/sdcard/RUSTMIX/READER files=STATE.TXT,POSITS.TXT,RECENT.TXT,MARKS.TXT cache=CACHE atomic-replace=tmp-primary-backup fallback=corrupt-record-safe");
-        debug!("rustmix-wave=reader-bookmarks-ready add-remove=true list=true recent=true continue-reading=true cache-fingerprint=path,size,modified,format,layout");
-        debug!("rustmix-wave=reader-loading-ui-ready stages=open,encoding,resume,first-page,cache cancel=boot-press refresh=coarse-stage-boundaries");
-        debug!("rustmix-wave=reader-options-shell-ready toc=none-for-txt,list-for-epub bookmarks=persistent clear-ghosting=periodic-and-power-key");
-        debug!("rustmix-wave=reader-ux-repair-ready menu=continue,library,bookmarks-ready normalization=utf8-punctuation,latin1,underscore-emphasis byte-offsets=preserved");
-        debug!("rustmix-wave=reader-preferences-ready path=/sdcard/RUSTMIX/READER/PREFS.TXT theme=classic,high-contrast orientation=portrait,landscape font-size=small,medium,large,xlarge book-font=inter,atkinson-hyperlegible,serif,literata paragraph-alignment=justified,left,center,right show-progress=on,off atomic-replace=tmp-primary-backup");
-        debug!("rustmix-wave=reader-high-contrast-layout-ready viewport=shared border=outside-text top-padding=true clip=right,bottom theme-change=redraw-only ghost-refresh=global-base");
-        debug!("rustmix-wave=reader-txt-emphasis-cleanup-ready multiline-gutenberg=true word-internal-underscores=preserved repeated-separators=preserved byte-offsets=preserved");
-        debug!("rustmix-wave=reader-per-book-resume-ready path=/sdcard/RUSTMIX/READER/POSITS.TXT records=64 fingerprint=path,size,modified,format atomic-replace=tmp-primary-backup routes=continue,books,files,bookmark");
-        debug!("rustmix-wave=reader-controls-alignment-ready navigation=up-down-move-select-activate preferences=up-down-move-select-change back=boot-press");
-        debug!("rustmix-wave=reader-options-split-ready actions=toc,bookmarks,bookmark,preferences layout=icon-tiles-2x2 editor=theme,orientation,font-size,font,paragraph-alignment,show-progress");
-        debug!("rustmix-wave=reader-preferences-settings-navigation-ready move=up-down change=select back=boot-press persistence=immediate rows=theme,orientation,font-size,font,paragraph-alignment,show-progress");
-        debug!("rustmix-wave=reader-preferences-editor-preview-ready open=select browse=up-down commit=select cancel=boot-press persistence=on-commit-only preview=icons-orientation-alignment,live-sample-text-font-size-font-theme rows=theme,orientation,font-size,font,paragraph-alignment");
-        debug!("rustmix-wave=reader-fat83-persistence-ready positions=POSITS.TXT legacy-read=POSITIONS.TXT cache-basename=8hex extensions=CCH,TMP,BAK atomic-replace=true");
-        debug!("rustmix-wave=reader-fat83-runtime-ready positions-write=POSITS.TXT legacy-read=POSITIONS.TXT cache-write=8hex-no-prefix extensions=CCH,TMP,BAK duplicate-degraded-log=suppressed");
-        debug!("rustmix-wave=reader-bookmark-page-labels-ready anchor=byte-offset display=page-number layout-aware=true fallback=stored-page");
-        debug!("rustmix-wave=library-bookmark-tab-rendering-ready status=saved-marks source=MARKS.TXT rows=title,page-number anchors=byte-offset page-label=layout-aware-fallback-stored books-files=txt-open preserved=true");
-        debug!("rustmix-wave=reader-epub-reflowable-foundation-ready archive=zip-central-directory compression=stored,deflate package=container-xml,opf spine=xhtml reflow=bounded-utf8 cache=ram-nearby-pages");
-        debug!("rustmix-wave=reader-epub-toc-ready sources=epub3-nav,epub2-ncx,fallback-spine route=reader-toc selection=byte-offset");
-        debug!("rustmix-wave=reader-epub-parser-stack-isolation-ready worker=epub-parser stack-bytes=65536 main-task-stack-bytes=16384 policy=short-lived-worker-join");
-        debug!("rustmix-wave=reader-epub-chapter-aware-presentation-ready page-label=chapter,page-of-total bookmarks=chapter,page-of-total library-title=opf-metadata fallback=fat-filename txt-path=preserved");
-        debug!("rustmix-wave=reader-epub-watchdog-memory-pressure-repair-ready index-yield-every-pages=4 index-yield-ms=1 session-release=before-book-open layout-rebuild=move-document toc-jump=no-document-clone parser-worker-stack-bytes=65536 title-worker-stack-bytes=32768");
-        debug!("rustmix-wave=reader-eink-font-pack-ready fonts=inter,atkinson-hyperlegible,serif,literata atkinson-source=atkinson-hyperlegible-next-medium literata-source=literata-medium glyphs=printable-ascii persisted-keys=serif,atkinson-hyperlegible cache-fingerprint=book-font epub-repagination=layout-rebuild bookmarks=byte-offset txt-epub-aligned=true");
-        debug!("rustmix-wave=lua-runtime-foundation-ready mode=bootstrap-static,event-bridge root={LUA_APPS_DIRECTORY} manifest=APP.TOM entry=MAIN.LUA script-max-bytes=65536 vm-callbacks=sudoku,minesweeper,tilt-maze,motion-2048,sokoban-tilt-bounded-native");
-        debug!("rustmix-wave=lua-native-dirty-region-canvas-ready commands=256 text-bytes=160 dirty-regions={MAX_DIRTY_REGIONS} partial-limit={PANEL_PARTIAL_REFRESH_LIMIT} transport=existing-fullscreen-partial panel-api=rust-owned");
-        debug!("rustmix-wave=panel-refresh-coordinator-ready partial-limit={PANEL_PARTIAL_REFRESH_LIMIT} transport=existing-fullscreen-partial state=main-loop-owned lua-route-global-refresh=false");
-        debug!("rustmix-wave=runtime-worker-boundary-ready workers=weather-fetch,lua-loader policy=short-lived-named-stack panel-spi=main-task-only");
-        debug!("rustmix-wave=lua-loader-stack-isolation-ready worker=lua-loader stack-bytes={LUA_LOADER_WORKER_STACK_BYTES} main-task-stack-bytes=16384 policy=short-lived-worker-join");
-        debug!("rustmix-wave=lua-sudoku-event-bridge-ready sample=SUDOKU input=up,down,select,select-hold-context board=native dirty=old-cell,new-cell,status refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        debug!("rustmix-wave=lua-sudoku-boot-axis-navigation-ready long-press=select nav=axis-toggle edit=cancel default-axis=horizontal back=boot-press dirty=status-or-cell refresh=shared-panel-coordinator");
-        debug!("rustmix-wave=lua-sudoku-boot-mode-ux-repair-ready nav=select-hold-axis-toggle edit=select-hold-cancel back=boot-press dirty=axis-status-or-edit-cell-status refresh=shared-panel-coordinator");
-        debug!("rustmix-wave=lua-minesweeper-event-bridge-ready sample=MINES board=beginner-9x9 mines=10 first-reveal=safe input=up,down,select,select-hold-context action=reveal,flag dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        debug!("rustmix-wave=imu-event-bridge-ready events=tilt,shake,rotate,level sampling=motion-events-or-motion-game sample-ms={IMU_EVENT_SAMPLE_INTERVAL_MS} diagnostics=thresholds,debounce,counters redraw=event-or-{IMU_EVENT_SCREEN_REFRESH_SECONDS}s-heartbeat raw-i2c=rust-owned lua-api=none");
-        debug!("rustmix-wave=imu-event-thresholds tilt-mg={} shake-delta-mg={} rotate-dps={} level-tolerance-mg={} debounce-ms={}", state.imu_events.thresholds.tilt_enter_mg, state.imu_events.thresholds.shake_delta_mg, state.imu_events.thresholds.rotate_dps, state.imu_events.thresholds.level_tolerance_mg, state.imu_events.thresholds.debounce_ms);
-        debug!("rustmix-wave=imu-event-discrete-latching-ready tilt=release-to-neutral rotate=release-to-neutral level=edge-only shake=cooldown raw-i2c=rust-owned");
-        debug!(
-            "rustmix-wave=tap-diagnostics-ready enabled={TAP_DIAGNOSTICS_ENABLED} available={} sample-ms={TAP_DIAGNOSTICS_POLL_INTERVAL_MS} scope=burst-sample-logging zone-mapping=not-implemented",
-            init.tap_diagnostics_available
-        );
-        debug!(
-            "rustmix-wave=reader-tap-page-turn-ready available={} enabled={} single-tap=next-page double-tap=previous-page route=reader-page-only source=qmi8658-hardware-tap-engine setting=reader-preferences-tap-page-turn battery-when-off=pre-feature-imu-low-power-restored",
-            init.tap_diagnostics_available,
-            state.reader.preferences.tap_page_turn_enabled
-        );
-        debug!("rustmix-wave=lua-tilt-maze-event-bridge-ready sample=TILTMAZE board=9x9 motion=debounced-tilt-only dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        debug!("rustmix-wave=lua-tilt-maze-portrait-axis-repair-ready logical=portrait mapping=raw:+x->down,-x->up,+y->left,-y->right diagnostics=logical-direction,raw-axis");
-        debug!("rustmix-wave=lua-motion-2048-event-bridge-ready sample=M2048 board=4x4 motion=debounced-tilt-swipe dirty=board,status refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        debug!("rustmix-wave=lua-sokoban-tilt-event-bridge-ready sample=SOKOBAN board=9x9 motion=debounced-tilt-only dirty=old-cell,new-cell,status-or-board refresh=shared-panel-coordinator transport=existing-fullscreen-partial panel-api=rust-owned");
-        debug!("rustmix-wave=weather-fetch-stack-isolation-ready worker=weather-fetch stack-bytes=65536 main-task-stack-bytes=16384 response-max-bytes=8192 state=heap-boxed policy=short-lived-worker-join");
-        debug!("rustmix-wave=wifi-transfer-web-portal-ready activation=home-tile-or-settings-network-shortcut auto-start=false root={WIFI_TRANSFER_ROOT} transport=http-lan-or-bootstrap-hotspot token=required server-stack-bytes={WIFI_TRANSFER_SERVER_STACK_BYTES} main-task-stack-bytes=16384 upload=streamed-atomic-tmp fat83=true protected-config=true inactivity-seconds={WIFI_TRANSFER_INACTIVITY_SECONDS}");
         debug_runtime_memory("boot-complete");
-        debug!("rustmix-wave=hierarchical-router-ready policy=category-subcategory-feature-details");
-        debug!("rustmix-wave=wifi-transfer-lifecycle-ready state=off-until-settings-network-toggle server=temporary-http-task sd-root=/sdcard/RUSTMIX stop=switch-off,back,sleep,wifi-loss,inactivity");
-        debug!("rustmix-wave=wifi-transfer-immediate-start-redraw-repair-ready dispatch=ordinary-button-event-before-refresh snapshot=ready-url-code refresh=single-normal-partial");
-        debug!("rustmix-wave=voice-notes-foundation-ready root={VOICE_NOTES_ROOT} format=wav-pcm16-mono-16khz storage=streamed-tmp-rename capture=cooperative-bounded-i2s-rx chunk-bytes={VOICE_PCM_MONO_CHUNK_BYTES} main-task-stack-bytes=16384 audio-owner=native");
-        debug!("rustmix-wave=voice-notes-microphone-gain-ready profiles=low,normal,high,boost default=high multipliers=1x,2x,3x,4x clipping=per-recording-saturated-sample-count wav-format=unchanged");
-        debug!("rustmix-wave=voice-notes-fat-metadata-catalog-repair-ready policy=stat-metadata-final-classification overwrite=refuse-existing-target");
-        debug!("rustmix-wave=voice-notes-catalog-scrolling-saved-wav-playback-ready visible-rows=6 format=wav-pcm16-mono-16khz playback=bounded-sd-stream mono-to-stereo=true volume=existing-codec-setting audio-owner=native stale-tmp-cleanup=boot alarms=interrupt");
-        debug!("rustmix-wave=voice-notes-organizer-controls-export-ready gain-persistence=SETTINGS.TXT metadata=META.TXT titles=friendly-sidecar filenames=fat83-wav recording-date-time=rtc-local storage=esp-vfs-fat-info delete-confirmation=true pause-resume=rx-discard export=wifi-transfer-shortcut");
-        debug!("rustmix-wave=offline-dictionary-x4-pack-native-foundation-ready root={DICTIONARY_ROOT} index=INDEX.TXT shards=DATA/*.JSN shard-max-bytes={DICTIONARY_SHARD_MAX_BYTES} lookup=exact-prefix-fallback wildcard=true ui=native-rust");
-        debug!("rustmix-wave=dictionary-keyboard-boot-axis-navigation-ready short-press=boot toggle=horizontal,vertical default-axis=horizontal selected-key=preserved long-press=hierarchical-back helper=keyboard-grid-navigation");
-        debug!(
-            "rustmix-wave=voice-notes-catalog status=completed notes={} root={VOICE_NOTES_ROOT}",
-            state.voice_notes.notes.len()
-        );
-        banner_span.end();
 
         let mut last_activity = Instant::now();
         let mut last_status_refresh = Instant::now();
@@ -3632,9 +3515,8 @@ mod firmware {
         state.update_reading_stats_snapshot(snapshot);
     }
 
-    /// Feed one Reader page turn (from any source -- IMU tap, physical
-    /// button or BLE remote all funnel through `AppState::apply`) into the
-    /// reading-stats session tracker. A no-op when the turn didn't actually
+    /// Feed one Reader page turn (every source funnels through
+    /// `AppState::apply`) into the reading-stats session tracker. A no-op when the turn didn't actually
     /// move the position or no reliable clock is available yet.
     fn record_reader_page_turn(state: &mut AppState, tracker: &mut ReadingStatsTracker) {
         let Some(location) = state.take_reader_page_turn_event() else {
