@@ -2,9 +2,8 @@
 //!
 //! The device compares its own [`crate::build_info::FIRMWARE_VERSION`]
 //! against the latest GitHub release for
-//! `build_info::OTA_REPO_OWNER`/`OTA_REPO_NAME`. No JSON crate is used (same
-//! homegrown-parser approach as `weather.rs`): only the two fields actually
-//! needed, `tag_name` and the first `.bin` asset URL, are pulled out of the
+//! `build_info::OTA_REPO_OWNER`/`OTA_REPO_NAME`. No JSON crate is used: only
+//! the two fields actually needed, `tag_name` and the first `.bin` asset URL, are pulled out of the
 //! response with a small quoted-string scanner. ESP-IDF HTTPS wiring and
 //! flashing live below `cfg(target_os = "espidf")`.
 
@@ -238,8 +237,8 @@ pub mod espidf {
         runtime_worker::{poll_named_worker, spawn_named_worker_in_psram, NamedWorkerError},
     };
 
-    /// Stack budget for the short-lived version-check worker. Matches the
-    /// weather-fetch worker's budget: same TLS-handshake-dominated cost.
+    /// Stack budget for the short-lived version-check worker, dominated by
+    /// the TLS handshake.
     pub const OTA_CHECK_WORKER_STACK_BYTES: usize = 64 * 1024;
     const GITHUB_HTTP_TIMEOUT_SECONDS: u64 = 15;
     /// Generous: the firmware binary is a few MB over Wi-Fi, not a small

@@ -120,7 +120,7 @@ mod tests {
             "OPENING BOOK", "APERTURA", "OPTIONS", "OPZIONI", "PREFERENCES", "PREFERENZE",
             "CONTENTS", "INDICE", "STATISTICS", "STATISTICHE", "RECORD", "REGISTRA",
             "VOICE NOTE", "NOTA VOCALE", "NOTE TITLE", "TITOLO NOTA", "VOICE NOTES",
-            "NOTE VOCALI", "WEATHER", "METEO", "WEATHER INFO", "INFO METEO",
+            "NOTE VOCALI",
         ];
         let mut titles: Vec<&str> = TITLES.to_vec();
         for preference in ReadingPreference::ALL {

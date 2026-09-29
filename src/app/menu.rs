@@ -14,7 +14,7 @@ use super::router::ScreenRoute;
 pub const MAIN_CATEGORY_COUNT: usize = 7;
 pub const CATEGORY_COUNT: usize = 3;
 pub const CATEGORY_PAGE_SIZE: usize = 6;
-pub const TOOLS_ENTRY_COUNT: usize = 8;
+pub const TOOLS_ENTRY_COUNT: usize = 7;
 pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
 /// heading of the Tools and Settings grids (see
@@ -101,10 +101,10 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
     MenuEntry {
         label_en: "Tools",
         label_it: "Strumenti",
-        subtitle_en: "Files, dictionary, weather and sensors",
-        subtitle_it: "File, dizionario, meteo e sensori",
-        badge_en: "8",
-        badge_it: "8",
+        subtitle_en: "Files, dictionary and sensors",
+        subtitle_it: "File, dizionario e sensori",
+        badge_en: "7",
+        badge_it: "7",
         route: ScreenRoute::Tools,
     },
     MenuEntry {
@@ -221,15 +221,6 @@ const TOOLS_ENTRIES: [MenuEntry; TOOLS_ENTRY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::Motion,
-    },
-    MenuEntry {
-        label_en: "Weather",
-        label_it: "Meteo",
-        subtitle_en: "Open-Meteo conditions and forecast",
-        subtitle_it: "Condizioni e previsioni Open-Meteo",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Weather,
     },
 ];
 
@@ -526,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn sensors_and_weather_live_in_tools_not_settings() {
+    fn sensors_live_in_tools_not_settings() {
         let settings = category_entries(ScreenRoute::Settings);
         let tools = category_entries(ScreenRoute::Tools);
         assert!(settings
@@ -535,11 +526,7 @@ mod tests {
         assert!(settings
             .iter()
             .any(|entry| entry.route == ScreenRoute::Language));
-        for route in [
-            ScreenRoute::Environment,
-            ScreenRoute::Weather,
-            ScreenRoute::Motion,
-        ] {
+        for route in [ScreenRoute::Environment, ScreenRoute::Motion] {
             assert!(tools.iter().any(|entry| entry.route == route));
             assert!(settings.iter().all(|entry| entry.route != route));
             assert_eq!(route.parent(), Some(ScreenRoute::Tools));
@@ -549,45 +536,48 @@ mod tests {
     #[test]
     fn most_used_follows_recently_opened_entries() {
         let mut usage = CategoryUsage::default();
-        assert_eq!(usage.most_used_count(ScreenRoute::Tools), 0);
-        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Weather));
-        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Dictionary));
-        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Motion));
-        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Files));
-        assert_eq!(usage.most_used_count(ScreenRoute::Tools), MOST_USED_MAX);
+        // Settings starts seeded with Network and Update (see `Default`).
+        assert_eq!(usage.most_used_count(ScreenRoute::Settings), 2);
+        assert!(usage.record(ScreenRoute::Settings, ScreenRoute::Audio));
+        assert!(usage.record(ScreenRoute::Settings, ScreenRoute::Display));
+        assert!(usage.record(ScreenRoute::Settings, ScreenRoute::Clock));
+        assert_eq!(
+            usage.most_used_count(ScreenRoute::Settings),
+            MOST_USED_MAX
+        );
         // Re-opening the newest entry is a no-op; re-opening an older one
         // moves it back to the front.
-        assert!(!usage.record(ScreenRoute::Tools, ScreenRoute::Files));
-        assert!(usage.record(ScreenRoute::Tools, ScreenRoute::Dictionary));
+        assert!(!usage.record(ScreenRoute::Settings, ScreenRoute::Clock));
+        assert!(usage.record(ScreenRoute::Settings, ScreenRoute::Audio));
         // Routes outside the category are ignored.
-        assert!(!usage.record(ScreenRoute::Tools, ScreenRoute::Network));
+        assert!(!usage.record(ScreenRoute::Settings, ScreenRoute::Files));
 
-        let ordered = usage.ordered_entries(ScreenRoute::Tools);
-        assert_eq!(ordered.len(), TOOLS_ENTRY_COUNT);
+        let ordered = usage.ordered_entries(ScreenRoute::Settings);
+        assert_eq!(ordered.len(), SETTINGS_ENTRY_COUNT);
         let head: Vec<ScreenRoute> = ordered.iter().take(3).map(|entry| entry.route).collect();
         assert_eq!(
             head,
-            [ScreenRoute::Dictionary, ScreenRoute::Files, ScreenRoute::Motion]
+            [ScreenRoute::Audio, ScreenRoute::Clock, ScreenRoute::Display]
         );
         assert!(ordered
             .iter()
-            .any(|entry| entry.route == ScreenRoute::Weather));
+            .any(|entry| entry.route == ScreenRoute::Network));
     }
 
     #[test]
     fn menu_usage_round_trips_and_skips_unknown_labels() {
         let mut usage = CategoryUsage::default();
-        usage.record(ScreenRoute::Tools, ScreenRoute::Environment);
+        usage.record(ScreenRoute::Tools, ScreenRoute::Files);
         usage.record(ScreenRoute::Settings, ScreenRoute::Audio);
         assert_eq!(CategoryUsage::parse(&usage.serialized()), usage);
 
-        let parsed = CategoryUsage::parse("tools=Gone,Weather,Weather\nbogus=1\nsettings=\n");
+        let parsed = CategoryUsage::parse("settings=Gone,Audio,Audio\nbogus=1\ntools=\n");
         assert_eq!(
-            parsed.ordered_entries(ScreenRoute::Tools)[0].route,
-            ScreenRoute::Weather
+            parsed.ordered_entries(ScreenRoute::Settings)[0].route,
+            ScreenRoute::Audio
         );
-        assert_eq!(parsed.most_used_count(ScreenRoute::Tools), 1);
-        assert_eq!(parsed.most_used_count(ScreenRoute::Settings), 0);
+        assert_eq!(parsed.most_used_count(ScreenRoute::Settings), 1);
+        assert_eq!(parsed.most_used_count(ScreenRoute::Tools), 0);
     }
 
     #[test]

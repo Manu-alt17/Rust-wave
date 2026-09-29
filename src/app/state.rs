@@ -26,7 +26,6 @@ use crate::{
     storage::StorageSnapshot,
     unit_converter::UnitConverterUiState,
     voice_notes::{VoiceNotesUiRequest, VoiceNotesUiState},
-    weather::WeatherSnapshot,
     wifi_transfer::{WifiTransferSnapshot, WifiTransferState, WifiTransferUiRequest},
 };
 
@@ -40,8 +39,6 @@ use super::{
 pub const AUDIO_ACTION_COUNT: usize = 6;
 /// Number of selectable rows in the Display settings screen.
 pub const DISPLAY_ACTION_COUNT: usize = 3;
-/// Number of selectable rows in the Weather overview screen.
-pub const WEATHER_ACTION_COUNT: usize = 2;
 /// Set date & time or open RTC details rows on the Clock overview screen.
 pub const CLOCK_ACTION_COUNT: usize = 2;
 /// Configure via phone, saved networks and provisioning-details rows on the
@@ -83,16 +80,12 @@ pub struct AppState {
     pub storage: StorageSnapshot,
     /// Password-free snapshot owned by the networking boundary.
     pub network: NetworkSnapshot,
-    /// Cached weather snapshot retained across transient HTTP failures.
-    pub weather: WeatherSnapshot,
     /// SD-backed alarm schedules and active-alarm UI snapshot.
     pub alarms: AlarmSnapshot,
     /// Playback-only ES8311 diagnostics snapshot.
     pub audio: AudioSnapshot,
     /// Selected Audio-overview action.
     pub audio_action_selected: usize,
-    /// Selected Weather-overview action: refresh or details.
-    pub weather_action_selected: usize,
     /// Selected Clock-overview action: set date & time or RTC details.
     pub clock_action_selected: usize,
     /// Runtime-only "Set date & time" editor draft, opened from the Clock
@@ -126,7 +119,6 @@ pub struct AppState {
     pub power_key_menu: PowerKeyMenuUiState,
     power_key_menu_return_route: ScreenRoute,
     power_key_manual_refresh_requested: bool,
-    weather_refresh_requested: bool,
     /// GitHub-release OTA check/install lifecycle, shown on the Software
     /// Update screen.
     pub ota: OtaCheckState,
@@ -137,8 +129,8 @@ pub struct AppState {
     pub reading_stats: ReadingStatsSnapshot,
     reading_stats_refresh_requested: bool,
     /// Set whenever a Reader page turn actually moves the current position,
-    /// regardless of source (IMU tap, physical button or BLE remote --
-    /// every one of them funnels through [`Self::apply_reader`]). Taken by
+    /// regardless of source (every one of them funnels through
+    /// [`Self::apply_reader`]). Taken by
     /// the runtime owner in main.rs, which owns the wall clock and SD
     /// access the reading-stats session tracker needs.
     reader_page_turn_event: Option<ReaderLocation>,
@@ -172,11 +164,9 @@ impl Default for AppState {
             board: BoardSnapshot::default(),
             storage: StorageSnapshot::default(),
             network: NetworkSnapshot::default(),
-            weather: WeatherSnapshot::default(),
             alarms: AlarmSnapshot::default(),
             audio: AudioSnapshot::default(),
             audio_action_selected: 0,
-            weather_action_selected: 0,
             clock_action_selected: 0,
             clock_time_editor: None,
             clock_set_time_request: None,
@@ -190,7 +180,6 @@ impl Default for AppState {
             power_key_menu: PowerKeyMenuUiState::default(),
             power_key_menu_return_route: ScreenRoute::Home,
             power_key_manual_refresh_requested: false,
-            weather_refresh_requested: false,
             ota: OtaCheckState::default(),
             ota_request: None,
             reading_stats: ReadingStatsSnapshot::default(),
@@ -317,24 +306,6 @@ impl AppState {
             // consistently handled by the dedicated GPIO0 BOOT press.
         } else {
             match (route, event) {
-                (ScreenRoute::Weather, ButtonEvent::Up) => {
-                    self.weather_action_selected = self
-                        .weather_action_selected
-                        .checked_sub(1)
-                        .unwrap_or(WEATHER_ACTION_COUNT - 1);
-                }
-                (ScreenRoute::Weather, ButtonEvent::Down) => {
-                    self.weather_action_selected =
-                        (self.weather_action_selected + 1) % WEATHER_ACTION_COUNT;
-                }
-                (ScreenRoute::Weather, ButtonEvent::Select) => {
-                    self.note_select_press();
-                    if self.weather_action_selected == 0 {
-                        self.weather_refresh_requested = true;
-                    } else {
-                        self.router.navigate_to(ScreenRoute::WeatherDetails);
-                    }
-                }
                 (ScreenRoute::Clock, ButtonEvent::Up) => {
                     self.clock_action_selected = self
                         .clock_action_selected
@@ -440,8 +411,7 @@ impl AppState {
                     | ScreenRoute::EnvironmentDetails
                     | ScreenRoute::MotionDetails
                     | ScreenRoute::NetworkDetails
-                    | ScreenRoute::WifiTransfer
-                    | ScreenRoute::WeatherDetails,
+                    | ScreenRoute::WifiTransfer,
                     _,
                 )
                 | (
@@ -527,21 +497,6 @@ impl AppState {
                 // the cursor on it for when BOOT brings the user back here.
                 if self.category_usage.record(route, target) {
                     *self.category_selection_mut(route) = 0;
-                }
-                if target == ScreenRoute::Weather {
-                    self.weather_action_selected = 0;
-                    // Weather used to be fetched automatically as soon as
-                    // Wi-Fi connected, regardless of which screen was on
-                    // display -- the worker dispatch itself doesn't block,
-                    // but the screen refresh it triggers on completion could
-                    // land mid-scroll on Home and read as a stutter. Fetch on
-                    // first visit to this screen instead, when there is
-                    // nothing to show yet.
-                    if self.weather.current.is_none()
-                        && self.weather.state != crate::weather::WeatherFetchState::Fetching
-                    {
-                        self.weather_refresh_requested = true;
-                    }
                 }
                 if target == ScreenRoute::Audio {
                     self.audio_action_selected = 0;
@@ -1408,10 +1363,6 @@ impl AppState {
         self.network = network;
     }
 
-    pub fn update_weather_snapshot(&mut self, weather: WeatherSnapshot) {
-        self.weather = weather;
-    }
-
     pub fn update_wifi_transfer_snapshot(&mut self, snapshot: WifiTransferSnapshot) {
         self.wifi_transfer = snapshot;
     }
@@ -1466,11 +1417,6 @@ impl AppState {
 
     pub fn update_audio_snapshot(&mut self, audio: AudioSnapshot) {
         self.audio = audio;
-    }
-
-    #[must_use]
-    pub fn take_weather_refresh_request(&mut self) -> bool {
-        core::mem::take(&mut self.weather_refresh_requested)
     }
 
     #[must_use]
@@ -1960,17 +1906,6 @@ mod tests {
             state.take_wifi_transfer_request(),
             Some(crate::wifi_transfer::WifiTransferUiRequest::Start)
         );
-    }
-
-    #[test]
-    fn weather_details_use_select_then_hierarchical_back() {
-        let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::Weather);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::WeatherDetails);
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Weather);
     }
 
     #[test]

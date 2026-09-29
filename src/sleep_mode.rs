@@ -5,8 +5,8 @@
 //! from hardware deep sleep is a full reboot: the fields recorded here only
 //! matter for the rare software-only fallback path used when arming the
 //! deep-sleep wakeup source fails, or during the still-awake sleep-image
-//! transition before `esp_deep_sleep_start` is called. Optional Wi-Fi, SNTP
-//! and weather services pause while the static sleep image is visible.
+//! transition before `esp_deep_sleep_start` is called. Optional Wi-Fi and
+//! SNTP services pause while the static sleep image is visible.
 
 use crate::app::ScreenRoute;
 
@@ -94,12 +94,12 @@ mod tests {
     #[test]
     fn sleep_mode_remembers_route_and_selected_image() {
         let mut state = SleepModeState::default();
-        state.enter(ScreenRoute::Weather, "SLEEP01.BMP");
+        state.enter(ScreenRoute::Clock, "SLEEP01.BMP");
         assert!(state.is_sleeping());
-        assert_eq!(state.restore_route(), ScreenRoute::Weather);
+        assert_eq!(state.restore_route(), ScreenRoute::Clock);
         assert_eq!(state.last_image(), Some("SLEEP01.BMP"));
         assert_eq!(state.entries(), 1);
-        assert_eq!(state.exit(SleepWakeCause::PowerKey), ScreenRoute::Weather);
+        assert_eq!(state.exit(SleepWakeCause::PowerKey), ScreenRoute::Clock);
         assert!(!state.is_sleeping());
     }
 

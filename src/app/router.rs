@@ -60,8 +60,6 @@ pub enum ScreenRoute {
     NetworkDetails,
     NetworkSaved,
     WifiTransfer,
-    Weather,
-    WeatherDetails,
 }
 
 impl ScreenRoute {
@@ -122,8 +120,6 @@ impl ScreenRoute {
             Self::NetworkDetails => "Provisioning details",
             Self::NetworkSaved => "Saved Networks",
             Self::WifiTransfer => "Wi-Fi Transfer",
-            Self::Weather => "Weather",
-            Self::WeatherDetails => "Weather details",
         }
     }
 
@@ -198,8 +194,6 @@ impl ScreenRoute {
                 Self::NetworkDetails => "Dettagli configurazione",
                 Self::NetworkSaved => "Reti salvate",
                 Self::WifiTransfer => "Trasferimento Wi-Fi",
-                Self::Weather => "Meteo",
-                Self::WeatherDetails => "Dettagli meteo",
             },
         }
     }
@@ -261,8 +255,6 @@ impl ScreenRoute {
             Self::NetworkDetails => "network-details",
             Self::NetworkSaved => "network-saved",
             Self::WifiTransfer => "wifi-transfer",
-            Self::Weather => "weather",
-            Self::WeatherDetails => "weather-details",
         }
     }
 
@@ -326,7 +318,7 @@ impl ScreenRoute {
             | Self::DeviceInfo
             | Self::OtaUpdate
             | Self::Network => Some(Self::Settings),
-            Self::Environment | Self::Motion | Self::Weather => Some(Self::Tools),
+            Self::Environment | Self::Motion => Some(Self::Tools),
             Self::AudioDetails => Some(Self::Audio),
             Self::ClockSetTime | Self::ClockDetails => Some(Self::Clock),
             Self::DeviceInfoBoard => Some(Self::DeviceInfo),
@@ -336,7 +328,6 @@ impl ScreenRoute {
             Self::MotionDetails => Some(Self::MotionEvents),
             Self::NetworkDetails | Self::NetworkSaved => Some(Self::Network),
             Self::WifiTransfer => Some(Self::Home),
-            Self::WeatherDetails => Some(Self::Weather),
         }
     }
 

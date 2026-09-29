@@ -29,7 +29,6 @@ pub mod reader;
 pub mod reading_stats;
 pub mod unit_converter;
 pub mod voice_notes;
-pub mod weather;
 
 /// Draw the active screen selected by the router.
 pub fn render_active_screen(
@@ -82,8 +81,6 @@ pub fn render_active_screen(
         ScreenRoute::NetworkDetails => network::render_network_details(display, state),
         ScreenRoute::NetworkSaved => network::render_network_saved(display, state),
         ScreenRoute::WifiTransfer => network::render_wifi_transfer(display, state),
-        ScreenRoute::Weather => weather::render_weather(display, state),
-        ScreenRoute::WeatherDetails => weather::render_weather_details(display, state),
         ScreenRoute::Alarms => alarms::render_alarms(display, state),
         ScreenRoute::Audio => audio::render_audio(display, state),
         ScreenRoute::AudioDetails => audio::render_audio_details(display, state),

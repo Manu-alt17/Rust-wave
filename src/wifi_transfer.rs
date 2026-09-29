@@ -241,7 +241,6 @@ pub fn is_protected_portal_path(relative: &str) -> bool {
             | "CLOCK.TXT"
             | "ALARMS.TXT"
             | "DISPLAY.TXT"
-            | "WEATHER.TXT"
             | "VOICE/META.TXT"
             | "VOICE/SETTINGS.TXT"
             | "APPS/CALENDAR/EVENTS.TMP"

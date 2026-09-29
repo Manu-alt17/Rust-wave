@@ -27,7 +27,6 @@ use embedded_iconoir::{
             Language as CompactLanguage,
         },
         system::{Calculator as CompactCalculator, Calendar as CompactCalendar, Settings as CompactSettingsIcon},
-        weather::CloudSunny as CompactCloudSunny,
     },
     prelude::IconoirNewIcon,
 };
@@ -272,9 +271,6 @@ fn draw_route_icon_compact(
         }
         ScreenRoute::Network => {
             draw_iconoir_icon_scaled(display, top_left, &CompactWifi::new(BinaryColor::On))
-        }
-        ScreenRoute::Weather => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactCloudSunny::new(BinaryColor::On))
         }
         ScreenRoute::OtaUpdate => {
             draw_iconoir_icon_scaled(display, top_left, &CompactRefreshDouble::new(BinaryColor::On))

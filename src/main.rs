@@ -132,12 +132,6 @@ mod firmware {
             VoicePlaybackSession, VoiceRecordingSession, VOICE_NOTES_ROOT,
             VOICE_PCM_MONO_CHUNK_BYTES, VOICE_PCM_STEREO_CAPTURE_BYTES,
         },
-        weather::{
-            espidf::{poll_open_meteo_fetch, spawn_open_meteo_fetch},
-            WeatherData, WeatherFetchError, WeatherSnapshot, WEATHER_RETRY_DELAYS_SECONDS,
-            WEATHER_RETRY_LIMIT,
-        },
-        weather_config::{WeatherConfig, WEATHER_CONFIG_PATH},
         wifi_transfer::{
             espidf::WifiTransferServer, WifiTransferSnapshot, WifiTransferUiRequest,
             NETWORK_PROVISION_RESCAN_SECONDS, WIFI_TRANSFER_ROOT, WIFI_TRANSFER_SERVER_STACK_BYTES,
@@ -357,7 +351,7 @@ mod firmware {
 
         // The e-paper panel and the I2C-driven PMIC rail that powers it are
         // constructed here (cheap: `Epaper397::new` only sets pin state, no
-        // I/O), well ahead of the display/network/weather/alarm config loads
+        // I/O), well ahead of the display/network/alarm config loads
         // and sensor bring-up below. Actually powering/initializing the
         // panel is deferred to right before the first real paint, same as
         // any other boot -- see the merged paint block further down.
@@ -589,14 +583,11 @@ mod firmware {
         };
 
         config_span.end();
-        // Weather and alarms are loaded on demand, the first time their own
-        // screens are opened (the weather block in the main loop, and
-        // `load_alarms_on_demand`): nothing the device normally lands on
-        // shows either, so reading their SD configs here only delayed every
+        // Alarms are loaded on demand, the first time their own screen is
+        // opened (`load_alarms_on_demand`): nothing the device normally lands
+        // on shows them, so reading their SD config here only delayed every
         // boot. Until then no alarm is scheduled or polled, and no RTC alarm
         // is programmed.
-        let mut weather_config: Option<WeatherConfig> = None;
-        let mut weather_config_loaded = false;
         let mut alarm_engine = AlarmEngine::default();
         let mut alarms_loaded = false;
         let mut board_services = BoardServices::new(shared_i2c.clone());
@@ -740,7 +731,7 @@ mod firmware {
         let mut service_delay = FreeRtosDelay;
         let mut frame = FrameBuffer::new_white();
         // Keep the growing product UI state off the firmware main-task stack.
-        // HTTPS weather retrieval and display refreshes still execute from the
+        // HTTPS requests and display refreshes still execute from the
         // same orchestrator, but their stack budget is no longer reduced by a
         // long-lived inline AppState allocation.
         let mut state = Box::new(AppState::default());
@@ -925,7 +916,7 @@ mod firmware {
         panel_finish_span.end();
         // This is the single global refresh that shows the real first
         // screen, on every boot cause. None of the work above (display/
-        // network/weather/alarm config loads, board services, the
+        // network/alarm config loads, board services, the
         // reader-resume decision) touches the panel, and none of it affects
         // what Home/Reader draws either (Home's menu tiles are a static
         // const list, and reader/voice/audio state isn't read by Home), so
@@ -1248,7 +1239,6 @@ mod firmware {
         let mut last_displayed_charging = state.battery_charging();
         let mut last_alarm_poll = Instant::now();
         let mut last_power_key_poll = Instant::now();
-        let mut last_weather_attempt: Option<Instant> = None;
         let mut last_ota_check_attempt: Option<Instant> = None;
         let mut ota_self_test_confirmed = false;
         let mut last_reader_tick = Instant::now();
@@ -1263,22 +1253,12 @@ mod firmware {
         // hardware-adjacent trackers above -- `AppState` stays independent
         // of the wall clock and SD I/O this needs.
         let mut reading_stats_tracker = ReadingStatsTracker::new();
-        let mut weather_retry = WeatherRetryState::default();
-        // Dispatch/poll pair for the weather fetch's own worker thread: `Some`
-        // from the tick that starts a request until the tick that observes
-        // its result on the channel. Keeping this in the main loop's own
-        // state (rather than blocking inline on the worker) is what lets the
-        // loop keep draining `input_queue` and redrawing while the HTTPS
-        // round-trip is in flight -- see `spawn_open_meteo_fetch`'s doc
-        // comment for the freeze this replaces.
-        let mut weather_fetch_in_flight: Option<(
-            WeatherFetchAttempt,
-            std::sync::mpsc::Receiver<Result<WeatherData, WeatherFetchError>>,
-        )> = None;
-        // Dispatch/poll pair for the OTA release check's own worker thread,
-        // same shape as `weather_fetch_in_flight` above -- see
-        // `spawn_latest_release_check`'s doc comment for the freeze this
-        // replaces.
+        // Dispatch/poll pair for the OTA release check's own worker thread:
+        // `Some` from the tick that starts a request until the tick that
+        // observes its result on the channel, so the loop keeps draining
+        // `input_queue` and redrawing while the HTTPS round-trip is in
+        // flight -- see `spawn_latest_release_check`'s doc comment for the
+        // freeze this replaces.
         let mut ota_check_in_flight: Option<
             std::sync::mpsc::Receiver<Result<ReleaseInfo, ReleaseCheckError>>,
         > = None;
@@ -1857,9 +1837,6 @@ mod firmware {
                     &mut sleep_network,
                     &mut last_network_fingerprint,
                     &mut last_network_log,
-                    &mut last_weather_attempt,
-                    &mut weather_retry,
-                    &mut weather_fetch_in_flight,
                     "reader-power-save",
                 );
                 wifi_suspended_for_reading = false;
@@ -2062,9 +2039,6 @@ mod firmware {
                                     &mut sleep_network,
                                     &mut last_network_fingerprint,
                                     &mut last_network_log,
-                                    &mut last_weather_attempt,
-                                    &mut weather_retry,
-                                    &mut weather_fetch_in_flight,
                                     "sleep-image",
                                 );
                             }
@@ -2166,9 +2140,6 @@ mod firmware {
                                     &mut sleep_network,
                                     &mut last_network_fingerprint,
                                     &mut last_network_log,
-                                    &mut last_weather_attempt,
-                                    &mut weather_retry,
-                                    &mut weather_fetch_in_flight,
                                     "sleep-image",
                                 );
                             }
@@ -2304,155 +2275,9 @@ mod firmware {
                 state.update_reading_stats_snapshot(snapshot);
             }
 
-            let manual_weather_refresh = state.take_weather_refresh_request();
-            // Opening the Weather screen is what requests the first refresh,
-            // so that is also where WEATHER.TXT is read (once).
-            if manual_weather_refresh && !weather_config_loaded {
-                weather_config_loaded = true;
-                weather_config = match WeatherConfig::load_from_path(WEATHER_CONFIG_PATH) {
-                    Ok(config) => {
-                        info!(
-                            "rustmix-wave=weather-config status=ready path={WEATHER_CONFIG_PATH} location={} refresh-minutes={} load=on-demand",
-                            config.location, config.refresh_minutes
-                        );
-                        state.update_weather_snapshot(WeatherSnapshot::provisioned(&config));
-                        Some(config)
-                    }
-                    Err(error) => {
-                        warn!(
-                            "rustmix-wave=weather-config status=unavailable path={WEATHER_CONFIG_PATH} error={error:#}"
-                        );
-                        None
-                    }
-                };
-            }
-            if !sleep_network.is_suspended() {
-                // Drain a completed fetch, if any, before deciding whether to
-                // start another one this tick. This poll is a plain
-                // non-blocking channel check -- see `spawn_open_meteo_fetch`'s
-                // doc comment for why this replaced a blocking wait here.
-                if let Some((attempt, outcome)) =
-                    weather_fetch_in_flight
-                        .as_ref()
-                        .and_then(|(attempt, receiver)| {
-                            poll_open_meteo_fetch(receiver).map(|outcome| (*attempt, outcome))
-                        })
-                {
-                    weather_fetch_in_flight = None;
-                    finish_weather_fetch_attempt(attempt, outcome, &mut weather_retry, &mut state);
-                    if state.panel_awake
-                        && matches!(
-                            state.active_route(),
-                            ScreenRoute::Home | ScreenRoute::Weather | ScreenRoute::WeatherDetails
-                        )
-                    {
-                        refresh_screen(
-                            &mut panel,
-                            &mut frame,
-                            &mut state,
-                            &mut panel_refresh,
-                            RefreshRequest::Normal,
-                        )?;
-                    }
-                }
-
-                if let Some(config) = weather_config.as_ref() {
-                    if manual_weather_refresh {
-                        weather_retry.clear();
-                    }
-                    let wifi_connected = state.network.wifi_state == WifiConnectionState::Connected;
-                    // `is_some_and` (not `map_or(true, ..)`): a `None` here
-                    // means weather has never been fetched, which should wait
-                    // for the Weather screen to be opened rather than firing
-                    // as soon as Wi-Fi connects -- see the `weather_refresh_requested`
-                    // trigger in `app::state`'s Weather-screen navigation.
-                    let interval_due = last_weather_attempt.is_some_and(|last| {
-                        last.elapsed()
-                            >= Duration::from_secs(config.refresh_minutes.saturating_mul(60))
-                    });
-                    let scheduled_retry = if wifi_connected {
-                        weather_retry.take_due()
-                    } else {
-                        None
-                    };
-                    let attempt = if weather_fetch_in_flight.is_some() {
-                        // Already waiting on a worker's result -- never
-                        // dispatch a second, overlapping fetch.
-                        None
-                    } else if manual_weather_refresh {
-                        Some(WeatherFetchAttempt::initial("manual"))
-                    } else if let Some(retry) = scheduled_retry {
-                        Some(retry)
-                    } else if interval_due && !weather_retry.is_pending() {
-                        // `interval_due` is only true once `last_weather_attempt`
-                        // is `Some` (see its definition above), so the first
-                        // ever dispatch always arrives via `manual_weather_refresh`
-                        // instead, tagged "manual" below.
-                        Some(WeatherFetchAttempt::initial("periodic"))
-                    } else {
-                        None
-                    };
-
-                    if let Some(attempt) = attempt {
-                        if wifi_connected {
-                            // Dispatch-only: does not block waiting for the
-                            // HTTPS round-trip, so the loop reaches
-                            // `input_queue.pop()` below on this same tick
-                            // regardless of how long the fetch takes. The
-                            // result (and the screen refresh it may warrant)
-                            // is picked up by the poll above on a later tick.
-                            start_weather_fetch_attempt(
-                                config,
-                                attempt,
-                                &mut weather_retry,
-                                &mut state,
-                                &mut weather_fetch_in_flight,
-                            );
-                            last_weather_attempt = Some(Instant::now());
-                        } else if manual_weather_refresh {
-                            state.weather.record_failure("Wi-Fi is not connected");
-                            warn!("rustmix-wave=weather-fetch status=deferred cause=manual error=wifi-not-connected");
-                            if state.panel_awake
-                                && matches!(
-                                    state.active_route(),
-                                    ScreenRoute::Weather | ScreenRoute::WeatherDetails
-                                )
-                            {
-                                refresh_screen(
-                                    &mut panel,
-                                    &mut frame,
-                                    &mut state,
-                                    &mut panel_refresh,
-                                    RefreshRequest::Normal,
-                                )?;
-                            }
-                        }
-                    }
-                } else if manual_weather_refresh {
-                    state
-                        .weather
-                        .record_failure("weather configuration is missing");
-                    warn!("rustmix-wave=weather-fetch status=deferred cause=manual error=weather-config-missing");
-                    if state.panel_awake
-                        && matches!(
-                            state.active_route(),
-                            ScreenRoute::Weather | ScreenRoute::WeatherDetails
-                        )
-                    {
-                        refresh_screen(
-                            &mut panel,
-                            &mut frame,
-                            &mut state,
-                            &mut panel_refresh,
-                            RefreshRequest::Normal,
-                        )?;
-                    }
-                }
-            }
-
             // Drain a completed check, if any, before deciding whether to
-            // start another one this tick -- same non-blocking dispatch/poll
-            // shape as the weather fetch above.
+            // start another one this tick. A plain non-blocking channel
+            // check: the loop never waits on the HTTPS round-trip.
             if let Some(receiver) = ota_check_in_flight.as_ref() {
                 if let Some(outcome) = poll_latest_release_check(receiver) {
                     ota_check_in_flight = None;
@@ -4057,189 +3882,6 @@ mod firmware {
         info!("rustmix-wave=network-saved-forget status=completed ssid={ssid}");
     }
 
-    #[derive(Clone, Copy, Debug)]
-    struct WeatherFetchAttempt {
-        cause: &'static str,
-        retry_attempt: usize,
-    }
-
-    impl WeatherFetchAttempt {
-        const fn initial(cause: &'static str) -> Self {
-            Self {
-                cause,
-                retry_attempt: 0,
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    struct PendingWeatherRetry {
-        due: Instant,
-        attempt: WeatherFetchAttempt,
-    }
-
-    #[derive(Clone, Copy, Debug, Default)]
-    struct WeatherRetryState {
-        pending: Option<PendingWeatherRetry>,
-    }
-
-    impl WeatherRetryState {
-        fn clear(&mut self) {
-            self.pending = None;
-        }
-
-        #[must_use]
-        const fn is_pending(&self) -> bool {
-            self.pending.is_some()
-        }
-
-        fn take_due(&mut self) -> Option<WeatherFetchAttempt> {
-            if self
-                .pending
-                .as_ref()
-                .is_some_and(|pending| Instant::now() >= pending.due)
-            {
-                self.pending.take().map(|pending| pending.attempt)
-            } else {
-                None
-            }
-        }
-
-        fn schedule_next(&mut self, failed_attempt: WeatherFetchAttempt) -> Option<(usize, u64)> {
-            let retry_attempt = failed_attempt.retry_attempt.saturating_add(1);
-            let delay_seconds = *WEATHER_RETRY_DELAYS_SECONDS.get(retry_attempt - 1)?;
-            self.pending = Some(PendingWeatherRetry {
-                due: Instant::now() + Duration::from_secs(delay_seconds),
-                attempt: WeatherFetchAttempt {
-                    cause: failed_attempt.cause,
-                    retry_attempt,
-                },
-            });
-            Some((retry_attempt, delay_seconds))
-        }
-    }
-
-    /// Records the outcome of a weather fetch (whichever tick it actually
-    /// completed on) into `state`/`retry`. Shared by the normal async poll
-    /// path and by `start_weather_fetch_attempt`'s synchronous
-    /// spawn-failure fallback below, so both report identically.
-    fn finish_weather_fetch_attempt(
-        attempt: WeatherFetchAttempt,
-        outcome: Result<WeatherData, WeatherFetchError>,
-        retry: &mut WeatherRetryState,
-        state: &mut AppState,
-    ) {
-        let attempt_label = if attempt.retry_attempt == 0 {
-            "initial".into()
-        } else {
-            format!("{}/{}", attempt.retry_attempt, WEATHER_RETRY_LIMIT)
-        };
-        match outcome {
-            Ok(data) => {
-                retry.clear();
-                state.weather.record_success(data);
-                log_weather_snapshot(&state.weather);
-                info!(
-                    "rustmix-wave=weather-fetch status=completed cause={} attempt={} forecast-days={}",
-                    attempt.cause,
-                    attempt_label,
-                    state.weather.forecast.len()
-                );
-            }
-            Err(error) => {
-                handle_weather_fetch_failure(attempt, error, retry, state);
-                log_weather_snapshot(&state.weather);
-            }
-        }
-    }
-
-    /// Starts a weather fetch on its own worker thread and returns
-    /// immediately -- never blocks the main loop on the HTTPS round-trip.
-    /// See `spawn_open_meteo_fetch`'s doc comment for the input freeze this
-    /// replaced (a synchronous wait here, right as Wi-Fi finished
-    /// connecting, used to stall button/panel handling for the whole
-    /// request).
-    fn start_weather_fetch_attempt(
-        config: &WeatherConfig,
-        attempt: WeatherFetchAttempt,
-        retry: &mut WeatherRetryState,
-        state: &mut AppState,
-        pending: &mut Option<(
-            WeatherFetchAttempt,
-            std::sync::mpsc::Receiver<Result<WeatherData, WeatherFetchError>>,
-        )>,
-    ) {
-        let attempt_label = if attempt.retry_attempt == 0 {
-            "initial".into()
-        } else {
-            format!("{}/{}", attempt.retry_attempt, WEATHER_RETRY_LIMIT)
-        };
-        info!(
-            "rustmix-wave=weather-fetch status=starting cause={} attempt={} provider={} location={}",
-            attempt.cause, attempt_label, config.provider, config.location
-        );
-        state.weather.mark_fetching();
-        match spawn_open_meteo_fetch(config) {
-            Ok(receiver) => *pending = Some((attempt, receiver)),
-            // Thread creation itself failed synchronously (e.g. no free
-            // stack right now) -- there is nothing to poll for, so resolve
-            // this attempt immediately via the same path a polled failure
-            // takes. Rare enough (and screen-refresh-adjacent enough) that
-            // it is left to surface on the next natural redraw rather than
-            // forcing one here.
-            Err(error) => finish_weather_fetch_attempt(attempt, Err(error), retry, state),
-        }
-    }
-
-    fn handle_weather_fetch_failure(
-        attempt: WeatherFetchAttempt,
-        error: WeatherFetchError,
-        retry: &mut WeatherRetryState,
-        state: &mut AppState,
-    ) {
-        let message = error.to_string();
-        if error.is_retryable() {
-            if let Some((retry_attempt, delay_seconds)) = retry.schedule_next(attempt) {
-                state.weather.mark_retrying(message.clone());
-                warn!(
-                    "rustmix-wave=weather-fetch-retry-scheduled cause={} attempt={}/{} delay-seconds={} classification={} error={}",
-                    attempt.cause,
-                    retry_attempt,
-                    WEATHER_RETRY_LIMIT,
-                    delay_seconds,
-                    error.category(),
-                    message
-                );
-                if state.weather.current.is_some() {
-                    info!(
-                        "rustmix-wave=weather-fetch outcome=stale-cache-retained state=retrying last-success={} error={}",
-                        state.weather.last_success_label(),
-                        message
-                    );
-                }
-                return;
-            }
-        }
-
-        retry.clear();
-        state.weather.record_failure(message.clone());
-        warn!(
-            "rustmix-wave=weather-fetch status=failed cause={} retryable={} retries-exhausted={} classification={} error={}",
-            attempt.cause,
-            error.is_retryable(),
-            error.is_retryable(),
-            error.category(),
-            message
-        );
-        if state.weather.current.is_some() {
-            info!(
-                "rustmix-wave=weather-fetch outcome=stale-cache-retained state=stale last-success={} error={}",
-                state.weather.last_success_label(),
-                message
-            );
-        }
-    }
-
     fn suspend_network(
         runtime: &mut NetworkRuntime,
         state: &mut AppState,
@@ -4258,7 +3900,6 @@ mod firmware {
                 info!("rustmix-wave=sntp-suspend status=stopped reason={reason}");
                 info!("rustmix-wave=wifi-suspend status=disconnected reason={reason}");
                 info!("rustmix-wave=wifi-suspend status=stopped reason={reason}");
-                info!("rustmix-wave=weather-suspend status=paused reason={reason}");
                 true
             }
             Err(error) => {
@@ -4275,12 +3916,6 @@ mod firmware {
         sleep_network: &mut SleepNetworkState,
         last_network_fingerprint: &mut NetworkLogFingerprint,
         last_network_log: &mut Instant,
-        last_weather_attempt: &mut Option<Instant>,
-        weather_retry: &mut WeatherRetryState,
-        weather_fetch_in_flight: &mut Option<(
-            WeatherFetchAttempt,
-            std::sync::mpsc::Receiver<Result<WeatherData, WeatherFetchError>>,
-        )>,
         reason: &'static str,
     ) {
         info!("rustmix-wave=network-resume status=starting reason={reason}");
@@ -4307,14 +3942,6 @@ mod firmware {
         log_network_snapshot(&state.network);
         *last_network_fingerprint = state.network.log_fingerprint();
         *last_network_log = Instant::now();
-        *last_weather_attempt = None;
-        weather_retry.clear();
-        // Drop any receiver from a fetch started before this suspend/resume
-        // cycle. The worker thread itself (if still running) is left to
-        // finish or fail on its own -- nothing polls its result anymore, so
-        // it is harmlessly discarded rather than confusing the fresh state
-        // below with a stale answer.
-        *weather_fetch_in_flight = None;
     }
 
     /// Enter real MCU hardware deep sleep: show a sleep-confirmation image,
@@ -4462,7 +4089,7 @@ mod firmware {
         // Best-effort like the IMU/audio-rail/RTC-alarm teardown below: the
         // sleep image is already shown and committed to, so a failed
         // network suspend no longer aborts entering deep sleep, it only
-        // skips the Wi-Fi/SNTP/weather pause.
+        // skips the Wi-Fi/SNTP pause.
         if !suspend_network(
             network_runtime,
             state,
@@ -5667,20 +5294,6 @@ mod firmware {
             snapshot.next_label(),
             snapshot.snooze_minutes,
             snapshot.hardware_programmed,
-            snapshot.error.as_deref().unwrap_or("none")
-        );
-    }
-
-    fn log_weather_snapshot(snapshot: &WeatherSnapshot) {
-        info!(
-            "rustmix-wave=weather-snapshot state={} provider={} location={} timezone={} current={} forecast-days={} last-success={} error={}",
-            snapshot.state.label(),
-            snapshot.provider,
-            snapshot.location,
-            snapshot.provider_timezone,
-            snapshot.current_summary(),
-            snapshot.forecast.len(),
-            snapshot.last_success_label(),
             snapshot.error.as_deref().unwrap_or("none")
         );
     }

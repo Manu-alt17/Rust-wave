@@ -194,27 +194,20 @@ pub fn render_device_info_runtime(
     line(
         display,
         206,
-        t(locale, "Weather", "Meteo"),
-        state.weather.home_badge(),
-        body,
-    )?;
-    line(
-        display,
-        246,
         t(locale, "RTC alarms", "Sveglie RTC"),
         state.alarms.home_badge(),
         body,
     )?;
     line(
         display,
-        286,
+        246,
         t(locale, "Display zone", "Fuso orario"),
         &timezone,
         body,
     )?;
     line(
         display,
-        326,
+        286,
         t(locale, "Temperature", "Temperatura"),
         state.regional.temperature_unit.marker(),
         body,

@@ -263,7 +263,7 @@ pub mod espidf {
     const PROVISIONING_AP_MAX_CONNECTIONS: u16 = 4;
 
     /// Drop Wi-Fi into its most aggressive modem-sleep once associated for
-    /// background use (periodic NTP/weather sync only): ESP-IDF's own
+    /// background use (periodic NTP sync only): ESP-IDF's own
     /// default, `WIFI_PS_MIN_MODEM`, still wakes the radio every DTIM
     /// interval, far more often than this firmware's background sync
     /// cadence needs. [`crate::wifi_transfer::espidf::WifiTransferServer`]

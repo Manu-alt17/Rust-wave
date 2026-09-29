@@ -75,7 +75,7 @@ CONFIG_APP_PROJECT_VER="1.0.0"
 CONFIG_LWIP_SNTP_MAX_SERVERS=1
 CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000
 
-# HTTPS weather retrieval uses the ESP-IDF certificate bundle.
+# HTTPS (OTA release check and download) uses the ESP-IDF certificate bundle.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_DEFAULT_CERTIFICATE_BUNDLE=y
 
@@ -92,9 +92,9 @@ CONFIG_MBEDTLS_DEFAULT_CERTIFICATE_BUNDLE=y
 # pressure. Accepted trade-off: mbedTLS internal state (session buffers,
 # cert-parse scratch) then lives on PSRAM, an external/physically-probable
 # bus, instead of on-die SRAM -- acceptable here since the only HTTPS
-# destinations (GitHub releases/firmware, Open-Meteo) carry no user
-# credentials or secrets. Affects src/ota.rs (both fetch_latest_release
-# and install_update) and src/weather.rs (fetch_open_meteo).
+# destinations (GitHub releases/firmware) carry no user credentials or
+# secrets. Affects src/ota.rs (both fetch_latest_release and
+# install_update).
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # Also free the TX/RX SSL buffers as soon as each is no longer needed
 # instead of holding both for the connection's lifetime -- no downside,
