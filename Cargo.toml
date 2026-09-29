@@ -16,12 +16,6 @@ harness = false
 debug = true
 opt-level = "z"
 
-[features]
-default = []
-# Enables the ESP-IDF Bluedroid BLE GATT service for Rustmix Remote.
-# r1 intentionally gives BLE ownership of the modem and disables Wi-Fi startup.
-rustmix-remote-ble = ["enumset"]
-
 [profile.release]
 codegen-units = 1
 # "thin" instead of full/"fat" LTO: fat LTO's cross-crate merging under
@@ -56,7 +50,6 @@ embedded-graphics = "0.8.1"
 embedded-hal = "1.0"
 embedded-iconoir = { version = "0.2.3", features = ["96px", "48px", "24px"] }
 log = "0.4"
-enumset = { version = "1", optional = true }
 miniz_oxide = "0.8"
 # EPUB cover thumbnails: JPEG uses native scaled decoding (1/8..1) so covers
 # are decoded near the target thumbnail size instead of at full resolution.

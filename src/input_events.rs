@@ -3,8 +3,7 @@
 //!
 //! The polling thread only reads GPIOs (via `crate::buttons`) and pushes
 //! here; the main loop is the sole consumer, draining one event per tick and
-//! applying it through the normal UI path. This mirrors the BLE callback
-//! boundary in `rustmix_remote::queue::RemoteEventQueue`.
+//! applying it through the normal UI path.
 //!
 //! The main loop blocks in [`InputEventQueue::wait_timeout`] between
 //! iterations, so a press wakes it immediately while an idle device can

@@ -1755,7 +1755,6 @@ dependencies = [
  "embedded-iconoir",
  "embedded-svc",
  "embuild",
- "enumset",
  "es8311",
  "esp-idf-svc",
  "image",
