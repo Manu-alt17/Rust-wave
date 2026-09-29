@@ -100,9 +100,57 @@ pub fn draw_home_tile_compact(
     preferences: DisplayPreferences,
     locale: Locale,
 ) -> Result<(), Infallible> {
-    draw_tile_frame(display, top_left, COMPACT_TILE_SIZE, selected)?;
+    draw_tile_with(
+        display,
+        top_left,
+        COMPACT_TILE_SIZE,
+        entry.label(locale),
+        selected,
+        preferences,
+        |display, icon_top_left| draw_route_icon_compact(display, entry.route, icon_top_left),
+    )
+}
 
-    let center_x = top_left.x + COMPACT_TILE_SIZE.width as i32 / 2;
+/// Same card, icon and title layout as [`draw_home_tile_compact`], for menus
+/// that are not router categories (e.g. Reader Options): any `size48px`
+/// iconoir glyph, any label, any footprint at least as tall as
+/// [`COMPACT_TILE_SIZE`] (icon and title stay centered horizontally and keep
+/// their vertical insets from the top edge).
+pub fn draw_icon_tile<I>(
+    display: &mut OrientedFrameBuffer<'_>,
+    top_left: Point,
+    tile_size: Size,
+    label: &str,
+    icon: &I,
+    selected: bool,
+    preferences: DisplayPreferences,
+) -> Result<(), Infallible>
+where
+    I: ImageDrawable<Color = BinaryColor>,
+{
+    draw_tile_with(
+        display,
+        top_left,
+        tile_size,
+        label,
+        selected,
+        preferences,
+        |display, icon_top_left| draw_iconoir_icon_scaled(display, icon_top_left, icon),
+    )
+}
+
+fn draw_tile_with(
+    display: &mut OrientedFrameBuffer<'_>,
+    top_left: Point,
+    tile_size: Size,
+    label: &str,
+    selected: bool,
+    preferences: DisplayPreferences,
+    draw_icon: impl FnOnce(&mut OrientedFrameBuffer<'_>, Point) -> Result<(), Infallible>,
+) -> Result<(), Infallible> {
+    draw_tile_frame(display, top_left, tile_size, selected)?;
+
+    let center_x = top_left.x + tile_size.width as i32 / 2;
     // Anchored on the native glyph's bottom edge (`COMPACT_ICON_TOP_INSET +
     // COMPACT_ICON_SIZE`), not its center: the title's position is untouched,
     // so keeping the gap between icon and title at the original 22px means
@@ -113,10 +161,9 @@ pub fn draw_home_tile_compact(
         center_x - COMPACT_ICON_DRAW_SIZE / 2,
         icon_bottom_y - COMPACT_ICON_DRAW_SIZE,
     );
-    draw_route_icon_compact(display, entry.route, icon_top_left)?;
+    draw_icon(display, icon_top_left)?;
 
     let heading = preferences.text_style(UiTextRole::Heading, BinaryColor::On);
-    let label = entry.label(locale);
     let label_width = heading.text_width(label);
     Text::new(
         label,

@@ -7,14 +7,20 @@ use embedded_graphics::{
     pixelcolor::BinaryColor,
     prelude::{Drawable, Point, Primitive, Size},
     primitives::{
-        Circle, CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle, Triangle,
+        Circle, CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle,
     },
 };
 
 use embedded_iconoir::{
-    icons::size24px::{
-        editor::{AlignCenter, AlignJustify, AlignLeft, AlignRight},
-        navigation::{FastArrowDownBox, FastArrowRightBox},
+    icons::{
+        size24px::{
+            editor::{AlignCenter, AlignJustify, AlignLeft, AlignRight},
+            navigation::{FastArrowDownBox, FastArrowRightBox},
+        },
+        size48px::{
+            activities::BookmarkBook, editor::List, organization::BookmarkEmpty,
+            system::Settings as SettingsIcon,
+        },
     },
     prelude::IconoirNewIcon,
 };
@@ -28,7 +34,7 @@ use crate::{
         widgets::{
             footer::draw_footer,
             header::draw_header,
-            home_tile::draw_iconoir_icon,
+            home_tile::{draw_icon_tile, draw_iconoir_icon, COMPACT_TILE_SIZE, TILE_GAP_X, TILE_GAP_Y},
             status_glyphs::{draw_battery_icon, BATTERY_SIZE},
         },
     },
@@ -50,7 +56,7 @@ pub fn render_continue_reading(
     draw_header(
         display,
         state,
-        t(locale, "CONTINUE READING", "CONTINUA A LEGGERE"),
+        t(locale, "CONTINUE", "CONTINUA"),
     )?;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
@@ -1102,7 +1108,7 @@ pub fn render_loading(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    draw_header(display, state, t(locale, "OPENING BOOK", "APERTURA LIBRO"))?;
+    draw_header(display, state, t(locale, "OPENING BOOK", "APERTURA"))?;
     let body = state.display.body_style();
     let heading = state.display.heading_style();
     let loading = state.reader.loading.as_ref();
@@ -1149,17 +1155,20 @@ pub fn render_page(
     let size = display.orientation().logical_size();
     let width = size.width as i32;
     let height = size.height as i32;
-    let content_top = PROGRESS_TOP + PROGRESS_HEIGHT + PROGRESS_TO_CONTENT_GAP;
-    let footer_line = height - 54;
-    let body = ReaderBodyGeometry::new(width, content_top, footer_line);
+    // The session's own layout (not the live preferences) decides full
+    // screen, so the geometry always matches what the page was paginated
+    // against.
+    let full_screen = session.layout.full_screen;
+    let (body, footer_line) = reader_body_geometry(width, height, full_screen);
     let body_style = reader_body_style(
         state.reader.preferences.book_font,
         state.reader.preferences.font_size,
         state.reader.preferences.theme,
     );
 
-    draw_reading_progress(display, state, session, width)?;
-    draw_reader_wheel(display, &body, body_style, &state.reader.dictionary_mode)?;
+    if !full_screen {
+        draw_reading_progress(display, state, session, width)?;
+    }
 
     if let Some(page) = session.current_cached_page() {
         let line_step = i32::from(body_style.line_height()) + 2;
@@ -1204,7 +1213,9 @@ pub fn render_page(
         .draw_clipped(display, body.text)?;
     }
 
-    draw_reader_footer(display, state, width, height, footer_line)?;
+    if !full_screen {
+        draw_reader_footer(display, state, width, height, footer_line)?;
+    }
 
     // HighContrast is a night mode: the page is drawn exactly as Classic,
     // then the whole panel is flipped to white-on-black so the e-paper
@@ -1398,55 +1409,11 @@ fn draw_reading_progress(
     Ok(())
 }
 
-/// Horizontal anchor for the wheel column: each shape is centered on this
-/// x, not left-aligned to it, so half of it (the half at `x < 0`) falls off
-/// the panel's left edge and is silently dropped by
-/// `FrameBuffer`'s bounds check (see `pixel_address`) -- turning the full
-/// circle into a right-facing semicircle and each triangle into a right
-/// triangle, at no extra drawing cost, while saving the half-width of
-/// horizontal space a fully on-screen icon would need.
-const WHEEL_CENTER_X: i32 = 0;
-
-/// Vertical affordance for the device's physical scroll wheel, drawn in the
-/// left margin beside the book text at the wheel's on-screen height (roughly
-/// text lines 2-5): an up arrow, a dot (the wheel's center press), and a down
-/// arrow, top to bottom, spread evenly across that span. Static furniture,
-/// not tied to the current dictionary line cursor -- it marks where the
-/// physical control sits, so its position never moves. The up/down arrows
-/// hide in `Definition` mode, mirroring `draw_reader_footer`'s existing
-/// suppression there (no per-line navigation makes sense mid-definition);
-/// the dot stays visible in every mode.
-fn draw_reader_wheel(
-    display: &mut OrientedFrameBuffer<'_>,
-    body: &ReaderBodyGeometry,
-    body_style: UiTextStyle,
-    dictionary_mode: &ReaderDictionaryMode,
-) -> Result<(), Infallible> {
-    let color = BinaryColor::On;
-    let line_step = i32::from(body_style.line_height()) + 2;
-    let first_baseline = body.text.top + i32::from(body_style.line_height());
-    let row2_baseline = first_baseline + line_step;
-    let row5_baseline = first_baseline + 4 * line_step;
-    let mid_baseline = (row2_baseline + row5_baseline) / 2;
-    let arrow_left = WHEEL_CENTER_X - ARROW_SIZE / 2;
-    let dot_left = WHEEL_CENTER_X - DOT_SIZE / 2;
-
-    let show_up_down = !matches!(dictionary_mode, ReaderDictionaryMode::Definition { .. });
-    if show_up_down {
-        draw_up_arrow(display, arrow_left, row2_baseline, color)?;
-    }
-    draw_dot(display, dot_left, mid_baseline, color)?;
-    if show_up_down {
-        draw_down_arrow(display, arrow_left, row5_baseline, color)?;
-    }
-    Ok(())
-}
-
 /// In-page dictionary lookup mode, drawn on top of the already-rendered book
-/// text: the selected line's row filled and its text re-drawn inverted, an
-/// underline beneath the selected word once a line is confirmed, and a
-/// compact definition panel once a word is confirmed. A hold-SELECT press
-/// toggles the whole mode; see
+/// text: a rounded black pill behind the selected line with its text
+/// re-drawn white, the same pill behind just the selected word once a line
+/// is confirmed, and a compact definition panel once a word is confirmed. A
+/// quick SELECT enters the mode and a held SELECT exits it; see
 /// `AppState::apply_reader_dictionary_select_long_press`.
 fn draw_dictionary_mode_overlay(
     display: &mut OrientedFrameBuffer<'_>,
@@ -1458,43 +1425,11 @@ fn draw_dictionary_mode_overlay(
 ) -> Result<(), Infallible> {
     let (line_index, word_index, definition) = match &state.reader.dictionary_mode {
         ReaderDictionaryMode::Off => return Ok(()),
-        ReaderDictionaryMode::LineSelect { line_index } => {
-            let Some(line) = page.lines.get(*line_index) else {
-                return Ok(());
-            };
-            let line_step = i32::from(body_style.line_height()) + 2;
-            let first_baseline = body.text.top + i32::from(body_style.line_height());
-            let baseline = first_baseline + *line_index as i32 * line_step;
-
-            Rectangle::new(
-                Point::new(
-                    body.text.left,
-                    baseline - i32::from(body_style.line_height()),
-                ),
-                Size::new(body.text.width() as u32, line_step as u32),
-            )
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-
-            let (rendered, left) = aligned_reader_line(
-                line.text.as_str(),
-                line.paragraph_end,
-                session.layout.paragraph_alignment,
-                body_style,
-                body.text,
-            );
-            return Text::new(
-                rendered.as_str(),
-                Point::new(left, baseline),
-                body_style.with_color(BinaryColor::Off),
-            )
-            .draw_clipped(display, body.text)
-            .map(|_| ());
-        }
+        ReaderDictionaryMode::LineSelect { line_index } => (*line_index, None, None),
         ReaderDictionaryMode::WordSelect {
             line_index,
             word_index,
-        } => (*line_index, *word_index, None),
+        } => (*line_index, Some(*word_index), None),
         ReaderDictionaryMode::Definition {
             line_index,
             word_index,
@@ -1502,7 +1437,7 @@ fn draw_dictionary_mode_overlay(
             message,
         } => (
             *line_index,
-            *word_index,
+            Some(*word_index),
             Some((word.as_str(), message.as_str())),
         ),
     };
@@ -1520,16 +1455,55 @@ fn draw_dictionary_mode_overlay(
         body_style,
         body.text,
     );
-    if let Some(&(start, end)) = eligible_word_spans(&rendered).get(word_index) {
-        let word_left = left + body_style.text_width(&rendered[..start]);
-        let word_width = body_style.text_width(&rendered[start..end]).max(1);
+
+    let (pill_left, pill_right) = match word_index {
+        None => (
+            body.text.left - DICTIONARY_PILL_PAD_X,
+            body.text.right + DICTIONARY_PILL_PAD_X,
+        ),
+        Some(word_index) => {
+            let Some(&(start, end)) = eligible_word_spans(&rendered).get(word_index) else {
+                return Ok(());
+            };
+            let word_left = left + body_style.text_width(&rendered[..start]);
+            let word_right = word_left + body_style.text_width(&rendered[start..end]).max(1);
+            (
+                word_left - DICTIONARY_PILL_PAD_X,
+                word_right + DICTIONARY_PILL_PAD_X,
+            )
+        }
+    };
+    let (pill_top, pill_height) = dictionary_pill_band(body_style, baseline, line_step);
+    let radius = if word_index.is_some() {
+        pill_height / 2
+    } else {
+        DICTIONARY_LINE_PILL_RADIUS.min(pill_height / 2)
+    };
+    RoundedRectangle::new(
         Rectangle::new(
-            Point::new(word_left, baseline + 3),
-            Size::new(word_width as u32, 2),
-        )
-        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(display)?;
-    }
+            Point::new(pill_left, pill_top),
+            Size::new((pill_right - pill_left) as u32, pill_height as u32),
+        ),
+        CornerRadii::new(Size::new(radius as u32, radius as u32)),
+    )
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+    .draw(display)?;
+
+    // Re-draw the whole line white, clipped to the pill: exactly the glyphs
+    // (or glyph fragments, e.g. a trailing comma the padding overlaps) that
+    // the pill just covered come back inverted, and nothing outside it.
+    let clip = TextBounds::new(
+        pill_left.max(body.text.left),
+        pill_top,
+        pill_right.min(body.text.right),
+        pill_top + pill_height,
+    );
+    Text::new(
+        rendered.as_str(),
+        Point::new(left, baseline),
+        body_style.with_color(BinaryColor::Off),
+    )
+    .draw_clipped(display, clip)?;
 
     if let Some((word, definition)) = definition {
         draw_dictionary_definition_panel(display, state, body, word, definition)?;
@@ -1537,9 +1511,33 @@ fn draw_dictionary_mode_overlay(
     Ok(())
 }
 
-/// Compact word + definition panel shown once a word is confirmed, drawn
-/// over the bottom of the reading body so it never collides with the
-/// progress bar or footer.
+/// Horizontal padding between the selected text and the pill's rounded ends.
+const DICTIONARY_PILL_PAD_X: i32 = 6;
+/// Vertical padding between the font's ascender/descender ink and the pill.
+const DICTIONARY_PILL_PAD_Y: i32 = 3;
+/// Corner radius of the full-width line pill (the word pill is fully round).
+const DICTIONARY_LINE_PILL_RADIUS: i32 = 10;
+/// Sample covering the strike's ascenders and descenders, so every line's
+/// pill has the same height and sits centered on the text regardless of
+/// which letters that particular line happens to contain.
+const DICTIONARY_PILL_INK_SAMPLE: &str = "Hbdfhklgjpqy";
+
+/// `(top, height)` of the selection pill for the line at `baseline`:
+/// centered on the font's actual glyph ink rather than on the line pitch
+/// (whose extra leading sits above the ascenders and made the old fill look
+/// pushed upward), and never taller than one line step so it cannot cover
+/// the neighbouring lines.
+fn dictionary_pill_band(style: UiTextStyle, baseline: i32, line_step: i32) -> (i32, i32) {
+    let (ink_top, ink_bottom) = style.text_ink_bounds(DICTIONARY_PILL_INK_SAMPLE);
+    let height = (ink_bottom - ink_top + 2 * DICTIONARY_PILL_PAD_Y).min(line_step);
+    let center = baseline + (ink_top + ink_bottom) / 2;
+    (center - height / 2, height)
+}
+
+/// Word + definition panel shown once a word is confirmed, drawn over the
+/// bottom of the reading body so it never collides with the progress bar or
+/// footer. The panel grows upward to fit the whole definition; text is never
+/// truncated.
 fn draw_dictionary_definition_panel(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
@@ -1547,15 +1545,17 @@ fn draw_dictionary_definition_panel(
     word: &str,
     message: &str,
 ) -> Result<(), Infallible> {
-    let heading = state.display.heading_style();
-    let detail = state.display.detail_style();
-    let panel_top = (body.text.bottom - DEFINITION_PANEL_HEIGHT).max(body.text.top);
+    let layout = definition_panel_layout(
+        state.display.heading_style(),
+        [state.display.body_style(), state.display.detail_style()],
+        body,
+        word,
+        message,
+    );
+    let panel_top = body.text.bottom - layout.height;
     let panel = Rectangle::new(
         Point::new(body.frame.left, panel_top),
-        Size::new(
-            body.frame.width() as u32,
-            (body.text.bottom - panel_top) as u32,
-        ),
+        Size::new(body.frame.width() as u32, layout.height as u32),
     );
     panel
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
@@ -1564,60 +1564,112 @@ fn draw_dictionary_definition_panel(
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
 
-    let text_left = body.frame.left + 12;
-    Text::new(
-        &truncate(word, 30),
-        Point::new(text_left, panel_top + 24),
-        heading,
-    )
-    .draw(display)?;
-
-    for (index, line) in wrap_definition_lines(message, 42, DEFINITION_PANEL_LINES)
-        .iter()
-        .enumerate()
-    {
-        Text::new(
-            line,
-            Point::new(text_left, panel_top + 50 + index as i32 * 22),
-            detail,
-        )
-        .draw(display)?;
+    let text_left = body.frame.left + DEFINITION_PANEL_PADDING;
+    let mut baseline = panel_top + DEFINITION_PANEL_PADDING;
+    for line in &layout.heading_lines {
+        baseline += layout.heading_step;
+        Text::new(line, Point::new(text_left, baseline), layout.heading).draw(display)?;
+    }
+    baseline += DEFINITION_PANEL_HEADING_GAP;
+    for line in &layout.lines {
+        baseline += layout.line_step;
+        Text::new(line, Point::new(text_left, baseline), layout.text).draw(display)?;
     }
     Ok(())
 }
 
-/// Sized for up to `DEFINITION_PANEL_LINES` wrapped lines below the word
-/// heading -- long dictionary definitions (device-side capped at 220 chars,
-/// see `compact_definition` in src/dictionary.rs) need more than 3 lines to
-/// display in full.
-const DEFINITION_PANEL_HEIGHT: i32 = 220;
-const DEFINITION_PANEL_LINES: usize = 7;
+/// Inner padding between the panel border and its text.
+const DEFINITION_PANEL_PADDING: i32 = 12;
+/// Extra space between the word heading and the first definition line.
+const DEFINITION_PANEL_HEADING_GAP: i32 = 6;
+/// Extra leading between wrapped definition lines.
+const DEFINITION_PANEL_LINE_GAP: i32 = 3;
 
-fn wrap_definition_lines(value: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
+struct DefinitionPanelLayout {
+    heading: UiTextStyle,
+    heading_lines: Vec<String>,
+    heading_step: i32,
+    text: UiTextStyle,
+    lines: Vec<String>,
+    line_step: i32,
+    height: i32,
+}
+
+/// Picks the largest of `text_styles` (largest first) whose fully wrapped
+/// definition fits the reading body; the last style is used regardless, and
+/// its panel may then cover the whole body. Nothing is ever dropped.
+fn definition_panel_layout(
+    heading: UiTextStyle,
+    text_styles: [UiTextStyle; 2],
+    body: &ReaderBodyGeometry,
+    word: &str,
+    message: &str,
+) -> DefinitionPanelLayout {
+    let max_width = body.frame.width() - 2 * DEFINITION_PANEL_PADDING;
+    let max_height = body.text.bottom - body.frame.top;
+    let heading_lines = wrap_definition_to_width(heading, word, max_width);
+    let heading_step = i32::from(heading.line_height());
+    let mut chosen = None;
+    for text in text_styles {
+        let lines = wrap_definition_to_width(text, message, max_width);
+        let line_step = i32::from(text.line_height()) + DEFINITION_PANEL_LINE_GAP;
+        let height = 2 * DEFINITION_PANEL_PADDING
+            + heading_lines.len() as i32 * heading_step
+            + DEFINITION_PANEL_HEADING_GAP
+            + lines.len() as i32 * line_step;
+        let fits = height <= max_height;
+        chosen = Some((text, lines, line_step, height));
+        if fits {
+            break;
+        }
+    }
+    let (text, lines, line_step, height) = chosen.expect("two candidate styles");
+    DefinitionPanelLayout {
+        heading,
+        heading_lines,
+        heading_step,
+        text,
+        lines,
+        line_step,
+        height: height.min(max_height),
+    }
+}
+
+/// Greedy pixel-width word wrap with no line cap. A single word wider than
+/// the panel is broken across lines instead of overflowing the border.
+fn wrap_definition_to_width(style: UiTextStyle, text: &str, max_width: i32) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
-    for word in value.split_whitespace() {
-        if !current.is_empty() && current.len() + 1 + word.len() > max_chars {
-            lines.push(current);
-            current = String::new();
-            if lines.len() >= max_lines {
-                break;
-            }
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if style.text_width(&candidate) <= max_width {
+            current = candidate;
+            continue;
         }
         if !current.is_empty() {
-            current.push(' ');
+            lines.push(std::mem::take(&mut current));
         }
-        current.push_str(word);
+        for character in word.chars() {
+            current.push(character);
+            if style.text_width(&current) > max_width && current.chars().count() > 1 {
+                current.pop();
+                lines.push(std::mem::take(&mut current));
+                current.push(character);
+            }
+        }
     }
-    if lines.len() < max_lines && !current.is_empty() {
+    if !current.is_empty() {
         lines.push(current);
     }
     lines
 }
 
 /// Reader page footer: a dot glyph for the options/select shortcut and its
-/// contextual label on the left (page-turn hints now live in the wheel
-/// column beside the text instead, see `draw_reader_wheel`), and the clock
+/// contextual label on the left, and the clock
 /// plus battery icon — no percentage text — on the right, matching the clock
 /// every other screen's footer now shows. Wi-Fi and the date are not shown
 /// while reading.
@@ -1642,20 +1694,20 @@ fn draw_reader_footer(
 
     let (select_label, hold_label) = match &state.reader.dictionary_mode {
         ReaderDictionaryMode::Off => (
+            t(locale, "Dictionary", "Dizionario"),
             t(locale, "Options", "Opzioni"),
-            t(locale, "Hold:Dict", "Tieni:Diz."),
         ),
         ReaderDictionaryMode::LineSelect { .. } => (
             t(locale, "Pick line", "Scegli riga"),
-            t(locale, "Hold:Exit", "Tieni:Esci"),
+            t(locale, "Exit", "Esci"),
         ),
         ReaderDictionaryMode::WordSelect { .. } => (
             t(locale, "Look up", "Cerca"),
-            t(locale, "Hold:Exit", "Tieni:Esci"),
+            t(locale, "Exit", "Esci"),
         ),
         ReaderDictionaryMode::Definition { .. } => (
             t(locale, "Next word", "Prossima parola"),
-            t(locale, "Hold:Exit", "Tieni:Esci"),
+            t(locale, "Exit", "Esci"),
         ),
     };
 
@@ -1663,14 +1715,23 @@ fn draw_reader_footer(
     draw_dot(display, cursor_x, baseline, color)?;
     cursor_x += DOT_SIZE + ICON_TEXT_GAP;
     let cursor = Text::new(select_label, Point::new(cursor_x, baseline), style).draw(display)?;
+    // The hold hint is the same dot stretched into a pill that carries the
+    // hold time ("(2s) Opzioni") instead of a "Hold:" word.
     cursor_x = cursor.x + FOOTER_GROUP_GAP;
+    cursor_x = draw_hold_pill(display, state, cursor_x, baseline, color)?;
+    cursor_x += ICON_TEXT_GAP;
     Text::new(hold_label, Point::new(cursor_x, baseline), style).draw(display)?;
 
+    // The battery glyph's ink sits centered in its square icon box, so
+    // center that box on the clock digits' actual ink, not the baseline.
+    let (digit_top, digit_bottom) = style.text_ink_bounds("0");
+    let digit_center = baseline + (digit_top + digit_bottom) / 2;
     let mut right_x = width - 18 - BATTERY_SIZE.width as i32;
     draw_battery_icon(
         display,
-        Point::new(right_x, baseline - BATTERY_SIZE.height as i32 + 3),
+        Point::new(right_x, digit_center - BATTERY_SIZE.height as i32 / 2),
         state.battery_percent(),
+        state.battery_charging(),
         color,
     )?;
 
@@ -1681,8 +1742,6 @@ fn draw_reader_footer(
     Ok(())
 }
 
-/// Side length of the triangular up/down page-turn glyphs in the footer.
-const ARROW_SIZE: i32 = 13;
 /// Diameter of the round "options" glyph in the footer.
 const DOT_SIZE: i32 = 12;
 /// Gap between a footer glyph and the label that follows it.
@@ -1690,41 +1749,6 @@ const ICON_TEXT_GAP: i32 = 8;
 /// Gap between one footer hint group and the next.
 const FOOTER_GROUP_GAP: i32 = 24;
 
-/// Upward-pointing triangle (page-turn "previous") sitting on `baseline`.
-fn draw_up_arrow(
-    display: &mut OrientedFrameBuffer<'_>,
-    left: i32,
-    baseline: i32,
-    color: BinaryColor,
-) -> Result<(), Infallible> {
-    let top = baseline - ARROW_SIZE;
-    Triangle::new(
-        Point::new(left + ARROW_SIZE / 2, top),
-        Point::new(left, baseline),
-        Point::new(left + ARROW_SIZE, baseline),
-    )
-    .into_styled(PrimitiveStyle::with_fill(color))
-    .draw(display)
-}
-
-/// Downward-pointing triangle (page-turn "next") sitting on `baseline`.
-fn draw_down_arrow(
-    display: &mut OrientedFrameBuffer<'_>,
-    left: i32,
-    baseline: i32,
-    color: BinaryColor,
-) -> Result<(), Infallible> {
-    let top = baseline - ARROW_SIZE;
-    Triangle::new(
-        Point::new(left, top),
-        Point::new(left + ARROW_SIZE, top),
-        Point::new(left + ARROW_SIZE / 2, baseline),
-    )
-    .into_styled(PrimitiveStyle::with_fill(color))
-    .draw(display)
-}
-
-/// Filled circle (Reader options shortcut) sitting on `baseline`.
 fn draw_dot(
     display: &mut OrientedFrameBuffer<'_>,
     left: i32,
@@ -1734,6 +1758,69 @@ fn draw_dot(
     Circle::new(Point::new(left, baseline - DOT_SIZE), DOT_SIZE as u32)
         .into_styled(PrimitiveStyle::with_fill(color))
         .draw(display)
+}
+
+/// Hold time printed inside the footer's hold-hint pill; matches
+/// `buttons::READER_SELECT_LONG_PRESS_MS`.
+const HOLD_PILL_LABEL: &str = "2s";
+/// Horizontal padding between the pill's rounded ends and its label.
+const HOLD_PILL_PAD_X: i32 = 4;
+
+/// Footer hold hint: a filled pill exactly as tall as [`draw_dot`]'s dot
+/// (same top and bottom), widened to fit [`HOLD_PILL_LABEL`] in the
+/// smallest UI tier, drawn in inverted ink and centered on its actual
+/// glyph ink. Returns the x just past the pill.
+fn draw_hold_pill(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    left: i32,
+    baseline: i32,
+    color: BinaryColor,
+) -> Result<i32, Infallible> {
+    let style = state.display.detail_style();
+    let label_width = style.text_width(HOLD_PILL_LABEL);
+    let width = (label_width + 2 * HOLD_PILL_PAD_X).max(DOT_SIZE);
+    let top = baseline - DOT_SIZE;
+    let radius = DOT_SIZE as u32 / 2;
+    RoundedRectangle::new(
+        Rectangle::new(Point::new(left, top), Size::new(width as u32, DOT_SIZE as u32)),
+        CornerRadii::new(Size::new(radius, radius)),
+    )
+    .into_styled(PrimitiveStyle::with_fill(color))
+    .draw(display)?;
+
+    let (ink_top, ink_bottom) = style.text_ink_bounds(HOLD_PILL_LABEL);
+    let label_baseline = top + DOT_SIZE / 2 - (ink_top + ink_bottom) / 2;
+    Text::new(
+        HOLD_PILL_LABEL,
+        Point::new(left + (width - label_width) / 2, label_baseline),
+        style.with_color(color.invert()),
+    )
+    .draw(display)?;
+    Ok(left + width)
+}
+
+/// Top edge of the book text in full-screen mode (no progress bar above it).
+const FULL_SCREEN_TEXT_TOP: i32 = 20;
+/// Gap kept below the book text in full-screen mode (no footer below it).
+const FULL_SCREEN_TEXT_BOTTOM_GAP: i32 = 20;
+
+/// Reader page body viewport plus the footer rule's y, for normal reading
+/// (progress bar above, hint/clock/battery footer below) or full screen
+/// (neither: the text runs from `FULL_SCREEN_TEXT_TOP` to
+/// `FULL_SCREEN_TEXT_BOTTOM_GAP` above the panel edge). The single source of
+/// truth for both `render_page` and the `lines_per_page` calibration test.
+fn reader_body_geometry(width: i32, height: i32, full_screen: bool) -> (ReaderBodyGeometry, i32) {
+    let (content_top, footer_line) = if full_screen {
+        // `ReaderBodyGeometry::new` keeps the text 12px above `footer_line`.
+        (FULL_SCREEN_TEXT_TOP, height - FULL_SCREEN_TEXT_BOTTOM_GAP + 12)
+    } else {
+        (
+            PROGRESS_TOP + PROGRESS_HEIGHT + PROGRESS_TO_CONTENT_GAP,
+            height - 54,
+        )
+    };
+    (ReaderBodyGeometry::new(width, content_top, footer_line), footer_line)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1779,37 +1866,56 @@ impl ReaderBodyGeometry {
     }
 }
 
+/// Left edge of the Reader Options tile grid (the shell's shared content
+/// inset).
+const OPTIONS_GRID_LEFT: i32 = 22;
+/// Top edge of the Reader Options tile grid, just below the header.
+const OPTIONS_GRID_TOP: i32 = 70;
+/// Two columns of tiles filling the shared 436px content width.
+const OPTIONS_GRID_COLUMNS: usize = 2;
+const OPTIONS_TILE_SIZE: Size = Size::new(
+    ((436 - TILE_GAP_X) / OPTIONS_GRID_COLUMNS as i32) as u32,
+    COMPACT_TILE_SIZE.height,
+);
+
+/// Reader Options: a 2x2 grid of the same rounded icon tiles the Home
+/// dashboard uses (thick border + corner dot on the selected one).
 pub fn render_options(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    draw_header(
-        display,
-        state,
-        t(locale, "READER OPTIONS", "OPZIONI LETTORE"),
-    )?;
+    draw_header(display, state, t(locale, "OPTIONS", "OPZIONI"))?;
+    let bookmarked = state.reader.current_page_is_bookmarked();
     for (index, option) in ReaderOption::ALL.iter().copied().enumerate() {
-        let badge = match option {
-            ReaderOption::Bookmark if state.reader.current_page_is_bookmarked() => {
-                t(locale, "REMOVE", "RIMUOVI")
-            }
-            ReaderOption::Bookmark => t(locale, "ADD", "AGGIUNGI"),
-            ReaderOption::Bookmarks => t(locale, "LIST", "ELENCO"),
-            ReaderOption::TableOfContents if state.reader.has_structured_toc() => {
-                t(locale, "LIST", "ELENCO")
-            }
-            _ => option.badge_i18n(locale),
-        };
-        draw_row(
-            display,
-            state,
-            142 + index as i32 * 66,
-            state.reader.options_selected == index,
-            option.label_i18n(locale),
-            badge,
-            "",
-        )?;
+        let column = (index % OPTIONS_GRID_COLUMNS) as i32;
+        let row = (index / OPTIONS_GRID_COLUMNS) as i32;
+        let top_left = Point::new(
+            OPTIONS_GRID_LEFT + column * (OPTIONS_TILE_SIZE.width as i32 + TILE_GAP_X),
+            OPTIONS_GRID_TOP + row * (OPTIONS_TILE_SIZE.height as i32 + TILE_GAP_Y),
+        );
+        let label = option.tile_label_i18n(locale, bookmarked);
+        let selected = state.reader.options_selected == index;
+        let color = BinaryColor::On;
+        let preferences = state.display;
+        match option {
+            ReaderOption::TableOfContents => draw_icon_tile(
+                display, top_left, OPTIONS_TILE_SIZE, label, &List::new(color), selected,
+                preferences,
+            )?,
+            ReaderOption::Bookmarks => draw_icon_tile(
+                display, top_left, OPTIONS_TILE_SIZE, label, &BookmarkBook::new(color), selected,
+                preferences,
+            )?,
+            ReaderOption::Bookmark => draw_icon_tile(
+                display, top_left, OPTIONS_TILE_SIZE, label, &BookmarkEmpty::new(color), selected,
+                preferences,
+            )?,
+            ReaderOption::ReadingPreferences => draw_icon_tile(
+                display, top_left, OPTIONS_TILE_SIZE, label, &SettingsIcon::new(color), selected,
+                preferences,
+            )?,
+        }
     }
     draw_footer(
         display,
@@ -1838,7 +1944,7 @@ fn render_preference_list(
     draw_header(
         display,
         state,
-        t(locale, "READING PREFERENCES", "PREFERENZE DI LETTURA"),
+        t(locale, "PREFERENCES", "PREFERENZE"),
     )?;
     for (index, preference) in ReadingPreference::ALL.iter().copied().enumerate() {
         let badge = match preference {
@@ -1863,6 +1969,10 @@ fn render_preference_list(
                 t(locale, "On", "Attivo")
             }
             ReadingPreference::TapPageTurn => t(locale, "Off", "Non attivo"),
+            ReadingPreference::FullScreen if state.reader.preferences.full_screen => {
+                t(locale, "On", "Attivo")
+            }
+            ReadingPreference::FullScreen => t(locale, "Off", "Non attivo"),
         };
         draw_row(
             display,
@@ -1901,7 +2011,7 @@ fn render_preference_editor(
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
     let preference = state.reader.selected_preference();
-    draw_header(display, state, preference.label_i18n(locale))?;
+    draw_header(display, state, preference.header_label_i18n(locale))?;
     match preference {
         ReadingPreference::Orientation => render_orientation_editor(display, state, candidate)?,
         ReadingPreference::ParagraphAlignment => {
@@ -1915,6 +2025,9 @@ fn render_preference_editor(
         }
         ReadingPreference::TapPageTurn => {
             render_toggle_editor(display, state, candidate.tap_page_turn_enabled)?
+        }
+        ReadingPreference::FullScreen => {
+            render_toggle_editor(display, state, candidate.full_screen)?
         }
     }
     draw_footer(
@@ -2219,7 +2332,7 @@ pub fn render_toc(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    draw_header(display, state, t(locale, "TABLE OF CONTENTS", "INDICE"))?;
+    draw_header(display, state, t(locale, "CONTENTS", "INDICE"))?;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     let toc = state.reader.toc_entries();
@@ -2380,8 +2493,9 @@ mod tests {
         aligned_reader_line, bookmark_entry_columns, library_grid_entries, library_visible_books,
         reader_body_style, render_bookmarks, render_continue_reading, render_library,
         render_library_book_actions, render_library_book_bookmarks, render_loading,
-        render_options, render_preferences, render_toc, LibraryCellStatus, ReaderBodyGeometry,
-        PROGRESS_HEIGHT, PROGRESS_TOP, PROGRESS_TO_CONTENT_GAP,
+        definition_panel_layout, render_options, render_preferences, render_toc,
+        LibraryCellStatus, ReaderBodyGeometry, DEFINITION_PANEL_LINE_GAP,
+        DEFINITION_PANEL_PADDING, PROGRESS_HEIGHT, PROGRESS_TOP, PROGRESS_TO_CONTENT_GAP,
     };
     use crate::{
         app::AppState,
@@ -2395,6 +2509,54 @@ mod tests {
         },
         regional::Locale,
     };
+
+    #[test]
+    fn definition_panel_fits_longest_definition_without_dropping_text() {
+        use crate::app::{
+            display::{UiFontFamily, UiFontSize},
+            typography::{style_for, UiTextRole},
+        };
+        use embedded_graphics::pixelcolor::BinaryColor;
+
+        // Longest explained definition the engine produces (290 chars).
+        let message = "terza persona plurale del congiuntivo imperfetto di accigliare ->             ACCIGLIARE: corrugare la fronte avvicinando le sopracciglia in segno di             preoccupazione, disappunto o concentrazione / assumere un'espressione             severa e accigliata, rabbuiarsi in volto per un pensiero molesto o un...";
+        assert!(message.chars().count() >= 280);
+        let content_top = PROGRESS_TOP + PROGRESS_HEIGHT + PROGRESS_TO_CONTENT_GAP;
+        for (width, height) in [(480, 800), (800, 480)] {
+            let body = ReaderBodyGeometry::new(width, content_top, height - 54);
+            for family in [UiFontFamily::Inter, UiFontFamily::AtkinsonHyperlegible] {
+                for size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
+                    let style = |role| style_for(family, size, role, BinaryColor::On);
+                    let body_text = style(UiTextRole::Body);
+                    let layout = definition_panel_layout(
+                        style(UiTextRole::Heading),
+                        [body_text, style(UiTextRole::Detail)],
+                        &body,
+                        "ACCIGLIASSERO",
+                        message,
+                    );
+                    let context = format!("{width}x{height} {family:?} {size:?}");
+                    // Every word survives the wrap, in order.
+                    assert_eq!(
+                        layout.lines.join(" "),
+                        message.split_whitespace().collect::<Vec<_>>().join(" "),
+                        "{context}"
+                    );
+                    let max_width = body.frame.width() - 2 * DEFINITION_PANEL_PADDING;
+                    for line in &layout.lines {
+                        assert!(layout.text.text_width(line) <= max_width, "{context}: {line}");
+                    }
+                    assert!(layout.height <= body.text.bottom - body.frame.top, "{context}");
+                    // The larger body strike is used, not the old detail one.
+                    assert_eq!(
+                        layout.line_step,
+                        i32::from(body_text.line_height()) + DEFINITION_PANEL_LINE_GAP,
+                        "{context}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn high_contrast_frame_stays_outside_shared_text_viewport() {
@@ -2594,6 +2756,7 @@ mod tests {
         ];
 
         let mut failures = Vec::new();
+        for full_screen in [false, true] {
         for &orientation in &orientations {
             for &font_size in &sizes {
                 for &book_font in &fonts {
@@ -2605,6 +2768,7 @@ mod tests {
                         paragraph_alignment: ParagraphAlignment::Left,
                         show_progress: true,
                         tap_page_turn_enabled: true,
+                        full_screen,
                     };
                     let layout = preferences.layout();
                     let display_orientation = match orientation {
@@ -2618,9 +2782,7 @@ mod tests {
                     let size = display_orientation.logical_size();
                     let width = size.width as i32;
                     let height = size.height as i32;
-                    let content_top = PROGRESS_TOP + PROGRESS_HEIGHT + PROGRESS_TO_CONTENT_GAP;
-                    let footer_line = height - 54;
-                    let body = ReaderBodyGeometry::new(width, content_top, footer_line);
+                    let (body, _) = super::reader_body_geometry(width, height, full_screen);
                     let body_style = reader_body_style(book_font, font_size, ReadingTheme::Classic);
                     let line_step = i32::from(body_style.line_height()) + 2;
                     let first_baseline = body.text.top + i32::from(body_style.line_height());
@@ -2628,7 +2790,7 @@ mod tests {
                     let last_baseline = first_baseline + last_index as i32 * line_step;
                     if last_baseline >= body.text.bottom {
                         failures.push(format!(
-                            "orientation={orientation:?} font_size={font_size:?} book_font={book_font:?}: \
+                            "full_screen={full_screen} orientation={orientation:?} font_size={font_size:?} book_font={book_font:?}: \
                              lines_per_page={} last_baseline={last_baseline} body.text.bottom={} \
                              (line_height={})",
                             layout.lines_per_page,
@@ -2638,6 +2800,7 @@ mod tests {
                     }
                 }
             }
+        }
         }
         assert!(
             failures.is_empty(),
@@ -2685,5 +2848,37 @@ mod tests {
         assert_eq!(in_progress_count, 0);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, LibraryCellStatus::New);
+    }
+
+    /// Every Reader Options tile title fits inside its tile, with a margin
+    /// clear of the rounded border, at every UI font profile.
+    #[test]
+    fn reader_option_tile_labels_fit_their_tiles() {
+        use crate::app::display::{DisplayPreferences, UiFontFamily, UiFontSize};
+        use crate::reader::ReaderOption;
+        use crate::regional::Locale;
+
+        let max_width = super::OPTIONS_TILE_SIZE.width as i32 - 2 * 16;
+        for font_family in [UiFontFamily::Inter, UiFontFamily::AtkinsonHyperlegible] {
+            for font_size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
+                let preferences = DisplayPreferences {
+                    font_family,
+                    font_size,
+                    ..DisplayPreferences::default()
+                };
+                let heading = preferences.heading_style();
+                for option in ReaderOption::ALL {
+                    for locale in [Locale::English, Locale::Italian] {
+                        for bookmarked in [false, true] {
+                            let label = option.tile_label_i18n(locale, bookmarked);
+                            assert!(
+                                heading.text_width(label) <= max_width,
+                                "{label:?} too wide at {font_family:?}/{font_size:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

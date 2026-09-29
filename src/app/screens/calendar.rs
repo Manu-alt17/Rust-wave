@@ -255,7 +255,7 @@ pub fn render_calendar_event_details(
         draw_header(
             display,
             state,
-            t(locale, "CALENDAR EVENT", "EVENTO CALENDARIO"),
+            t(locale, "EVENT", "EVENTO"),
         )?;
         Text::new(
             t(
@@ -274,7 +274,7 @@ pub fn render_calendar_event_details(
     draw_header(
         display,
         state,
-        t(locale, "CALENDAR EVENT", "EVENTO CALENDARIO"),
+        t(locale, "EVENT", "EVENTO"),
     )?;
     let date = selected_date_label(locale, event.date);
     Text::new(
@@ -368,7 +368,7 @@ pub fn render_calendar_event_editor(
         draw_header(
             display,
             state,
-            t(locale, "CALENDAR EDITOR", "EDITOR CALENDARIO"),
+            t(locale, "EDIT EVENT", "MODIFICA"),
         )?;
         Text::new(
             t(
@@ -385,7 +385,7 @@ pub fn render_calendar_event_editor(
     draw_header(
         display,
         state,
-        t(locale, "CALENDAR EDITOR", "EDITOR CALENDARIO"),
+        t(locale, "EDIT EVENT", "MODIFICA"),
     )?;
     Text::new(
         t(locale, "Title", "Titolo"),
@@ -445,7 +445,7 @@ pub fn render_calendar_delete_confirmation(
     draw_header(
         display,
         state,
-        t(locale, "DELETE CALENDAR EVENT?", "ELIMINARE EVENTO?"),
+        t(locale, "DELETE?", "ELIMINA?"),
     )?;
     let title = state.calendar.selected_agenda_event().map_or(
         t(locale, "No event selected", "Nessun evento selezionato"),

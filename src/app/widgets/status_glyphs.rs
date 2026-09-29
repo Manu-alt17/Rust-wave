@@ -9,13 +9,16 @@ use core::convert::Infallible;
 use embedded_graphics::{
     image::Image,
     pixelcolor::BinaryColor,
-    prelude::{Drawable, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle},
+    prelude::{Drawable, Point, Size},
 };
 use embedded_iconoir::{
     icons::size24px::{
         connectivity::{Wifi, WifiOff},
         photos_and_videos::Flash,
+        system::{
+            BatteryCharging, BatteryEmpty, BatteryFiveZero, BatteryFull, BatterySevenFive,
+            BatteryTwoFive,
+        },
     },
     prelude::IconoirNewIcon,
 };
@@ -28,12 +31,10 @@ use crate::{
     orientation::OrientedFrameBuffer,
 };
 
-/// Battery icon bounding box, `width x height` in logical pixels. Sized for
-/// the Reader footer, its only remaining caller now that the header shows
-/// the percentage as plain text instead.
-pub(crate) const BATTERY_SIZE: Size = Size::new(26, 15);
-/// Extra width for the battery's positive-terminal nub.
-const BATTERY_NUB_WIDTH: i32 = 2;
+/// Battery icon bounding box, `width x height` in logical pixels: a
+/// `size24px` iconoir glyph. Used by the Reader footer, its only caller now
+/// that the header shows the percentage as plain text instead.
+pub(crate) const BATTERY_SIZE: Size = Size::new(24, 24);
 /// Wi-Fi icon bounding box, `width x height` in logical pixels. Matches the
 /// `size24px` iconoir glyph exactly.
 const WIFI_SIZE: Size = Size::new(24, 24);
@@ -54,7 +55,8 @@ const STATUS_TEXT_ROLE: UiTextRole = UiTextRole::Heading;
 /// — a small flash glyph, then the battery percentage (no battery-shaped
 /// icon — text only). Left-aligned so `anchor_left.x` is the leftmost inked
 /// pixel (the Wi-Fi icon's left edge) and `anchor_left.y` is the shared text
-/// baseline.
+/// baseline. Returns the x just past the battery percentage, so the header
+/// can keep its title clear of the group.
 pub fn draw_status_group(
     display: &mut OrientedFrameBuffer<'_>,
     preferences: DisplayPreferences,
@@ -63,7 +65,7 @@ pub fn draw_status_group(
     battery_percent: Option<u8>,
     charging: bool,
     color: BinaryColor,
-) -> Result<(), Infallible> {
+) -> Result<i32, Infallible> {
     let style = preferences.text_style(STATUS_TEXT_ROLE, color);
     // The icon's bottom sits a few pixels below the text baseline, to match
     // a digit's descent, so it reads as vertically centered on the text.
@@ -88,46 +90,32 @@ pub fn draw_status_group(
 
     let battery_label =
         battery_percent.map_or_else(|| "--%".to_string(), |percent| format!("{percent}%"));
-    Text::new(&battery_label, Point::new(text_x, anchor_left.y), style).draw(display)?;
-    Ok(())
+    let end = Text::new(&battery_label, Point::new(text_x, anchor_left.y), style).draw(display)?;
+    Ok(end.x)
 }
 
-/// Draw a battery outline with a positive-terminal nub and a fill level
-/// proportional to `percent`. An unknown percent draws an empty outline; the
-/// caller pairs this with a `"--"` label.
+/// Draw the `embedded-iconoir` battery glyph for `percent`: the charging
+/// glyph whenever `charging` (pass `AppState::battery_charging`, the same
+/// signal that shows the header's flash glyph), otherwise the level glyph
+/// the percentage rounds to -- 25 / 50 / 75 / full. An unknown percent draws
+/// the empty glyph.
 pub(crate) fn draw_battery_icon(
     display: &mut OrientedFrameBuffer<'_>,
     top_left: Point,
     percent: Option<u8>,
+    charging: bool,
     color: BinaryColor,
 ) -> Result<(), Infallible> {
-    let outline = PrimitiveStyle::with_stroke(color, 1);
-    let fill = PrimitiveStyle::with_fill(color);
-    let body_width = BATTERY_SIZE.width - BATTERY_NUB_WIDTH as u32;
-
-    Rectangle::new(top_left, Size::new(body_width, BATTERY_SIZE.height))
-        .into_styled(outline)
-        .draw(display)?;
-    Rectangle::new(
-        Point::new(top_left.x + body_width as i32, top_left.y + 3),
-        Size::new(BATTERY_NUB_WIDTH as u32, 4),
-    )
-    .into_styled(fill)
-    .draw(display)?;
-
-    if let Some(percent) = percent {
-        let usable_width = body_width.saturating_sub(4);
-        let fill_width = usable_width * u32::from(percent.min(100)) / 100;
-        if fill_width > 0 {
-            Rectangle::new(
-                Point::new(top_left.x + 2, top_left.y + 2),
-                Size::new(fill_width, BATTERY_SIZE.height - 4),
-            )
-            .into_styled(fill)
-            .draw(display)?;
-        }
+    if charging {
+        return Image::new(&BatteryCharging::new(color), top_left).draw(display);
     }
-    Ok(())
+    match percent {
+        None => Image::new(&BatteryEmpty::new(color), top_left).draw(display),
+        Some(0..=37) => Image::new(&BatteryTwoFive::new(color), top_left).draw(display),
+        Some(38..=62) => Image::new(&BatteryFiveZero::new(color), top_left).draw(display),
+        Some(63..=87) => Image::new(&BatterySevenFive::new(color), top_left).draw(display),
+        Some(_) => Image::new(&BatteryFull::new(color), top_left).draw(display),
+    }
 }
 
 /// Draw the `embedded-iconoir` Wi-Fi glyph: the connected arcs, or the

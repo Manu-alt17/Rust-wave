@@ -77,8 +77,7 @@ const CONTINUE_TILE_TITLE_GAP: i32 = 8;
 /// on one line once drawn at `UiTextRole::Body`.
 const CONTINUE_TILE_CAPTION_MAX_LINES: usize = 2;
 /// Book title wraps onto at most this many lines before extra words are
-/// dropped (mirrors `wrap_definition_lines` in `screens/reader.rs`, which
-/// does the same by character count for the dictionary panel).
+/// dropped.
 const CONTINUE_TILE_TITLE_MAX_LINES: usize = 2;
 /// Gap between the "Cap. N · P%" status line and the progress bar sitting
 /// right below it.
@@ -360,9 +359,8 @@ fn draw_continue_reading_progress_bar(
     Ok(())
 }
 
-/// Greedy pixel-width word-wrap to at most `max_lines` lines. Mirrors
-/// `wrap_definition_lines` in `screens/reader.rs` (character-count-based, for
-/// the dictionary panel): words past `max_lines` are simply dropped rather
+/// Greedy pixel-width word-wrap to at most `max_lines` lines. Words past
+/// `max_lines` are simply dropped rather
 /// than forcing an ellipsis, since a book title overrunning two lines here is
 /// rare enough that "good enough" wins over exact-fit complexity.
 fn wrap_to_width(style: UiTextStyle, text: &str, max_width: i32, max_lines: usize) -> Vec<String> {

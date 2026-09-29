@@ -62,6 +62,73 @@ const DATA_BUFFER1: u8 = 0x04;
 /// (which reads back as 0x00 after a real power-on-reset or a battery
 /// disconnect) is never mistaken for a firmware-requested shutdown.
 const PMIC_SHUTDOWN_MARKER: u8 = 0x5A;
+/// Second scratch register: the last lifecycle stage the firmware reached
+/// (see [`LifecycleStage`]). Like [`DATA_BUFFER1`] it survives a software
+/// power-off or a PMIC long-press forced power-off while the battery stays
+/// connected, so after a "won't wake" incident the next boot can tell
+/// whether the previous run died mid-boot, stalled before `power_off()`, or
+/// really reached the PMIC power-off and the PMIC then ignored the Power key.
+const DATA_BUFFER2: u8 = 0x05;
+
+/// Breadcrumb values stored in [`DATA_BUFFER2`]. `0x00` (never written, or
+/// wiped by a battery disconnect) means "no information".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum LifecycleStage {
+    /// PMIC reachable over I2C early in boot (before SD, panel, Wi-Fi).
+    BootPmicUp = 0x11,
+    /// First frame is on the glass.
+    BootFirstFrame = 0x12,
+    /// Main event loop entered.
+    MainLoop = 0x13,
+    /// Sleep path: sleep image shown, peripherals suspended, about to write
+    /// the shutdown marker.
+    SleepMarkerPending = 0x21,
+    /// Sleep path: shutdown marker written, soft power-off bit about to be set.
+    PowerOffIssued = 0x22,
+    /// Sleep path: `power_off()` returned, entering MCU deep-sleep fallback.
+    DeepSleepFallback = 0x23,
+}
+
+/// AXP2101 watchdog, register layout per XPowersLib (`enableWatchdog`,
+/// `setWatchdogConfig`, `setWatchdogTimeout`, `clrWatchdog`):
+/// `CHARGE_GAUGE_WDT_CTRL` bit 0 enables it; `WDT_CTRL` bits 0-2 select the
+/// timeout (1s << n), bits 4-5 the expiry action, bit 3 clears the counter.
+///
+/// Used as a guard against the GPIO0/BOOT strapping trap: the Back key is
+/// GPIO0, so holding it while the Power key wakes the board makes the
+/// ESP32-S3 ROM enter download mode instead of running this firmware. The
+/// PMIC is on but nothing ever runs, so the Power key does nothing. The sleep
+/// path arms the watchdog just before the soft power-off and every boot
+/// disarms it within a few hundred ms; if the firmware never gets there
+/// (download mode, or any early-boot hang) the PMIC cuts all rails itself
+/// after the timeout and the next Power-key press boots normally.
+const CHARGE_GAUGE_WDT_CTRL: u8 = 0x18;
+const WDT_ENABLE_BIT: u8 = 1 << 0;
+const WDT_CTRL: u8 = 0x19;
+const WDT_TIMEOUT_MASK: u8 = 0b0000_0111;
+const WDT_CLEAR_BIT: u8 = 1 << 3;
+const WDT_ACTION_MASK: u8 = 0b0011_0000;
+/// `XPOWERS_AXP2101_WDT_TIMEOUT_16S`.
+const WDT_TIMEOUT_16S: u8 = 4;
+/// `XPOWERS_AXP2101_WDT_IRQ_AND_RSET_ALL_OFF`: turn off every DCDC/LDO and
+/// pull PWROK low -- the most predictable outcome (the board is simply off).
+const WDT_ACTION_ALL_OFF: u8 = 3 << 4;
+
+/// Human-readable name for a raw [`DATA_BUFFER2`] byte, for boot logging.
+#[must_use]
+pub const fn lifecycle_stage_name(raw: u8) -> &'static str {
+    match raw {
+        0x00 => "none",
+        0x11 => "boot-pmic-up",
+        0x12 => "boot-first-frame",
+        0x13 => "main-loop",
+        0x21 => "sleep-marker-pending",
+        0x22 => "power-off-issued",
+        0x23 => "deep-sleep-fallback",
+        _ => "unknown",
+    }
+}
 /// Power-on source (read-only): which event most recently powered the PMIC
 /// on. Logged at boot as corroborating evidence alongside the
 /// [`DATA_BUFFER1`] marker, never as the sole signal.
@@ -346,6 +413,36 @@ where
         let marker = self.read_register(DATA_BUFFER1)?;
         self.write_register(DATA_BUFFER1, 0x00)?;
         Ok(marker == PMIC_SHUTDOWN_MARKER)
+    }
+
+    /// Arm the PMIC watchdog (16 s, all rails off on expiry) right before
+    /// [`power_off`](Self::power_off). See [`CHARGE_GAUGE_WDT_CTRL`] for why.
+    pub fn arm_wake_watchdog(&mut self) -> Result<()> {
+        let ctrl = self.read_register(WDT_CTRL)?;
+        let ctrl = (ctrl & !(WDT_TIMEOUT_MASK | WDT_ACTION_MASK))
+            | WDT_TIMEOUT_16S
+            | WDT_ACTION_ALL_OFF
+            | WDT_CLEAR_BIT;
+        self.write_register(WDT_CTRL, ctrl)?;
+        self.update_bits(CHARGE_GAUGE_WDT_CTRL, WDT_ENABLE_BIT, true)
+    }
+
+    /// Disarm the PMIC watchdog. Called on every boot as early as possible
+    /// and whenever the firmware stays running after arming it.
+    pub fn disarm_wake_watchdog(&mut self) -> Result<()> {
+        self.update_bits(CHARGE_GAUGE_WDT_CTRL, WDT_ENABLE_BIT, false)
+    }
+
+    /// Raw last-reached [`LifecycleStage`] byte from the previous run.
+    /// Read-only: the caller overwrites it with the current stage right after.
+    pub fn read_lifecycle_stage(&mut self) -> Result<u8> {
+        self.read_register(DATA_BUFFER2)
+    }
+
+    /// Record the stage the firmware has just reached. Best-effort
+    /// diagnostics: callers log and ignore failures.
+    pub fn write_lifecycle_stage(&mut self, stage: LifecycleStage) -> Result<()> {
+        self.write_register(DATA_BUFFER2, stage as u8)
     }
 
     /// Raw `(PWRON_STATUS, PWROFF_STATUS)` bytes for boot-time logging only.

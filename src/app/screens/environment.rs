@@ -86,7 +86,7 @@ pub fn render_environment_details(
     draw_header(
         display,
         state,
-        t(locale, "SENSOR DETAILS", "DETTAGLI SENSORE"),
+        t(locale, "SENSOR INFO", "INFO SENSORE"),
     )?;
 
     Text::new(t(locale, "Sensor", "Sensore"), Point::new(22, 120), heading).draw(display)?;

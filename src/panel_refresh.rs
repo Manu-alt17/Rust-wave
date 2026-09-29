@@ -169,12 +169,68 @@ impl PanelRefreshCoordinator {
     }
 }
 
+/// Longest time powered off after which the wake-from-sleep refresh may use
+/// the fast waveform instead of the full one.
+///
+/// Sleep entry always draws the sleep image with the full waveform, so the
+/// panel gets a complete (DC-balanced, ghost-clearing) cycle every time it
+/// is locked. On unlock the fast waveform is enough to replace that freshly
+/// written image -- unless it has been sitting on the glass long enough to
+/// be retained more strongly, in which case the full waveform is used again.
+pub const FAST_WAKE_MAX_SLEEP_SECONDS: u64 = 12 * 60 * 60;
+
+/// Whether the refresh that ends a wake from sleep may use the fast
+/// waveform, given the UTC unix time recorded at sleep entry and the one at
+/// wake. Anything unknown or inconsistent (no record, no clock, a clock that
+/// went backwards) falls back to the full waveform.
+#[must_use]
+pub fn wake_uses_fast_waveform(slept_at: Option<u64>, now: Option<u64>) -> bool {
+    matches!(
+        (slept_at, now),
+        (Some(slept_at), Some(now))
+            if now >= slept_at && now - slept_at < FAST_WAKE_MAX_SLEEP_SECONDS
+    )
+}
+
+/// Parse the sleep-entry timestamp file written at sleep entry: a single
+/// decimal UTC unix time, surrounding whitespace ignored.
+#[must_use]
+pub fn parse_sleep_timestamp(text: &str) -> Option<u64> {
+    text.trim().parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        PanelGlobalReason, PanelRefreshCoordinator, PanelRefreshPlan, PanelRefreshRequest,
-        PANEL_PARTIAL_REFRESH_LIMIT,
+        parse_sleep_timestamp, wake_uses_fast_waveform, PanelGlobalReason,
+        PanelRefreshCoordinator, PanelRefreshPlan, PanelRefreshRequest,
+        FAST_WAKE_MAX_SLEEP_SECONDS, PANEL_PARTIAL_REFRESH_LIMIT,
     };
+
+    #[test]
+    fn fast_wake_only_for_known_short_sleeps() {
+        let slept = 1_800_000_000;
+        assert!(wake_uses_fast_waveform(Some(slept), Some(slept + 60)));
+        assert!(wake_uses_fast_waveform(
+            Some(slept),
+            Some(slept + FAST_WAKE_MAX_SLEEP_SECONDS - 1)
+        ));
+        assert!(!wake_uses_fast_waveform(
+            Some(slept),
+            Some(slept + FAST_WAKE_MAX_SLEEP_SECONDS)
+        ));
+        assert!(!wake_uses_fast_waveform(Some(slept), Some(slept - 1)), "clock went back");
+        assert!(!wake_uses_fast_waveform(None, Some(slept)), "no sleep record");
+        assert!(!wake_uses_fast_waveform(Some(slept), None), "no clock");
+    }
+
+    #[test]
+    fn sleep_timestamp_parses_one_trimmed_number() {
+        assert_eq!(parse_sleep_timestamp("1800000000\n"), Some(1_800_000_000));
+        assert_eq!(parse_sleep_timestamp(" 42 "), Some(42));
+        assert_eq!(parse_sleep_timestamp(""), None);
+        assert_eq!(parse_sleep_timestamp("18000x"), None);
+    }
 
     #[test]
     fn normal_routes_share_one_partial_counter_before_periodic_cleanup() {

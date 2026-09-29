@@ -130,7 +130,7 @@ pub fn render_clock_set_time(
     draw_header(
         display,
         state,
-        t(locale, "SET DATE & TIME", "IMPOSTA DATA E ORA"),
+        t(locale, "DATE & TIME", "DATA E ORA"),
     )?;
 
     let Some(editor) = state.clock_time_editor.as_ref() else {
@@ -263,7 +263,7 @@ pub fn render_clock_details(
         },
     );
 
-    draw_header(display, state, t(locale, "RTC DETAILS", "DETTAGLI RTC"))?;
+    draw_header(display, state, t(locale, "RTC INFO", "INFO RTC"))?;
 
     Text::new(
         t(locale, "Time basis", "Base oraria"),

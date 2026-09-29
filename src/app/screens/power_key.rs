@@ -26,7 +26,7 @@ pub fn render_power_key_menu(
     let heading = state.display.heading_style();
     let body = state.display.body_style();
 
-    draw_header(display, state, t(locale, "POWER KEY", "TASTO ACCENSIONE"))?;
+    draw_header(display, state, t(locale, "POWER KEY", "TASTO POWER"))?;
 
     Text::new(
         t(locale, "Screen refresh", "Aggiornamento schermo"),

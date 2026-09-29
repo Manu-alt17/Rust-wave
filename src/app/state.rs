@@ -909,11 +909,20 @@ impl AppState {
             && self.lua_runtime.apply_game_select_long_press()
     }
 
-    /// Route a held SELECT into the reader's in-page dictionary lookup mode:
-    /// opens it (line-select cursor) from normal reading, or exits it
-    /// immediately from any of its sub-phases back to normal reading.
+    /// A held SELECT on the reader page opens Reader Options from normal
+    /// reading, or exits the in-page dictionary mode immediately from any of
+    /// its sub-phases back to normal reading. (A quick SELECT is what enters
+    /// the dictionary mode.)
     pub fn apply_reader_dictionary_select_long_press(&mut self) -> bool {
-        self.router.current() == ScreenRoute::ReaderPage && self.reader.toggle_dictionary_mode()
+        if self.router.current() != ScreenRoute::ReaderPage {
+            return false;
+        }
+        if matches!(self.reader.dictionary_mode, ReaderDictionaryMode::Off) {
+            self.reader.options_selected = 0;
+            self.router.navigate_to(ScreenRoute::ReaderOptions);
+            return true;
+        }
+        self.reader.toggle_dictionary_mode()
     }
 
     /// Held SELECT on Saved networks arms or confirms the "forget?" step
@@ -1078,8 +1087,7 @@ impl AppState {
                 }
                 (ReaderDictionaryMode::Off, ButtonEvent::Select) => {
                     self.note_select_press();
-                    self.reader.options_selected = 0;
-                    self.router.navigate_to(ScreenRoute::ReaderOptions);
+                    self.reader.toggle_dictionary_mode();
                 }
                 (ReaderDictionaryMode::LineSelect { .. }, ButtonEvent::Up) => {
                     self.reader.dictionary_move_line(-1);
@@ -1126,12 +1134,6 @@ impl AppState {
                             self.reader.begin_preferences_edit();
                             self.router.navigate_to(ScreenRoute::ReaderPreferences);
                         }
-                        ReaderOption::ClearGhosting => self.reader.request_clear_ghosting(),
-                        ReaderOption::GoToLibrary => {
-                            self.reader.refresh_library();
-                            self.router.navigate_to(ScreenRoute::Library);
-                        }
-                        ReaderOption::GoHome => self.router.back_home(),
                     }
                 }
             },
@@ -1683,17 +1685,17 @@ mod tests {
         }
     }
 
-    /// A held SELECT on the reader page opens the in-page dictionary lookup
+    /// A quick SELECT on the reader page opens the in-page dictionary lookup
     /// mode; BOOT then retraces it one phase at a time instead of leaving
     /// the book, and only falls through to ordinary Back once the mode is
-    /// off again.
+    /// off again. A held SELECT opens Reader Options from normal reading.
     #[test]
-    fn reader_dictionary_select_long_press_opens_mode_and_back_steps_out_one_level() {
+    fn reader_select_opens_dictionary_and_back_steps_out_one_level() {
         let mut state = AppState::default();
         state.router.navigate_to(ScreenRoute::ReaderPage);
         state.reader.session = Some(reader_session_with_lines(&["Il gatto corre veloce"]));
 
-        assert!(state.apply_reader_dictionary_select_long_press());
+        state.apply(ButtonEvent::Select);
         assert_eq!(
             state.reader.dictionary_mode,
             ReaderDictionaryMode::LineSelect { line_index: 0 }
@@ -1722,11 +1724,16 @@ mod tests {
         assert_eq!(state.reader.dictionary_mode, ReaderDictionaryMode::Off);
         assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
 
-        // A held SELECT also exits immediately from any sub-phase.
-        assert!(state.apply_reader_dictionary_select_long_press());
+        // A held SELECT exits immediately from any sub-phase.
+        state.apply(ButtonEvent::Select);
         state.reader.dictionary_confirm_line();
         assert!(state.apply_reader_dictionary_select_long_press());
         assert_eq!(state.reader.dictionary_mode, ReaderDictionaryMode::Off);
+        assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
+
+        // From normal reading, a held SELECT opens Reader Options.
+        assert!(state.apply_reader_dictionary_select_long_press());
+        assert_eq!(state.active_route(), ScreenRoute::ReaderOptions);
     }
 
     #[test]

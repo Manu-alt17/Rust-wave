@@ -244,7 +244,7 @@ fn render_voice_note_title_editor(
     draw_header(
         display,
         state,
-        t(locale, "VOICE NOTE TITLE", "TITOLO NOTA VOCALE"),
+        t(locale, "NOTE TITLE", "TITOLO NOTA"),
     )?;
     Text::new(
         t(locale, "Friendly title", "Titolo descrittivo"),
@@ -376,7 +376,7 @@ pub fn render_voice_note_recording(
     draw_header(
         display,
         state,
-        t(locale, "RECORD VOICE NOTE", "REGISTRA NOTA VOCALE"),
+        t(locale, "RECORD", "REGISTRA"),
     )?;
     Text::new(file, Point::new(22, 130), heading).draw(display)?;
     line(

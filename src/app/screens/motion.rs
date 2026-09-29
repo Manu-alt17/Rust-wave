@@ -111,7 +111,7 @@ pub fn render_motion_events(
     draw_header(
         display,
         state,
-        t(locale, "MOTION EVENTS", "EVENTI DI MOVIMENTO"),
+        t(locale, "EVENTS", "EVENTI"),
     )?;
 
     Text::new(
@@ -180,7 +180,7 @@ pub fn render_motion_details(
     draw_header(
         display,
         state,
-        t(locale, "MOTION DETAILS", "DETTAGLI MOVIMENTO"),
+        t(locale, "MOTION INFO", "INFO IMU"),
     )?;
 
     Text::new(

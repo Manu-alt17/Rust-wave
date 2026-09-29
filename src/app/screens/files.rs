@@ -119,7 +119,7 @@ fn render_preview(
     let body = state.display.body_style();
     let detail = state.display.detail_style();
 
-    draw_header(display, state, t(locale, "FILE PREVIEW", "ANTEPRIMA FILE"))?;
+    draw_header(display, state, t(locale, "FILE PREVIEW", "ANTEPRIMA"))?;
     Text::new(
         &truncate_label(&preview.name, 52),
         Point::new(22, 106),

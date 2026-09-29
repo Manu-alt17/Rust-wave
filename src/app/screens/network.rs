@@ -115,7 +115,7 @@ pub fn render_network_saved(
     let detail = state.display.detail_style();
     let saved = &state.network_saved;
 
-    draw_header(display, state, t(locale, "SAVED NETWORKS", "RETI SALVATE"))?;
+    draw_header(display, state, t(locale, "SAVED WI-FI", "RETI SALVATE"))?;
 
     if saved.networks.is_empty() {
         Text::new(
@@ -546,7 +546,7 @@ pub fn render_network_details(
     draw_header(
         display,
         state,
-        t(locale, "NETWORK DETAILS", "DETTAGLI RETE"),
+        t(locale, "NETWORK INFO", "INFO RETE"),
     )?;
 
     Text::new(

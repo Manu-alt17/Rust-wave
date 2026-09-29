@@ -334,6 +334,11 @@ pub mod espidf {
         /// on failure instead of giving up immediately.
         candidates: Vec<SavedNetwork>,
         candidate_index: usize,
+        /// SSID of the last saved network that actually associated (got an
+        /// IP), as opposed to `candidates[candidate_index]`, which is merely
+        /// the last one *attempted* -- possibly one that was failing or out
+        /// of range when Wi-Fi was suspended. [`Self::resume`] prefers this.
+        connected_ssid: Option<String>,
         /// `true` while `Configuration::Mixed` (AP + STA) is active for the
         /// phone provisioning portal.
         provisioning: bool,
@@ -362,6 +367,7 @@ pub mod espidf {
                 scan_started_at: None,
                 candidates: Vec::new(),
                 candidate_index: 0,
+                connected_ssid: None,
                 provisioning: false,
                 captive_portal_uri: None,
             }
@@ -393,6 +399,7 @@ pub mod espidf {
                 scan_started_at: None,
                 candidates: Vec::new(),
                 candidate_index: 0,
+                connected_ssid: None,
                 provisioning: false,
                 captive_portal_uri: None,
             })
@@ -422,6 +429,7 @@ pub mod espidf {
                 scan_started_at: None,
                 candidates: Vec::new(),
                 candidate_index: 0,
+                connected_ssid: None,
                 provisioning: false,
                 captive_portal_uri: None,
             }
@@ -505,6 +513,7 @@ pub mod espidf {
                 scan_started_at: scan_started.then(Instant::now),
                 candidates: config.networks.clone(),
                 candidate_index: 0,
+                connected_ssid: None,
                 provisioning: false,
                 captive_portal_uri: None,
             })
@@ -564,19 +573,22 @@ pub mod espidf {
         /// the first candidate fails, so failure here stays non-fatal and
         /// visible in the product-facing network snapshot exactly as before.
         ///
-        /// The network that was connected before suspending is tried first,
-        /// ahead of `config.networks`' saved order, since it is by far the
-        /// most likely to still be in range.
+        /// Like [`Self::connect`], this scans first and lets the `Scanning`
+        /// phase try saved networks actually seen in range, strongest first,
+        /// instead of blindly re-trying whatever was last attempted: that
+        /// could be a saved network that is switched off or out of range
+        /// (a phone hotspot, say), costing the full `WIFI_BOOT_TIMEOUT`
+        /// before an in-range one got its turn. The network last actually
+        /// connected (`connected_ssid`) is placed first in the saved order,
+        /// which only decides the order among networks the scan did *not*
+        /// see, and the fallback order if the scan cannot start.
         pub fn resume(&mut self, config: &NetworkConfig) -> Result<()> {
             self.suspended = false;
             self.boot_phase = None;
             self.boot_started_at = None;
             self.candidate_cooldown_started_at = None;
             self.sntp = None;
-            let preferred_ssid = self
-                .candidates
-                .get(self.candidate_index)
-                .map(|network| network.ssid.clone());
+            let preferred_ssid = self.connected_ssid.clone();
             self.candidates = config.networks.clone();
             self.candidate_index = 0;
             if let Some(ssid) = preferred_ssid {
@@ -596,7 +608,14 @@ pub mod espidf {
                 .context("at least one saved network is required")?;
             let wifi = self.wifi.as_mut().context("Wi-Fi runtime is unavailable")?;
             wifi.wifi_mut().start()?;
-            wifi.set_configuration(&Configuration::Client(client_configuration(&first)?))?;
+            let scan_started =
+                unsafe { sys::esp_wifi_scan_start(core::ptr::null(), false) } == sys::ESP_OK;
+            if !scan_started {
+                warn!(
+                    "rustmix-wave=wifi-resume-scan status=failed-to-start falling-back=saved-order"
+                );
+                wifi.set_configuration(&Configuration::Client(client_configuration(&first)?))?;
+            }
             self.snapshot.wifi_state = WifiConnectionState::Connecting;
             self.snapshot.ntp_state = NtpSyncState::WaitingForWifi;
             self.snapshot.ssid = Some(first.ssid);
@@ -607,7 +626,11 @@ pub mod espidf {
             self.snapshot.saved_network_count = config.networks.len();
             self.snapshot.error = None;
             self.ntp_reported = false;
-            self.boot_phase = Some(WifiBootPhase::Starting);
+            self.boot_phase = Some(if scan_started {
+                WifiBootPhase::Scanning
+            } else {
+                WifiBootPhase::Starting
+            });
             self.boot_started_at = Some(Instant::now());
             Ok(())
         }
@@ -871,13 +894,34 @@ pub mod espidf {
                 self.ntp_reported = false;
                 return Ok(());
             };
-            let first = config
-                .networks
+            // Same scan-first order as `connect`/`resume`: connecting straight
+            // to `WIFI.TXT`'s first entry cost the full `WIFI_BOOT_TIMEOUT`
+            // whenever that one was switched off (a phone hotspot) before an
+            // in-range saved network got its turn. The network last actually
+            // connected leads the saved order the scan falls back on.
+            let mut candidates = config.networks.clone();
+            if let Some(position) = self
+                .connected_ssid
+                .as_ref()
+                .and_then(|ssid| candidates.iter().position(|network| &network.ssid == ssid))
+            {
+                let preferred = candidates.remove(position);
+                candidates.insert(0, preferred);
+            }
+            let first = candidates
                 .first()
+                .cloned()
                 .context("at least one saved network is required")?;
-            wifi.set_configuration(&Configuration::Client(client_configuration(first)?))?;
-            wifi.wifi_mut().connect()?;
-            self.candidates = config.networks.clone();
+            wifi.set_configuration(&Configuration::Client(client_configuration(&first)?))?;
+            let scan_started =
+                unsafe { sys::esp_wifi_scan_start(core::ptr::null(), false) } == sys::ESP_OK;
+            if !scan_started {
+                warn!(
+                    "rustmix-wave=wifi-reconnect-scan status=failed-to-start falling-back=saved-order"
+                );
+                wifi.wifi_mut().connect()?;
+            }
+            self.candidates = candidates;
             self.snapshot.wifi_state = WifiConnectionState::Connecting;
             self.snapshot.ntp_state = NtpSyncState::WaitingForWifi;
             self.snapshot.ssid = Some(first.ssid.clone());
@@ -888,7 +932,11 @@ pub mod espidf {
             self.snapshot.saved_network_count = config.networks.len();
             self.snapshot.error = None;
             self.ntp_reported = false;
-            self.boot_phase = Some(WifiBootPhase::Connecting);
+            self.boot_phase = Some(if scan_started {
+                WifiBootPhase::Scanning
+            } else {
+                WifiBootPhase::Connecting
+            });
             self.boot_started_at = Some(Instant::now());
             Ok(())
         }
@@ -1076,6 +1124,10 @@ pub mod espidf {
                                     self.sntp = Some(sntp);
                                     apply_background_power_save();
                                     self.snapshot.wifi_state = WifiConnectionState::Connected;
+                                    self.connected_ssid = self
+                                        .candidates
+                                        .get(self.candidate_index)
+                                        .map(|network| network.ssid.clone());
                                     self.snapshot.ntp_state = NtpSyncState::Synchronizing;
                                     self.snapshot.ipv4_address = Some(format!("{}", ip_info.ip));
                                     self.snapshot.rssi_dbm = read_rssi_dbm();

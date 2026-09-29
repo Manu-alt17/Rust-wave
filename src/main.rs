@@ -71,7 +71,7 @@ mod firmware {
         build_info::{FIRMWARE_VERSION, PRODUCT_SLUG, UI_SHELL_MILESTONE},
         buttons::{
             BootBackButton, ButtonEvent, Buttons, SelectHoldButton, SelectPressEvent,
-            SELECT_LONG_PRESS_MS,
+            set_select_long_press_ms, READER_SELECT_LONG_PRESS_MS, SELECT_LONG_PRESS_MS,
         },
         calendar::{
             create_personal_event, delete_personal_event, update_personal_event, CalendarUiRequest,
@@ -107,8 +107,9 @@ mod firmware {
             OTA_CHECK_INTERVAL_SECONDS,
         },
         panel_refresh::{
-            PanelGlobalReason, PanelRefreshCoordinator, PanelRefreshPlan, PanelRefreshRequest,
-            PANEL_PARTIAL_REFRESH_LIMIT,
+            parse_sleep_timestamp, wake_uses_fast_waveform, PanelGlobalReason,
+            PanelRefreshCoordinator, PanelRefreshPlan, PanelRefreshRequest,
+            FAST_WAKE_MAX_SLEEP_SECONDS, PANEL_PARTIAL_REFRESH_LIMIT,
         },
         power::{self, Axp2101},
         power_key::{
@@ -171,6 +172,11 @@ mod firmware {
     // silently -- which is exactly what happened with the first name tried
     // here ("BOOT_TIMING.LOG", 11 characters before the extension).
     const BOOT_TIMING_LOG_PATH: &str = "/sdcard/RUSTMIX/BOOTTIME.LOG";
+
+    /// UTC unix time of the last sleep entry, read back on wake to decide
+    /// between the fast and the full waveform (see
+    /// `panel_refresh::wake_uses_fast_waveform`). FAT 8.3 name.
+    const SLEEP_TIMESTAMP_PATH: &str = "/sdcard/RUSTMIX/SLEEPAT.TXT";
 
     /// SD record of every reset that is not a plain power-on or deep-sleep
     /// wake, plus the error text of any fatal `firmware::run` exit (see
@@ -413,6 +419,24 @@ mod firmware {
                 false
             }
         };
+        // The sleep path arms the PMIC watchdog before powering off, so a
+        // wake that ends up in ROM download mode (Back/GPIO0 held) powers
+        // itself off instead of hanging. Firmware is running, so disarm it.
+        if let Err(error) = panel_power.disarm_wake_watchdog() {
+            warn!("rustmix-wave=pmic-wake-watchdog status=disarm-failed error={error:#}");
+        }
+        // Where the previous run stopped (see `power::LifecycleStage`), read
+        // before this run overwrites it.
+        let previous_stage = match panel_power.read_lifecycle_stage() {
+            Ok(raw) => power::lifecycle_stage_name(raw),
+            Err(error) => {
+                warn!("rustmix-wave=pmic-lifecycle-stage status=read-failed error={error:#}");
+                "read-failed"
+            }
+        };
+        if let Err(error) = panel_power.write_lifecycle_stage(power::LifecycleStage::BootPmicUp) {
+            warn!("rustmix-wave=pmic-lifecycle-stage status=write-failed error={error:#}");
+        }
         if pmic_shutdown_marker && boot_cause == mcu_deep_sleep::BootCause::PowerOnOrReset {
             boot_cause = mcu_deep_sleep::BootCause::PmicPowerKeyOn;
         }
@@ -424,7 +448,7 @@ mod firmware {
                 boot_profile::mark_with(
                     "pmic-power-source",
                     Some(format!(
-                        "pwron=0x{pwron:02X} pwroff=0x{pwroff:02X} shutdown-marker={pmic_shutdown_marker}"
+                        "pwron=0x{pwron:02X} pwroff=0x{pwroff:02X} shutdown-marker={pmic_shutdown_marker} previous-stage={previous_stage}"
                     )),
                 );
                 Some(pwron)
@@ -580,48 +604,16 @@ mod firmware {
         };
 
         config_span.end();
-        let config_span = boot_profile::span("config-weather");
-        let weather_config = match WeatherConfig::load_from_path(WEATHER_CONFIG_PATH) {
-            Ok(config) => {
-                debug!(
-                    "rustmix-wave=weather-config status=ready path={WEATHER_CONFIG_PATH} provider={} location={} latitude={:.4} longitude={:.4} timezone={} refresh-minutes={}",
-                    config.provider,
-                    config.location,
-                    config.latitude,
-                    config.longitude,
-                    config.timezone,
-                    config.refresh_minutes
-                );
-                Some(config)
-            }
-            Err(error) => {
-                warn!(
-                    "rustmix-wave=weather-config status=unavailable path={WEATHER_CONFIG_PATH} error={error:#}"
-                );
-                None
-            }
-        };
-
-        config_span.end();
-        let config_span = boot_profile::span("config-alarms");
-        let mut alarm_engine = match AlarmEngine::load_from_path(ALARMS_CONFIG_PATH) {
-            Ok(engine) => {
-                let snapshot = engine.snapshot();
-                debug!(
-                    "rustmix-wave=alarm-config status=ready path={ALARMS_CONFIG_PATH} schedules={} snooze-minutes={}",
-                    snapshot.alarms.len(), snapshot.snooze_minutes
-                );
-                engine
-            }
-            Err(error) => {
-                warn!(
-                    "rustmix-wave=alarm-config status=unavailable path={ALARMS_CONFIG_PATH} error={error:#}"
-                );
-                AlarmEngine::unavailable(format!("{error:#}"))
-            }
-        };
-
-        config_span.end();
+        // Weather and alarms are loaded on demand, the first time their own
+        // screens are opened (the weather block in the main loop, and
+        // `load_alarms_on_demand`): nothing the device normally lands on
+        // shows either, so reading their SD configs here only delayed every
+        // boot. Until then no alarm is scheduled or polled, and no RTC alarm
+        // is programmed.
+        let mut weather_config: Option<WeatherConfig> = None;
+        let mut weather_config_loaded = false;
+        let mut alarm_engine = AlarmEngine::default();
+        let mut alarms_loaded = false;
         let mut board_services = BoardServices::new(shared_i2c.clone());
 
         // Schematic trace confirmed ALDO1, ALDO4, BLDO1, BLDO2, CPUSLDO,
@@ -815,9 +807,6 @@ mod firmware {
                 );
             }
         }
-        if let Some(config) = weather_config.as_ref() {
-            state.update_weather_snapshot(WeatherSnapshot::provisioned(config));
-        }
         state.update_alarm_snapshot(alarm_engine.snapshot());
         state.update_storage_snapshot(storage_browser.snapshot());
         log_storage_snapshot(&state.storage);
@@ -861,20 +850,13 @@ mod firmware {
             }
         };
         power_key_span.end();
+        // Light snapshot (RTC and PMIC only): the SHTC3 temperature/humidity
+        // measurement costs ~20 ms and is only shown on the environment
+        // screens, which take their own sample when opened.
         let snapshot_span = boot_profile::span("board-snapshot-read");
-        state.update_board_snapshot(board_services.read_snapshot(&mut service_delay));
+        state.update_board_snapshot(board_services.read_light_snapshot());
         snapshot_span.end();
         log_board_snapshot(state.board, state.regional);
-        if let Some(rtc) = state.board.rtc {
-            alarm_engine.recompute_next(state.regional.localize_rtc(rtc));
-        }
-        // The RTC alarm register write itself (as opposed to the
-        // `recompute_next` above, which is needed right now to populate
-        // `state.alarms` for the first paint) has no bearing on what gets
-        // drawn, so it runs after that paint alongside the other
-        // display-invisible wake work -- see the call below.
-        state.update_alarm_snapshot(alarm_engine.snapshot());
-        log_alarm_snapshot(&state.alarms);
 
         // A real hardware deep-sleep wake is a full reboot: nothing in RAM,
         // including the router's route, survived. Reader persistence is
@@ -945,13 +927,8 @@ mod firmware {
         refresh_reading_stats_snapshot_now(&mut state);
         stats_span.end();
         if state.active_route() == ScreenRoute::Home {
-            if let Some(book) = state.reader.continue_reading_book() {
-                if let Some(thumbnail) =
-                    CoverCache::new(state.reader.cache_directory()).load_cached_thumbnail(&book)
-                {
-                    state.reader.continue_reading_thumbnail = Some((book.path, thumbnail));
-                }
-            }
+            let cover_cache = CoverCache::new(state.reader.cache_directory());
+            sync_continue_reading_thumbnail(&mut state, &cover_cache);
         }
 
         let panel_finish_span = boot_profile::span("panel-finish-initialize");
@@ -980,9 +957,33 @@ mod firmware {
             // phase, so the two can be compared directly: this is the global
             // refresh the overlay's cheaper partial refresh stands in for
             // until everything else is ready.
+            // Fast waveform unless the device was off for 12 h or more (or
+            // that can't be established): sleep entry always wrote the sleep
+            // image with the full waveform, and only an image held that long
+            // needs the full one again to clear without a trace.
+            let slept_at = std::fs::read_to_string(SLEEP_TIMESTAMP_PATH)
+                .ok()
+                .and_then(|text| parse_sleep_timestamp(&text));
+            let woke_at = reading_stats_now(&state);
+            let fast_wake = wake_uses_fast_waveform(slept_at, woke_at);
+            let slept_seconds = slept_at
+                .zip(woke_at)
+                .map(|(slept_at, woke_at)| woke_at.saturating_sub(slept_at));
+            let wake_waveform = if fast_wake { "fast" } else { "full" };
+            boot_profile::mark_with(
+                "wake-waveform",
+                Some(format!(
+                    "{wake_waveform} slept-s={}",
+                    slept_seconds.map_or_else(|| "unknown".to_string(), |s| s.to_string())
+                )),
+            );
             let global_refresh_started = Instant::now();
             let show_span = boot_profile::span("show-base-first-frame");
-            panel.show_base(frame.as_bytes())?;
+            if fast_wake {
+                panel.show_base_fast(frame.as_bytes())?;
+            } else {
+                panel.show_base(frame.as_bytes())?;
+            }
             show_span.end();
             let global_refresh_ms = global_refresh_started.elapsed().as_millis();
             panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
@@ -991,7 +992,8 @@ mod firmware {
                 "rustmix-wave=panel-refresh plan=global-base reason=after-wake transport=global-base"
             );
             let boot_to_ready_line = format!(
-                "rustmix-wave=wake-global-refresh reason=deep-sleep-gpio-wake-boot-complete global-refresh-ms={global_refresh_ms} boot-to-ready-ms={}",
+                "rustmix-wave=wake-global-refresh reason=deep-sleep-gpio-wake-boot-complete waveform={wake_waveform} slept-s={} fast-max-s={FAST_WAKE_MAX_SLEEP_SECONDS} global-refresh-ms={global_refresh_ms} boot-to-ready-ms={}",
+                slept_seconds.map_or_else(|| "unknown".to_string(), |s| s.to_string()),
                 boot_started.elapsed().as_millis()
             );
             info!("{boot_to_ready_line}");
@@ -1013,14 +1015,7 @@ mod firmware {
         }
         info!("rustmix-wave=epd397-rust-display-ready");
         boot_profile::mark_with("first-frame-visible", Some(state.active_route().marker()));
-        let alarm_sync_span = boot_profile::span("rtc-alarm-hardware-sync");
-        // Deferred alongside the reader/voice/audio work below: this I2C
-        // write to the RTC's alarm registers has no effect on what was just
-        // drawn, only on whether the physical RTC will raise its interrupt
-        // line for the next scheduled alarm -- which only matters once the
-        // device goes back to sleep, far later than this point.
-        sync_alarm_hardware(&mut alarm_engine, &mut board_services, state.regional);
-        alarm_sync_span.end();
+        let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::BootFirstFrame);
 
         // Reader/voice-notes/Lua SD catalog scans and the audio codec
         // bring-up happen only after the first e-paper frame is visible.
@@ -1350,14 +1345,14 @@ mod firmware {
         debug!("rustmix-wave=reader-state-persistence-ready path=/sdcard/RUSTMIX/READER files=STATE.TXT,POSITS.TXT,RECENT.TXT,MARKS.TXT cache=CACHE atomic-replace=tmp-primary-backup fallback=corrupt-record-safe");
         debug!("rustmix-wave=reader-bookmarks-ready add-remove=true list=true recent=true continue-reading=true cache-fingerprint=path,size,modified,format,layout");
         debug!("rustmix-wave=reader-loading-ui-ready stages=open,encoding,resume,first-page,cache cancel=boot-press refresh=coarse-stage-boundaries");
-        debug!("rustmix-wave=reader-options-shell-ready toc=none-for-txt,list-for-epub bookmarks=persistent clear-ghosting=manual-global-refresh");
+        debug!("rustmix-wave=reader-options-shell-ready toc=none-for-txt,list-for-epub bookmarks=persistent clear-ghosting=periodic-and-power-key");
         debug!("rustmix-wave=reader-ux-repair-ready menu=continue,library,bookmarks-ready normalization=utf8-punctuation,latin1,underscore-emphasis byte-offsets=preserved");
         debug!("rustmix-wave=reader-preferences-ready path=/sdcard/RUSTMIX/READER/PREFS.TXT theme=classic,high-contrast orientation=portrait,landscape font-size=small,medium,large,xlarge book-font=inter,atkinson-hyperlegible,serif,literata paragraph-alignment=justified,left,center,right show-progress=on,off atomic-replace=tmp-primary-backup");
         debug!("rustmix-wave=reader-high-contrast-layout-ready viewport=shared border=outside-text top-padding=true clip=right,bottom theme-change=redraw-only ghost-refresh=global-base");
         debug!("rustmix-wave=reader-txt-emphasis-cleanup-ready multiline-gutenberg=true word-internal-underscores=preserved repeated-separators=preserved byte-offsets=preserved");
         debug!("rustmix-wave=reader-per-book-resume-ready path=/sdcard/RUSTMIX/READER/POSITS.TXT records=64 fingerprint=path,size,modified,format atomic-replace=tmp-primary-backup routes=continue,books,files,bookmark");
         debug!("rustmix-wave=reader-controls-alignment-ready navigation=up-down-move-select-activate preferences=up-down-move-select-change back=boot-press");
-        debug!("rustmix-wave=reader-options-split-ready actions=bookmark,toc,preferences,clear-ghosting,library,home editor=theme,orientation,font-size,font,paragraph-alignment,show-progress");
+        debug!("rustmix-wave=reader-options-split-ready actions=toc,bookmarks,bookmark,preferences layout=icon-tiles-2x2 editor=theme,orientation,font-size,font,paragraph-alignment,show-progress");
         debug!("rustmix-wave=reader-preferences-settings-navigation-ready move=up-down change=select back=boot-press persistence=immediate rows=theme,orientation,font-size,font,paragraph-alignment,show-progress");
         debug!("rustmix-wave=reader-preferences-editor-preview-ready open=select browse=up-down commit=select cancel=boot-press persistence=on-commit-only preview=icons-orientation-alignment,live-sample-text-font-size-font-theme rows=theme,orientation,font-size,font,paragraph-alignment");
         debug!("rustmix-wave=reader-fat83-persistence-ready positions=POSITS.TXT legacy-read=POSITIONS.TXT cache-basename=8hex extensions=CCH,TMP,BAK atomic-replace=true");
@@ -1492,6 +1487,7 @@ mod firmware {
         let mut power_profile_tracker = PowerProfileTracker::default();
         let mut last_power_profile_log = Instant::now();
         boot_profile::mark("main-loop-entered");
+        let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::MainLoop);
         if _mounted_sd.is_some() {
             let header = format!(
                 "=== boot-profile phase=boot version={FIRMWARE_VERSION} cause={} reset-reason={} boot-to-loop-ms={}",
@@ -1936,9 +1932,9 @@ mod firmware {
                         ),
                         Err(error) => warn!("rustmix-wave=rtc-sync status=failed error={error:#}"),
                     }
-                    state.update_board_snapshot(board_services.read_snapshot(&mut service_delay));
+                    state.update_board_snapshot(board_services.read_light_snapshot());
                     log_board_snapshot(state.board, state.regional);
-                    if let Some(rtc) = state.board.rtc {
+                    if let Some(rtc) = state.board.rtc.filter(|_| alarms_loaded) {
                         alarm_engine.recompute_next(state.regional.localize_rtc(rtc));
                         sync_alarm_hardware(&mut alarm_engine, &mut board_services, state.regional);
                         state.update_alarm_snapshot(alarm_engine.snapshot());
@@ -2476,6 +2472,27 @@ mod firmware {
             }
 
             let manual_weather_refresh = state.take_weather_refresh_request();
+            // Opening the Weather screen is what requests the first refresh,
+            // so that is also where WEATHER.TXT is read (once).
+            if manual_weather_refresh && !weather_config_loaded {
+                weather_config_loaded = true;
+                weather_config = match WeatherConfig::load_from_path(WEATHER_CONFIG_PATH) {
+                    Ok(config) => {
+                        info!(
+                            "rustmix-wave=weather-config status=ready path={WEATHER_CONFIG_PATH} location={} refresh-minutes={} load=on-demand",
+                            config.location, config.refresh_minutes
+                        );
+                        state.update_weather_snapshot(WeatherSnapshot::provisioned(&config));
+                        Some(config)
+                    }
+                    Err(error) => {
+                        warn!(
+                            "rustmix-wave=weather-config status=unavailable path={WEATHER_CONFIG_PATH} error={error:#}"
+                        );
+                        None
+                    }
+                };
+            }
             if !sleep_network.is_suspended() {
                 // Drain a completed fetch, if any, before deciding whether to
                 // start another one this tick. This poll is a plain
@@ -3053,6 +3070,13 @@ mod firmware {
                 // exactly, so this only repaints when what the header
                 // actually draws would change.
                 let now_charging = state.battery_charging();
+                // A full-screen Reader page draws no battery glyph at all,
+                // so a charging flip there changes nothing on screen.
+                let hides_status = state.active_route() == ScreenRoute::ReaderPage
+                    && state.reader.preferences.full_screen;
+                if now_charging != last_displayed_charging && hides_status {
+                    last_displayed_charging = now_charging;
+                }
                 if now_charging != last_displayed_charging {
                     log_board_snapshot(state.board, state.regional);
                     refresh_screen(
@@ -3071,6 +3095,15 @@ mod firmware {
                 last_charging_poll = Instant::now();
             }
 
+            // The Reader page uses a longer SELECT hold (options) than every
+            // other route; publish the threshold for the input thread.
+            set_select_long_press_ms(
+                if state.active_route() == ScreenRoute::ReaderPage {
+                    READER_SELECT_LONG_PRESS_MS
+                } else {
+                    SELECT_LONG_PRESS_MS
+                },
+            );
             if let Some(input_event) = input_queue.pop() {
                 // Whole handling of one key, including the refresh it causes:
                 // any gap between this span's start and its nested
@@ -3161,6 +3194,15 @@ mod firmware {
                                         }
                                     }
                                 }
+                            }
+                            if state.active_route() == ScreenRoute::Home {
+                                // Same idea for Home's Continue Reading card:
+                                // after a deep-sleep wake into the reader the
+                                // thumbnail was never loaded (boot only preloads
+                                // it when landing on Home), so backing out of the
+                                // book would paint an empty cover frame and then
+                                // repaint once the main loop loaded it.
+                                sync_continue_reading_thumbnail(&mut state, &cover_cache);
                             }
                             if state.active_route().uses_environment_sample() {
                                 board_services
@@ -3383,6 +3425,14 @@ mod firmware {
                             state.apply(event);
                             record_reader_page_turn(&mut state, &mut reading_stats_tracker);
                             log_lua_runtime_events(&mut state);
+                            if !alarms_loaded && state.active_route() == ScreenRoute::Alarms {
+                                load_alarms_on_demand(
+                                    &mut alarm_engine,
+                                    &mut board_services,
+                                    &mut state,
+                                );
+                                alarms_loaded = true;
+                            }
                             if state.active_route() == ScreenRoute::Files {
                                 storage_browser.refresh();
                                 state.update_storage_snapshot(storage_browser.snapshot());
@@ -3539,6 +3589,11 @@ mod firmware {
                                     }
                                 }
                             }
+                        }
+                        if state.active_route() == ScreenRoute::Home {
+                            // See the Back handler: have the Continue Reading
+                            // cover in RAM before this paint, not a tick later.
+                            sync_continue_reading_thumbnail(&mut state, &cover_cache);
                         }
                         let reader_clear_ghost = state.take_reader_clear_ghost_request();
                         let power_key_clear_ghost = state.take_power_key_manual_refresh_request();
@@ -4723,6 +4778,19 @@ mod firmware {
         // `power_off()` entirely and fall through to the deep-sleep fallback
         // below, which is self-classifying via the ESP32-S3's own wakeup
         // register and does not depend on the PMIC marker at all.
+        // Sleep-entry time for the next wake's waveform choice. A missing or
+        // unreadable record simply makes that wake use the full waveform.
+        let slept_at = board_services
+            .read_rtc()
+            .ok()
+            .and_then(|rtc| resolve_unix_timestamp(Some(state.regional.rtc_to_utc(rtc))));
+        let slept_at_result = match slept_at {
+            Some(timestamp) => std::fs::write(SLEEP_TIMESTAMP_PATH, timestamp.to_string()),
+            None => std::fs::remove_file(SLEEP_TIMESTAMP_PATH),
+        };
+        if let Err(error) = slept_at_result {
+            warn!("rustmix-wave=sleep-timestamp status=write-failed path={SLEEP_TIMESTAMP_PATH} error={error}");
+        }
         // SD breadcrumbs for the shutdown itself: a device that "won't wake"
         // leaves no serial log on battery, and without these a PMIC
         // power-off that silently failed (leaving the board in the MCU
@@ -4731,12 +4799,30 @@ mod firmware {
         // worked. Each line is closed before the next step, so it is on the
         // card even if the very next call cuts power.
         let uptime_ms = boot_profile::now_us() / 1000;
+        // Battery state at shutdown: the AXP2101 refuses a Power-key power-on
+        // when the battery sits below its power-on threshold, so a failed wake
+        // after a low reading here points at the battery, not the firmware.
+        let battery = match misc_power.read_power_snapshot() {
+            Ok(snapshot) => format!(
+                "battery-mv={} battery-pct={} vbus={} charging={}",
+                snapshot.battery_voltage_mv.map_or("none".to_string(), |mv| mv.to_string()),
+                snapshot.battery_percent.map_or("none".to_string(), |pct| pct.to_string()),
+                snapshot.vbus_present,
+                snapshot.charging
+            ),
+            Err(error) => format!("battery=read-failed error={error:#}"),
+        };
         append_boot_timing_log(&format!(
-            "rustmix-wave=sleep-entry uptime-ms={uptime_ms} restore-route={} method=pmic-power-off",
+            "rustmix-wave=sleep-entry uptime-ms={uptime_ms} restore-route={} method=pmic-power-off {battery}",
             restore_route.marker()
         ));
+        let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::SleepMarkerPending);
         let pmic_shutdown_attempted = match misc_power.write_shutdown_marker() {
             Ok(()) => {
+                let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::PowerOffIssued);
+                if let Err(error) = misc_power.arm_wake_watchdog() {
+                    warn!("rustmix-wave=pmic-wake-watchdog status=arm-failed error={error:#}");
+                }
                 // `power_off()` does not return on real hardware: the rails
                 // collapse before this call site can observe anything.
                 // Should it somehow return `Ok(())` (the I2C ACK landing a
@@ -4766,6 +4852,7 @@ mod firmware {
                 false
             }
         };
+        let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::DeepSleepFallback);
         if pmic_shutdown_attempted {
             info!("rustmix-wave=mcu-deep-sleep status=fallback-after-pmic-power-off-attempt");
         }
@@ -4780,6 +4867,9 @@ mod firmware {
         // no way to wake it.
         if let Err(error) = mcu_deep_sleep::espidf::enter() {
             warn!("rustmix-wave=mcu-deep-sleep status=fallback-software-only error={error:#}");
+            // The event loop keeps running: don't let the PMIC watchdog armed
+            // above cut power 16 s from now.
+            let _ = misc_power.disarm_wake_watchdog();
             append_boot_timing_log(&format!(
                 "rustmix-wave=mcu-deep-sleep status=fallback-software-only error={error:#}"
             ));
@@ -5314,6 +5404,41 @@ mod firmware {
         }
     }
 
+    /// Read ALARMS.TXT the first time the Alarms screen is opened, then
+    /// schedule and program the RTC exactly as boot used to. Alarms are not
+    /// loaded at boot at all (see where `alarm_engine` is created), so until
+    /// this runs none are polled or armed.
+    fn load_alarms_on_demand<I2C>(
+        engine: &mut AlarmEngine,
+        board_services: &mut BoardServices<I2C>,
+        state: &mut AppState,
+    ) where
+        I2C: embedded_hal::i2c::I2c,
+        I2C::Error: core::fmt::Debug,
+    {
+        *engine = match AlarmEngine::load_from_path(ALARMS_CONFIG_PATH) {
+            Ok(engine) => {
+                info!(
+                    "rustmix-wave=alarm-config status=ready path={ALARMS_CONFIG_PATH} schedules={} load=on-demand",
+                    engine.snapshot().alarms.len()
+                );
+                engine
+            }
+            Err(error) => {
+                warn!(
+                    "rustmix-wave=alarm-config status=unavailable path={ALARMS_CONFIG_PATH} error={error:#}"
+                );
+                AlarmEngine::unavailable(format!("{error:#}"))
+            }
+        };
+        if let Some(rtc) = state.board.rtc {
+            engine.recompute_next(state.regional.localize_rtc(rtc));
+        }
+        sync_alarm_hardware(engine, board_services, state.regional);
+        state.update_alarm_snapshot(engine.snapshot());
+        log_alarm_snapshot(&state.alarms);
+    }
+
     fn sync_alarm_hardware<I2C>(
         engine: &mut AlarmEngine,
         board_services: &mut BoardServices<I2C>,
@@ -5557,6 +5682,29 @@ mod firmware {
     fn log_reader_persistence_event(state: &mut AppState) {
         if let Some(event) = state.reader.take_persistence_event() {
             info!("rustmix-wave=reader-persistence {event}");
+        }
+    }
+
+    /// Bring the Continue Reading tile's thumbnail into RAM from the SD
+    /// cache before a Home paint, so the card is drawn complete in a single
+    /// refresh instead of first as an empty frame and then again once the
+    /// main loop's Continue Reading block catches up. Only a cache hit is
+    /// used (one ~6.5KB file read); a missing thumbnail is still built by
+    /// that block, which can take much longer. No-op when the RAM copy
+    /// already matches the book.
+    fn sync_continue_reading_thumbnail(state: &mut AppState, cover_cache: &CoverCache) {
+        let Some(book) = state.reader.continue_reading_book() else {
+            return;
+        };
+        let up_to_date = state
+            .reader
+            .continue_reading_thumbnail
+            .as_ref()
+            .is_some_and(|(path, _)| *path == book.path);
+        if !up_to_date {
+            if let Some(thumbnail) = cover_cache.load_cached_thumbnail(&book) {
+                state.reader.continue_reading_thumbnail = Some((book.path, thumbnail));
+            }
         }
     }
 

@@ -135,7 +135,7 @@ pub fn render_weather_details(
     draw_header(
         display,
         state,
-        t(locale, "WEATHER DETAILS", "DETTAGLI METEO"),
+        t(locale, "WEATHER INFO", "INFO METEO"),
     )?;
 
     Text::new(

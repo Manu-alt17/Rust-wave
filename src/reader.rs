@@ -15,8 +15,7 @@ use std::{
 use crate::{
     buttons::ButtonEvent,
     dictionary::{
-        compact_error, load_dictionary_index, lookup_dictionary_exact, DictionaryIndexRow,
-        DICTIONARY_ROOT,
+        compact_error, lookup_dictionary_explained, DictionaryIndex, DICTIONARY_ROOT,
     },
     epub::{
         open_epub_on_worker, read_epub_title_on_worker, EpubChapter, EpubDocument, EpubImage,
@@ -665,6 +664,10 @@ pub struct ReaderLayout {
     pub font_size: BookFontSize,
     pub book_font: BookFont,
     pub paragraph_alignment: ParagraphAlignment,
+    /// Full-screen reading: no progress bar, no footer (hints, clock,
+    /// battery); the book text takes the whole panel height, so more lines
+    /// fit per page. See `app::screens::reader::reader_body_geometry`.
+    pub full_screen: bool,
 }
 
 /// Reader-owned preference file persisted as `/RUSTMIX/READER/PREFS.TXT`.
@@ -682,6 +685,9 @@ pub struct ReaderPreferences {
     /// 1000 Hz profile (tap timing needs that; see `imu_tap_diagnostics`)
     /// and only polls the tap engine while this is on.
     pub tap_page_turn_enabled: bool,
+    /// Hide every piece of page chrome and give the whole panel to the text
+    /// (see [`ReaderLayout::full_screen`]).
+    pub full_screen: bool,
 }
 
 impl Default for ReaderPreferences {
@@ -694,6 +700,7 @@ impl Default for ReaderPreferences {
             paragraph_alignment: ParagraphAlignment::Justified,
             show_progress: true,
             tap_page_turn_enabled: true,
+            full_screen: false,
         }
     }
 }
@@ -731,15 +738,28 @@ impl ReaderPreferences {
         // but never drawn. 19 leaves that line strictly inside the guard.
         // See `diagnostic_last_configured_line_clears_the_render_clip_guard`
         // in `app::screens::reader`'s tests for the check that caught this.
-        let lines_per_page = match (self.orientation, self.font_size) {
-            (ReaderOrientation::Portrait, BookFontSize::Large) => 23,
-            (ReaderOrientation::Portrait, BookFontSize::XLarge) => 19,
-            (ReaderOrientation::Portrait, BookFontSize::XXLarge) => 17,
-            (ReaderOrientation::Portrait, BookFontSize::XXXLarge) => 15,
-            (ReaderOrientation::Landscape, BookFontSize::Large) => 12,
-            (ReaderOrientation::Landscape, BookFontSize::XLarge) => 10,
-            (ReaderOrientation::Landscape, BookFontSize::XXLarge) => 9,
-            (ReaderOrientation::Landscape, BookFontSize::XXXLarge) => 8,
+        //
+        // Full screen drops the progress bar and the footer, so the body
+        // viewport grows and each size gets its own, larger calibrated
+        // count (same "largest that clears the render clip guard for every
+        // book font" rule, checked by the same test).
+        let lines_per_page = match (self.full_screen, self.orientation, self.font_size) {
+            (true, ReaderOrientation::Portrait, BookFontSize::Large) => 25,
+            (true, ReaderOrientation::Portrait, BookFontSize::XLarge) => 21,
+            (true, ReaderOrientation::Portrait, BookFontSize::XXLarge) => 19,
+            (true, ReaderOrientation::Portrait, BookFontSize::XXXLarge) => 16,
+            (true, ReaderOrientation::Landscape, BookFontSize::Large) => 14,
+            (true, ReaderOrientation::Landscape, BookFontSize::XLarge) => 12,
+            (true, ReaderOrientation::Landscape, BookFontSize::XXLarge) => 11,
+            (true, ReaderOrientation::Landscape, BookFontSize::XXXLarge) => 9,
+            (false, ReaderOrientation::Portrait, BookFontSize::Large) => 23,
+            (false, ReaderOrientation::Portrait, BookFontSize::XLarge) => 19,
+            (false, ReaderOrientation::Portrait, BookFontSize::XXLarge) => 17,
+            (false, ReaderOrientation::Portrait, BookFontSize::XXXLarge) => 15,
+            (false, ReaderOrientation::Landscape, BookFontSize::Large) => 12,
+            (false, ReaderOrientation::Landscape, BookFontSize::XLarge) => 10,
+            (false, ReaderOrientation::Landscape, BookFontSize::XXLarge) => 9,
+            (false, ReaderOrientation::Landscape, BookFontSize::XXXLarge) => 8,
         };
         ReaderLayout {
             available_width_px,
@@ -748,6 +768,7 @@ impl ReaderPreferences {
             font_size: self.font_size,
             book_font: self.book_font,
             paragraph_alignment: self.paragraph_alignment,
+            full_screen: self.full_screen,
         }
     }
 
@@ -759,8 +780,9 @@ impl ReaderPreferences {
         } else {
             "false"
         };
+        let full_screen = if self.full_screen { "true" } else { "false" };
         format!(
-            "version={}\ntheme={}\norientation={}\nfont_size={}\nbook_font={}\nparagraph_alignment={}\nshow_progress={}\ntap_page_turn_enabled={}\n",
+            "version={}\ntheme={}\norientation={}\nfont_size={}\nbook_font={}\nparagraph_alignment={}\nshow_progress={}\ntap_page_turn_enabled={}\nfull_screen={}\n",
             READER_PREFS_VERSION,
             self.theme.marker(),
             self.orientation.marker(),
@@ -769,6 +791,7 @@ impl ReaderPreferences {
             self.paragraph_alignment.marker(),
             show_progress,
             tap_page_turn_enabled,
+            full_screen,
         )
     }
 
@@ -804,6 +827,13 @@ impl ReaderPreferences {
                         "true" => true,
                         "false" => false,
                         _ => return Err("tap_page_turn_enabled must be true or false".into()),
+                    }
+                }
+                "full_screen" => {
+                    prefs.full_screen = match value.trim() {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err("full_screen must be true or false".into()),
                     }
                 }
                 other => return Err(format!("unsupported Reader preference key {other:?}")),
@@ -1714,85 +1744,44 @@ impl ReaderSession {
     }
 }
 
-/// Reader Options action rows. Editable values live on the separate
-/// Reading Preferences editor so menu controls match the rest of the firmware.
+/// Reader Options actions, drawn as a 2x2 grid of Home-style icon tiles
+/// (`screens::reader::render_options`). Editable values live on the
+/// separate Reading Preferences editor so menu controls match the rest of
+/// the firmware. Ghost cleanup is not offered here: the panel already runs a
+/// full cleanup refresh periodically (`PANEL_PARTIAL_REFRESH_LIMIT`) and the
+/// power-key menu keeps a manual one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReaderOption {
-    Bookmark,
-    Bookmarks,
     TableOfContents,
+    Bookmarks,
+    Bookmark,
     ReadingPreferences,
-    ClearGhosting,
-    GoToLibrary,
-    GoHome,
 }
 
 impl ReaderOption {
-    pub const ALL: [Self; 7] = [
-        Self::Bookmark,
-        Self::Bookmarks,
+    /// Grid order, row by row: the wheel walks it linearly.
+    pub const ALL: [Self; 4] = [
         Self::TableOfContents,
+        Self::Bookmarks,
+        Self::Bookmark,
         Self::ReadingPreferences,
-        Self::ClearGhosting,
-        Self::GoToLibrary,
-        Self::GoHome,
     ];
 
+    /// Short tile title. `bookmarked` (whether the current page already
+    /// carries a bookmark) picks the add/remove wording for the toggle.
     #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Bookmark => "Add / Remove Bookmark",
-            Self::Bookmarks => "Bookmarks",
-            Self::TableOfContents => "Table of Contents",
-            Self::ReadingPreferences => "Reading Preferences",
-            Self::ClearGhosting => "Clear Ghosting",
-            Self::GoToLibrary => "Go to Library",
-            Self::GoHome => "Go Home",
-        }
-    }
-
-    /// Locale-aware sibling of [`Self::label`] for the Reader Options rows.
-    #[must_use]
-    pub const fn label_i18n(self, locale: Locale) -> &'static str {
-        match locale {
-            Locale::English => self.label(),
-            Locale::Italian => match self {
-                Self::Bookmark => "Aggiungi/Rimuovi segnalibro",
-                Self::Bookmarks => "Segnalibri",
-                Self::TableOfContents => "Indice",
-                Self::ReadingPreferences => "Preferenze di lettura",
-                Self::ClearGhosting => "Pulisci ghosting",
-                Self::GoToLibrary => "Vai alla libreria",
-                Self::GoHome => "Vai alla Home",
-            },
-        }
-    }
-
-    #[must_use]
-    pub const fn badge(self) -> &'static str {
-        match self {
-            Self::Bookmark => "TOGGLE",
-            Self::Bookmarks => "LIST",
-            Self::TableOfContents => "NONE",
-            Self::ReadingPreferences => ">>>",
-            Self::ClearGhosting => "RUN",
-            Self::GoToLibrary | Self::GoHome => ">>>",
-        }
-    }
-
-    /// Locale-aware sibling of [`Self::badge`] for the Reader Options rows.
-    #[must_use]
-    pub const fn badge_i18n(self, locale: Locale) -> &'static str {
-        match locale {
-            Locale::English => self.badge(),
-            Locale::Italian => match self {
-                Self::Bookmark => "CAMBIA",
-                Self::Bookmarks => "ELENCO",
-                Self::TableOfContents => "NESSUNO",
-                Self::ReadingPreferences => ">>>",
-                Self::ClearGhosting => "AVVIA",
-                Self::GoToLibrary | Self::GoHome => ">>>",
-            },
+    pub const fn tile_label_i18n(self, locale: Locale, bookmarked: bool) -> &'static str {
+        match (locale, self) {
+            (Locale::English, Self::TableOfContents) => "Contents",
+            (Locale::English, Self::Bookmarks) => "Bookmarks",
+            (Locale::English, Self::Bookmark) if bookmarked => "Unmark page",
+            (Locale::English, Self::Bookmark) => "Mark page",
+            (Locale::English, Self::ReadingPreferences) => "Preferences",
+            (Locale::Italian, Self::TableOfContents) => "Indice",
+            (Locale::Italian, Self::Bookmarks) => "Segnalibri",
+            (Locale::Italian, Self::Bookmark) if bookmarked => "Togli segno",
+            (Locale::Italian, Self::Bookmark) => "Segna pagina",
+            (Locale::Italian, Self::ReadingPreferences) => "Preferenze",
         }
     }
 }
@@ -1845,16 +1834,18 @@ pub enum ReadingPreference {
     ParagraphAlignment,
     ShowProgress,
     TapPageTurn,
+    FullScreen,
 }
 
 impl ReadingPreference {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::ReadingTheme,
         Self::Orientation,
         Self::BookFontSize,
         Self::BookFont,
         Self::ParagraphAlignment,
         Self::TapPageTurn,
+        Self::FullScreen,
     ];
 
     #[must_use]
@@ -1867,6 +1858,7 @@ impl ReadingPreference {
             Self::ParagraphAlignment => "Paragraph Alignment",
             Self::ShowProgress => "Show Progress",
             Self::TapPageTurn => "Tap Page-Turn",
+            Self::FullScreen => "Full Screen",
         }
     }
 
@@ -1884,6 +1876,36 @@ impl ReadingPreference {
                 Self::ParagraphAlignment => "Allineamento paragrafo",
                 Self::ShowProgress => "Mostra progresso",
                 Self::TapPageTurn => "Cambio pagina a tocco",
+                Self::FullScreen => "Schermo intero",
+            },
+        }
+    }
+
+    /// Short uppercase title for the row's editor header, which shares its
+    /// line with the battery status and the clock: the full row label (e.g.
+    /// "Allineamento paragrafo") is too wide to fit between them.
+    #[must_use]
+    pub const fn header_label_i18n(self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => match self {
+                Self::ReadingTheme => "THEME",
+                Self::Orientation => "ORIENTATION",
+                Self::BookFontSize => "FONT SIZE",
+                Self::BookFont => "FONT",
+                Self::ParagraphAlignment => "ALIGNMENT",
+                Self::ShowProgress => "PROGRESS",
+                Self::TapPageTurn => "PAGE TURN",
+                Self::FullScreen => "FULL SCREEN",
+            },
+            Locale::Italian => match self {
+                Self::ReadingTheme => "TEMA",
+                Self::Orientation => "ROTAZIONE",
+                Self::BookFontSize => "DIMENSIONE",
+                Self::BookFont => "CARATTERE",
+                Self::ParagraphAlignment => "ALLINEAMENTO",
+                Self::ShowProgress => "PROGRESSO",
+                Self::TapPageTurn => "GIRA PAGINA",
+                Self::FullScreen => "SCHERMO",
             },
         }
     }
@@ -1970,11 +1992,10 @@ pub struct ReaderUiState {
     pub continue_reading_thumbnail: Option<(String, crate::cover_cache::CachedThumbnail)>,
     pub options_selected: usize,
     pub dictionary_mode: ReaderDictionaryMode,
-    /// Parsed INDEX.TXT rows, loaded once and reused: the pack doesn't
-    /// change mid-session, and re-reading/re-parsing it (hundreds of KB for
-    /// a full pack) on every single word lookup is the dominant cost of an
-    /// in-reader dictionary lookup on SD-backed storage.
-    dictionary_index_cache: Option<Vec<DictionaryIndexRow>>,
+    /// INDEX.TXT handle, opened once. It holds no rows: loading a full pack's
+    /// index (~600 KB) up front was what made the first lookup slow, so
+    /// lookups binary-search the sorted file on SD instead.
+    dictionary_index_cache: Option<DictionaryIndex>,
     pub preferences_selected: usize,
     /// `None` while the ReadingPreferences list is flat; `Some(candidate)`
     /// while a row's editor is open. `candidate` is a full copy of
@@ -3374,18 +3395,18 @@ impl ReaderUiState {
         };
     }
 
-    /// Loads and parses INDEX.TXT on first use only; later lookups in the
-    /// same session reuse the cached rows instead of re-reading the file.
-    fn cached_dictionary_index(&mut self) -> Result<&[DictionaryIndexRow], String> {
+    /// Opens the INDEX.TXT handle on first use; it holds no rows (lookups
+    /// binary-search the file on SD), so this is a single `stat`.
+    fn cached_dictionary_index(&mut self) -> Result<&DictionaryIndex, String> {
         if self.dictionary_index_cache.is_none() {
             self.dictionary_index_cache = Some(
-                load_dictionary_index(Path::new(DICTIONARY_ROOT))
+                DictionaryIndex::open(Path::new(DICTIONARY_ROOT))
                     .map_err(|error| error.to_string())?,
             );
         }
         Ok(self
             .dictionary_index_cache
-            .as_deref()
+            .as_ref()
             .expect("just populated above"))
     }
 
@@ -3412,7 +3433,7 @@ impl ReaderUiState {
             return;
         };
         let message = match self.cached_dictionary_index() {
-            Ok(rows) => match lookup_dictionary_exact(Path::new(DICTIONARY_ROOT), rows, &word) {
+            Ok(index) => match lookup_dictionary_explained(Path::new(DICTIONARY_ROOT), index, &word) {
                 Ok(Some(entry)) => entry.definition,
                 Ok(None) => "Word not found in dictionary.".to_string(),
                 Err(error) => format!("Dictionary: {}", compact_error(&error.to_string())),
@@ -3673,6 +3694,7 @@ impl ReaderUiState {
             ReadingPreference::TapPageTurn => {
                 candidate.tap_page_turn_enabled = !candidate.tap_page_turn_enabled;
             }
+            ReadingPreference::FullScreen => candidate.full_screen = !candidate.full_screen,
         }
     }
 
@@ -3694,6 +3716,7 @@ impl ReaderUiState {
             ReadingPreference::TapPageTurn => {
                 candidate.tap_page_turn_enabled = !candidate.tap_page_turn_enabled;
             }
+            ReadingPreference::FullScreen => candidate.full_screen = !candidate.full_screen,
         }
     }
 
@@ -3779,6 +3802,19 @@ impl ReaderUiState {
                 ));
                 self.persist_preferences_best_effort();
                 false
+            }
+            ReadingPreference::FullScreen => {
+                self.last_message = Some(format!(
+                    "Full screen: {}",
+                    if self.preferences.full_screen {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                ));
+                // More (or fewer) lines per page: repaginate like a font
+                // size change does.
+                true
             }
         };
         if layout_sensitive {
@@ -5540,6 +5576,11 @@ fn book_fingerprint(book: &ReaderBook, layout: ReaderLayout) -> u64 {
     feed(&mut hash, layout.font_size.marker().as_bytes());
     feed(&mut hash, layout.book_font.marker().as_bytes());
     feed(&mut hash, layout.paragraph_alignment.marker().as_bytes());
+    // Fed only when on, so every existing (non-full-screen) page cache keeps
+    // its fingerprint and is not needlessly rebuilt.
+    if layout.full_screen {
+        feed(&mut hash, b"full-screen");
+    }
     feed(&mut hash, READER_CACHE_VERSION.as_bytes());
     hash
 }
@@ -6939,6 +6980,7 @@ mod tests {
             font_size: BookFontSize::Large,
             book_font: BookFont::Serif,
             paragraph_alignment: ParagraphAlignment::Left,
+            full_screen: false,
         }
     }
 
@@ -7344,6 +7386,34 @@ mod tests {
         assert!(parsed.serialized().contains("font_size=xlarge"));
         assert!(parsed.serialized().contains("book_font=serif"));
         assert!(parsed.serialized().contains("paragraph_alignment=right"));
+        // Files written before full screen existed load with it off.
+        assert!(!parsed.full_screen);
+    }
+
+    /// Full screen persists, and paginates against its own (taller) page:
+    /// more lines, a distinct cache fingerprint, while turning it off keeps
+    /// every pre-existing page cache's fingerprint unchanged.
+    #[test]
+    fn full_screen_persists_and_gets_its_own_pagination() {
+        let normal = ReaderPreferences::default();
+        let full = ReaderPreferences {
+            full_screen: true,
+            ..normal
+        };
+        let reparsed = ReaderPreferences::parse(&full.serialized()).unwrap();
+        assert!(reparsed.full_screen);
+        assert!(full.layout().lines_per_page > normal.layout().lines_per_page);
+        let book = ReaderBook {
+            path: "Book.txt".into(),
+            title: "Book".into(),
+            format: BookFormat::Text,
+            size_bytes: 1000,
+            modified_seconds: 0,
+        };
+        assert_ne!(
+            book_fingerprint(&book, full.layout()),
+            book_fingerprint(&book, normal.layout())
+        );
     }
 
     /// `Small` and `Medium` were removed in favor of two tiers larger than

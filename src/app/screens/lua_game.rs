@@ -150,7 +150,7 @@ pub fn render_lua_error(
     let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
-    draw_header(display, state, t(locale, "LUA APP ERROR", "ERRORE APP LUA"))?;
+    draw_header(display, state, t(locale, "LUA ERROR", "ERRORE LUA"))?;
     Rectangle::new(Point::new(22, 164), Size::new(436, 270))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;

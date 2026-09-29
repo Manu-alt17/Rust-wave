@@ -116,7 +116,7 @@ pub fn render_audio_details(
     };
     let amplifier_pin = format!("GPIO{AUDIO_AMP_ENABLE_GPIO} {amp}");
 
-    draw_header(display, state, t(locale, "AUDIO DETAILS", "DETTAGLI AUDIO"))?;
+    draw_header(display, state, t(locale, "AUDIO INFO", "INFO AUDIO"))?;
 
     Text::new(t(locale, "Codec", "Codec"), Point::new(22, 114), heading).draw(display)?;
     line(

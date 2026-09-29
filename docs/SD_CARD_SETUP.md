@@ -173,6 +173,18 @@ Verify representative lookups:
 ./scripts/verify-dictionary-x4-pack.sh /Volumes/YOUR_SD_CARD
 ```
 
+The verifier also checks that `INDEX.TXT` is byte-sorted (the firmware binary-searches it in place) and that every row points at an existing shard.
+
+### Large packs: bucket the shards
+
+A large pack (e.g. the ~28k-shard Italian pack) is slow when every shard lives in one `DATA/` directory, because FAT scans that directory on every file open. Bucket the shards on a copy on your computer, then copy the whole `DICT` folder to the card. Delete the old `DICT` folder on the card first, so the flat shards are not left behind:
+
+```bash
+./scripts/relayout-dictionary-pack.sh /path/to/copy/RUSTMIX/APPS/DICT
+```
+
+This moves `DATA/CASA.JSN` to `DATA/CA/CASA.JSN` and rewrites `INDEX.TXT` to match. The firmware reads both layouts.
+
 ## U.S.-only Calendar pack
 
 Install from a local X4 checkout:

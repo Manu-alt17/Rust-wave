@@ -91,23 +91,22 @@ TXT pages show encoding, page position, and cache state. EPUB pages additionally
 <tr><td><img src="../screenshots/txt-reader-options.jpg" width="300" alt="TXT reader options"></td><td><img src="../screenshots/epub-reader-options.jpg" width="300" alt="EPUB reader options"></td></tr>
 </table>
 
-Available actions include:
+Four actions, shown as a 2×2 grid of icon tiles like the Home screen:
 
-- Add or remove a bookmark
-- View bookmarks
-- Open the EPUB Table of Contents when available
-- Open Reading Preferences
-- Clear e-paper ghosting
-- Go to Library
-- Go Home
+- Contents: open the EPUB Table of Contents when available
+- Bookmarks: view the book's bookmarks
+- Mark page / Unmark page: add or remove a bookmark on the current page
+- Preferences: open Reading Preferences
 
-Navigation: rotate to highlight an action, SELECT to activate, BOOT to return to the page.
+E-paper ghosting is cleared automatically with a periodic full refresh; a manual cleanup is still available from the power-key menu.
+
+Open it by holding SELECT for 2 seconds while reading. Navigation: rotate to highlight an action, SELECT to activate, BOOT to return to the page (press BOOT again to leave the book).
 
 ### Reading Preferences
 
 <img src="../screenshots/reader-reading-prefs.jpg" width="360" alt="Reading Preferences">
 
-Preferences include theme, orientation, book font size, font family, paragraph alignment, and progress display. Rotate to move; press SELECT to change a setting; BOOT to return.
+Preferences include theme, orientation, book font size, font family, paragraph alignment, tap page-turn, and full screen. Full screen hides the progress bar and the footer (hints, clock, battery) and gives the whole panel to the text, so more lines fit on each page; the book is repaginated when you change it. Rotate to move; press SELECT to change a setting; BOOT to return.
 
 ### EPUB Table of Contents
 

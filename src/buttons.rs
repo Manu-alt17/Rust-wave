@@ -1,7 +1,10 @@
 //! Polling button adapters for the active-low onboard keys, GPIO0 BOOT back
 //! action, and GPIO5 SELECT hold contextual action.
 
-use core::fmt::Debug;
+use core::{
+    fmt::Debug,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use anyhow::{anyhow, Result};
 use embedded_hal::{delay::DelayNs, digital::InputPin};
@@ -10,6 +13,20 @@ const DEBOUNCE_MS: u32 = 10;
 /// Hold duration required for GPIO5 SELECT to trigger a route-specific
 /// contextual action instead of its normal short-press meaning.
 pub const SELECT_LONG_PRESS_MS: u32 = 900;
+/// Longer hold used on the Reader page, where a quick SELECT is the frequent
+/// dictionary action and the hold opens Reader Options: long enough that a
+/// slow tap never opens the menu by accident.
+pub const READER_SELECT_LONG_PRESS_MS: u32 = 2_000;
+
+/// Hold threshold currently in force. The input thread cannot see the active
+/// route, so the main loop publishes the route-specific value here after
+/// each handled event (see [`set_select_long_press_ms`]).
+static SELECT_LONG_PRESS_THRESHOLD_MS: AtomicU32 = AtomicU32::new(SELECT_LONG_PRESS_MS);
+
+/// Publish the hold duration the SELECT poller should use from now on.
+pub fn set_select_long_press_ms(ms: u32) {
+    SELECT_LONG_PRESS_THRESHOLD_MS.store(ms, Ordering::Relaxed);
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ButtonEvent {
@@ -165,6 +182,10 @@ pub enum SelectPressEvent {
 
 pub struct SelectHoldButton<SELECT> {
     select: SELECT,
+    /// Set once a hold has fired `LongPress` while the key is still down, so
+    /// the rest of that same physical press (and its release) is swallowed
+    /// instead of producing a second event.
+    awaiting_release: bool,
 }
 
 impl<SELECT> SelectHoldButton<SELECT>
@@ -174,11 +195,27 @@ where
 {
     #[must_use]
     pub fn new(select: SELECT) -> Self {
-        Self { select }
+        Self {
+            select,
+            awaiting_release: false,
+        }
     }
 
-    /// Return one SELECT release classified as short or long.
+    /// Return one SELECT press classified as short or long. A long press is
+    /// reported the moment the hold threshold is reached, without waiting
+    /// for release; a short press is reported on (debounced) release.
     pub fn poll<D: DelayNs>(&mut self, delay: &mut D) -> Result<Option<SelectPressEvent>> {
+        if self.awaiting_release {
+            if self.is_pressed()? {
+                delay.delay_ms(10);
+                return Ok(None);
+            }
+            delay.delay_ms(DEBOUNCE_MS);
+            if !self.is_pressed()? {
+                self.awaiting_release = false;
+            }
+            return Ok(None);
+        }
         if !self.is_pressed()? {
             return Ok(None);
         }
@@ -190,10 +227,8 @@ where
         let mut held_ms = DEBOUNCE_MS;
         loop {
             while self.is_pressed()? {
-                if held_ms >= SELECT_LONG_PRESS_MS {
-                    while self.is_pressed()? {
-                        delay.delay_ms(10);
-                    }
+                if held_ms >= SELECT_LONG_PRESS_THRESHOLD_MS.load(Ordering::Relaxed) {
+                    self.awaiting_release = true;
                     return Ok(Some(SelectPressEvent::LongPress));
                 }
                 delay.delay_ms(10);
