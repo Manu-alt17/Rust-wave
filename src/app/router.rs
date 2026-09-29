@@ -29,10 +29,6 @@ pub enum ScreenRoute {
     VoiceNotes,
     VoiceNoteDetails,
     VoiceNoteRecording,
-    GamesTbd,
-    LuaApps,
-    LuaGame,
-    LuaGameError,
     Magic,
     MagicView,
     Files,
@@ -89,10 +85,6 @@ impl ScreenRoute {
             Self::VoiceNotes => "Voice Notes",
             Self::VoiceNoteDetails => "Voice Note",
             Self::VoiceNoteRecording => "Record Voice Note",
-            Self::GamesTbd => "TBD",
-            Self::LuaApps => "SD Lua Apps",
-            Self::LuaGame => "Lua App",
-            Self::LuaGameError => "Lua App Error",
             Self::Magic => "Magic Tokens",
             Self::MagicView => "Token View",
             Self::Files => "File Browser",
@@ -163,10 +155,6 @@ impl ScreenRoute {
                 Self::VoiceNotes => "Note vocali",
                 Self::VoiceNoteDetails => "Nota vocale",
                 Self::VoiceNoteRecording => "Registra nota vocale",
-                Self::GamesTbd => "Da definire",
-                Self::LuaApps => "App Lua da SD",
-                Self::LuaGame => "App Lua",
-                Self::LuaGameError => "Errore app Lua",
                 Self::Magic => "Token Magic",
                 Self::MagicView => "Visualizza token",
                 Self::Files => "Esplora file",
@@ -224,10 +212,6 @@ impl ScreenRoute {
             Self::VoiceNotes => "voice-notes",
             Self::VoiceNoteDetails => "voice-note-details",
             Self::VoiceNoteRecording => "voice-note-recording",
-            Self::GamesTbd => "games-tbd",
-            Self::LuaApps => "lua-apps",
-            Self::LuaGame => "lua-game",
-            Self::LuaGameError => "lua-game-error",
             Self::Magic => "magic",
             Self::MagicView => "magic-view",
             Self::Files => "file-browser",
@@ -261,11 +245,6 @@ impl ScreenRoute {
     #[must_use]
     pub const fn is_category(self) -> bool {
         matches!(self, Self::Games | Self::Tools | Self::Settings)
-    }
-
-    #[must_use]
-    pub const fn is_placeholder(self) -> bool {
-        matches!(self, Self::GamesTbd)
     }
 
     /// Whether this route only exists while a book session is open. Used to
@@ -305,8 +284,7 @@ impl ScreenRoute {
             Self::CalendarEventEditor => Some(Self::CalendarAgenda),
             Self::CalendarDeleteConfirmation => Some(Self::CalendarEventDetails),
             Self::VoiceNoteDetails | Self::VoiceNoteRecording => Some(Self::VoiceNotes),
-            Self::GamesTbd | Self::LuaApps | Self::Magic => Some(Self::Games),
-            Self::LuaGame | Self::LuaGameError => Some(Self::LuaApps),
+            Self::Magic => Some(Self::Games),
             Self::MagicView => Some(Self::Magic),
             Self::Files | Self::Dictionary | Self::UnitConverter => Some(Self::Tools),
             Self::PowerKeyMenu => Some(Self::Home),
@@ -422,8 +400,6 @@ mod tests {
             ScreenRoute::UnitConverter.parent(),
             Some(ScreenRoute::Tools)
         );
-        assert!(!ScreenRoute::UnitConverter.is_placeholder());
-        assert!(!ScreenRoute::Dictionary.is_placeholder());
         assert_eq!(ScreenRoute::AudioDetails.parent(), Some(ScreenRoute::Audio));
         assert_eq!(ScreenRoute::ClockSetTime.parent(), Some(ScreenRoute::Clock));
         assert_eq!(
@@ -432,12 +408,6 @@ mod tests {
         );
         assert_eq!(ScreenRoute::OtaUpdate.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::Library.parent(), Some(ScreenRoute::Home));
-        assert_eq!(ScreenRoute::LuaApps.parent(), Some(ScreenRoute::Games));
-        assert_eq!(ScreenRoute::LuaGame.parent(), Some(ScreenRoute::LuaApps));
-        assert_eq!(
-            ScreenRoute::LuaGameError.parent(),
-            Some(ScreenRoute::LuaApps)
-        );
         assert_eq!(ScreenRoute::Magic.parent(), Some(ScreenRoute::Games));
         assert_eq!(ScreenRoute::MagicView.parent(), Some(ScreenRoute::Magic));
         assert_eq!(ScreenRoute::Home.parent(), None);

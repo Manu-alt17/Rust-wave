@@ -18,12 +18,10 @@ pub mod environment;
 pub mod files;
 pub mod home;
 pub mod language;
-pub mod lua_game;
 pub mod magic;
 pub mod motion;
 pub mod network;
 pub mod ota;
-pub mod placeholder;
 pub mod power_key;
 pub mod reader;
 pub mod reading_stats;
@@ -38,7 +36,6 @@ pub fn render_active_screen(
     match state.active_route() {
         ScreenRoute::Home => home::render_home(display, state),
         route if route.is_category() => category::render_category(display, state),
-        route if route.is_placeholder() => placeholder::render_placeholder(display, state),
         ScreenRoute::ContinueReading => reader::render_continue_reading(display, state),
         ScreenRoute::Library => reader::render_library(display, state),
         ScreenRoute::LibraryBookActions => reader::render_library_book_actions(display, state),
@@ -62,9 +59,6 @@ pub fn render_active_screen(
         ScreenRoute::VoiceNotes => voice_notes::render_voice_notes(display, state),
         ScreenRoute::VoiceNoteDetails => voice_notes::render_voice_note_details(display, state),
         ScreenRoute::VoiceNoteRecording => voice_notes::render_voice_note_recording(display, state),
-        ScreenRoute::LuaApps => lua_game::render_lua_apps(display, state),
-        ScreenRoute::LuaGame => lua_game::render_lua_game(display, state),
-        ScreenRoute::LuaGameError => lua_game::render_lua_error(display, state),
         ScreenRoute::Magic => magic::render_magic_library(display, state),
         ScreenRoute::MagicView => magic::render_magic_view(display, state),
         ScreenRoute::Dictionary => dictionary::render_dictionary(display, state),
@@ -92,8 +86,8 @@ pub fn render_active_screen(
         ScreenRoute::DeviceInfoBoard => device_info::render_device_info_board(display, state),
         ScreenRoute::DeviceInfoRuntime => device_info::render_device_info_runtime(display, state),
         ScreenRoute::OtaUpdate => ota::render_ota_update(display, state),
-        ScreenRoute::Games | ScreenRoute::Tools | ScreenRoute::Settings | ScreenRoute::GamesTbd => {
-            unreachable!("category and placeholder routes handled above")
+        ScreenRoute::Games | ScreenRoute::Tools | ScreenRoute::Settings => {
+            unreachable!("category routes handled above")
         }
     }
 }

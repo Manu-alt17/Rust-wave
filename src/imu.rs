@@ -439,8 +439,8 @@ where
 
     /// Restore the full 1000 Hz accelerometer+gyroscope profile applied by
     /// [`Self::initialize`], after [`Self::enter_low_power_orientation_mode`].
-    /// Motion Events and gyroscope-driven Lua games need this before they
-    /// become the active screen.
+    /// Motion Events needs this before it
+    /// becomes the active screen.
     pub fn wake_full_rate(&mut self) -> Result<()> {
         let address = self
             .address

@@ -6,7 +6,7 @@
 //! full-screen partial transport until windowed RAM writes receive their own
 //! isolated hardware experiment.
 
-/// Periodic ghost-cleanup cadence shared by menus, Reader screens and games.
+/// Periodic ghost-cleanup cadence shared by menus and Reader screens.
 ///
 /// Waveshare's e-paper FAQ and GoodDisplay's panel documentation call for a
 /// full refresh after at most 5 consecutive partial/fast refreshes to keep
@@ -91,8 +91,8 @@ pub enum PanelRefreshPlan {
     GlobalBase { reason: PanelGlobalReason },
 }
 
-/// One counter for every normal UI and game refresh. This replaces the former
-/// split between the six-refresh UI counter and the independent game policy.
+/// One counter for every normal UI refresh. This replaces the former
+/// split between the six-refresh UI counter and a separate game policy.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PanelRefreshCoordinator {
     partial_count: u8,

@@ -47,7 +47,8 @@ mod firmware {
             render_current_screen,
             screens::reader::library_visible_books,
             AppState, ScreenRoute, ALARM_POLL_SECONDS, AUTO_DEEP_SLEEP_ENABLED,
-            AUTO_DEEP_SLEEP_IDLE_SECONDS, DEV_BENCH_BUILD, CHARGING_STATUS_POLL_SECONDS, IMU_EVENT_SCREEN_REFRESH_SECONDS,
+            AUTO_DEEP_SLEEP_IDLE_SECONDS, DEV_BENCH_BUILD,
+            CHARGING_STATUS_POLL_SECONDS, IMU_EVENT_SCREEN_REFRESH_SECONDS,
             LIBRARY_THUMBNAIL_REFRESH_SECONDS,
             MOTION_LIVE_REFRESH_SECONDS, NETWORK_LIVE_REFRESH_SECONDS,
             NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
@@ -751,7 +752,7 @@ mod firmware {
         if let Ok(usage) = CategoryUsage::load_from_path(MENU_USAGE_CONFIG_PATH) {
             state.category_usage = usage;
         }
-        // Reader/voice-notes/Lua SD catalog scans, and the audio codec
+        // Reader/voice-notes SD catalog scans, and the audio codec
         // bring-up right after them, are deferred until after the first
         // e-paper frame is visible (see below the panel draw). The Home
         // screen's menu tiles are a static const list and never read these,
@@ -1002,7 +1003,7 @@ mod firmware {
         boot_profile::mark_with("first-frame-visible", Some(state.active_route().marker()));
         let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::BootFirstFrame);
 
-        // Reader/voice-notes/Lua SD catalog scans and the audio codec
+        // Reader/voice-notes SD catalog scans and the audio codec
         // bring-up happen only after the first e-paper frame is visible.
         // None of them are needed to draw the Home screen (its menu tiles
         // are a static const list), and on a real deep-sleep wake this is a
@@ -1024,18 +1025,18 @@ mod firmware {
             .reader
             .seed_background_warmup(active_on_open.as_deref());
         warmup_span.end();
-        // The Reader/Voice Notes/Lua library scans themselves (as opposed to
+        // The Reader/Voice Notes library scans themselves (as opposed to
         // the cheap STATE/POSITS/RECENT text-file reads above) are not run
         // here at all: `apply_category` already calls exactly these same
         // `refresh_*` methods the moment the user actually navigates into
-        // Library, Voice Notes or Lua Apps (and `activate_continue_reading`
+        // Library or Voice Notes (and `activate_continue_reading`
         // does the same for a direct Continue-Reading resume), and neither
         // Home nor the category menu itself ever reads these catalogs. On
         // both a cold boot and a deep-sleep wake (a full reboot -- nothing
-        // in RAM survives it) this used to mean re-scanning every book/note/
-        // Lua-app directory unconditionally before the button-polling loop
+        // in RAM survives it) this used to mean re-scanning every book/note
+        // directory unconditionally before the button-polling loop
         // could even start, whether or not the user opened those screens
-        // this session at all. Leaving `books`/`notes`/`catalog` at their
+        // this session at all. Leaving `books`/`notes` at their
         // empty `Default` here and letting the first real navigation do the
         // one scan it already needed removes that duplicate work entirely.
         // Stale-tmp cleanup and SETTINGS.TXT (mic gain) are no longer loaded
@@ -1045,7 +1046,6 @@ mod firmware {
         // it. `refresh_voice_note_storage_available` stays here -- it only
         // reads the `_mounted_sd` flag already known, no SD I/O of its own.
         refresh_voice_note_storage_available(&mut state, _mounted_sd.is_some());
-        log_lua_runtime_events(&mut state);
         info!(
             "rustmix-wave=reader-persistence-load state-loaded={} preferences-loaded={} positions={} recent={} bookmarks={} warning={}",
             reader_persistence.state_loaded,
@@ -1414,7 +1414,6 @@ mod firmware {
                 portal_via_hotspot,
                 &mut portal_lan_recovering,
                 &mut storage_browser,
-                _mounted_sd.is_some(),
             );
             if state.panel_awake
                 && state.wifi_transfer != portal_snapshot_before
@@ -1880,7 +1879,7 @@ mod firmware {
             // sleep_imu/wake_imu's full stop, used only ahead of real deep
             // sleep) so a future tilt-based auto-rotate feature still has
             // live orientation data while reading; the gyroscope, needed
-            // only by Motion Events and a couple of Lua games, is powered
+            // only by Motion Events, is powered
             // down entirely until one of those becomes the active screen.
             //
             // ReaderPage is excluded: its tap-to-turn-page trigger needs the
@@ -2197,7 +2196,6 @@ mod firmware {
                                 &mut network_provision_join_pending,
                                 portal_via_hotspot,
                                 &mut storage_browser,
-                                _mounted_sd.is_some(),
                                 &mut voice_recording,
                                 &mut voice_playback,
                                 &mut audio_runtime,
@@ -2255,7 +2253,6 @@ mod firmware {
                     &mut network_provision_join_pending,
                     portal_via_hotspot,
                     &mut storage_browser,
-                    _mounted_sd.is_some(),
                     &mut voice_recording,
                     &mut voice_playback,
                     &mut audio_runtime,
@@ -2469,7 +2466,6 @@ mod firmware {
                     &mut portal_via_hotspot,
                     &mut portal_lan_recovering,
                     &mut storage_browser,
-                    _mounted_sd.is_some(),
                     voice_recording.is_some(),
                     voice_playback.is_some(),
                 );
@@ -2536,8 +2532,7 @@ mod firmware {
 
             if !sleep_mode.is_sleeping()
                 && state.panel_awake
-                && (state.active_route() == ScreenRoute::MotionEvents
-                    || state.lua_game_needs_imu_events())
+                && state.active_route() == ScreenRoute::MotionEvents
                 && last_imu_event_sample.elapsed()
                     >= Duration::from_millis(IMU_EVENT_SAMPLE_INTERVAL_MS)
             {
@@ -2548,16 +2543,10 @@ mod firmware {
                         if let Some(event) = event {
                             info!("rustmix-wave=imu-event type={} detail={} at-ms={} samples={} counts=tilt:{},shake:{},rotate:{},level:{} thresholds=tilt:{}mg,shake:{}mg,rotate:{}dps,level:{}mg,debounce:{}ms", event.kind.marker(), event.kind.detail_marker(), event.at_ms, state.imu_events.samples, state.imu_events.counters.tilt, state.imu_events.counters.shake, state.imu_events.counters.rotate, state.imu_events.counters.level, state.imu_events.thresholds.tilt_enter_mg, state.imu_events.thresholds.shake_delta_mg, state.imu_events.thresholds.rotate_dps, state.imu_events.thresholds.level_tolerance_mg, state.imu_events.thresholds.debounce_ms);
                         }
-                        let game_motion_changed =
-                            event.is_some_and(|event| state.apply_lua_game_motion_event(event));
-                        if game_motion_changed {
-                            log_lua_runtime_events(&mut state);
-                        }
-                        let diagnostic_refresh = state.active_route() == ScreenRoute::MotionEvents
-                            && (event.is_some()
-                                || last_imu_event_screen_refresh.elapsed()
-                                    >= Duration::from_secs(IMU_EVENT_SCREEN_REFRESH_SECONDS));
-                        if game_motion_changed || diagnostic_refresh {
+                        let diagnostic_refresh = event.is_some()
+                            || last_imu_event_screen_refresh.elapsed()
+                                >= Duration::from_secs(IMU_EVENT_SCREEN_REFRESH_SECONDS);
+                        if diagnostic_refresh {
                             refresh_screen(
                                 &mut panel,
                                 &mut frame,
@@ -2818,11 +2807,9 @@ mod firmware {
                                 &mut portal_via_hotspot,
                                 &mut portal_lan_recovering,
                                 &mut storage_browser,
-                                _mounted_sd.is_some(),
                                 voice_recording.is_some(),
                                 voice_playback.is_some(),
                             );
-                            log_lua_runtime_events(&mut state);
                             info!(
                                 "rustmix-wave=hierarchical-back outcome=navigated from={} to={}",
                                 previous_route.marker(),
@@ -2908,20 +2895,14 @@ mod firmware {
                         } else {
                             state.apply_keyboard_select_long_press()
                         };
-                        let lua_game_context = if calendar_agenda_context || keyboard_context {
+                        let reader_dictionary_context = if calendar_agenda_context || keyboard_context
+                        {
                             false
                         } else {
-                            state.apply_lua_game_select_long_press()
+                            state.apply_reader_dictionary_select_long_press()
                         };
-                        let reader_dictionary_context =
-                            if calendar_agenda_context || keyboard_context || lua_game_context {
-                                false
-                            } else {
-                                state.apply_reader_dictionary_select_long_press()
-                            };
                         let network_saved_context = if calendar_agenda_context
                             || keyboard_context
-                            || lua_game_context
                             || reader_dictionary_context
                         {
                             false
@@ -2930,7 +2911,6 @@ mod firmware {
                         };
                         let library_book_actions_context = if calendar_agenda_context
                             || keyboard_context
-                            || lua_game_context
                             || reader_dictionary_context
                             || network_saved_context
                         {
@@ -2940,7 +2920,6 @@ mod firmware {
                         };
                         if calendar_agenda_context
                             || keyboard_context
-                            || lua_game_context
                             || reader_dictionary_context
                             || network_saved_context
                             || library_book_actions_context
@@ -3000,7 +2979,6 @@ mod firmware {
                                 sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
                             }
                             state.update_board_snapshot(board_services.read_light_snapshot());
-                            log_lua_runtime_events(&mut state);
                             if state.active_route().uses_environment_sample() {
                                 board_services
                                     .refresh_environment_into(&mut service_delay, &mut state.board);
@@ -3092,7 +3070,6 @@ mod firmware {
                         } else {
                             state.apply(event);
                             record_reader_page_turn(&mut state, &mut reading_stats_tracker);
-                            log_lua_runtime_events(&mut state);
                             if !alarms_loaded && state.active_route() == ScreenRoute::Alarms {
                                 load_alarms_on_demand(
                                     &mut alarm_engine,
@@ -3112,10 +3089,10 @@ mod firmware {
                             // matching means this already ran), do the
                             // stale-tmp cleanup and SETTINGS.TXT load that
                             // used to run unconditionally at boot, plus the
-                            // shared lazy audio codec bring-up. `Library` and
-                            // `LuaApps` get the equivalent catalog-refresh
+                            // shared lazy audio codec bring-up. `Library` gets
+                            // the equivalent catalog-refresh
                             // treatment already, inside `apply_category`
-                            // itself, since those don't touch this hardware.
+                            // itself, since it does not touch this hardware.
                             if previous_route != ScreenRoute::VoiceNotes
                                 && state.active_route() == ScreenRoute::VoiceNotes
                             {
@@ -3178,7 +3155,6 @@ mod firmware {
                             &mut portal_via_hotspot,
                             &mut portal_lan_recovering,
                             &mut storage_browser,
-                            _mounted_sd.is_some(),
                             voice_recording.is_some(),
                             voice_playback.is_some(),
                         );
@@ -3304,7 +3280,6 @@ mod firmware {
                 || state.reader.loading.is_some()
                 || state.active_route() == ScreenRoute::ReaderLoading
                 || state.active_route() == ScreenRoute::MotionEvents
-                || state.lua_game_needs_imu_events()
                 || portal_via_hotspot
                 || (init.tap_diagnostics_available
                     && state.reader.preferences.tap_page_turn_enabled
@@ -3480,7 +3455,6 @@ mod firmware {
         via_hotspot: &mut bool,
         lan_recovering: &mut bool,
         storage_browser: &mut StorageBrowser,
-        mounted: bool,
         voice_recording_active: bool,
         voice_playback_active: bool,
     ) {
@@ -3590,7 +3564,6 @@ mod firmware {
                     state,
                     join_pending,
                     storage_browser,
-                    mounted,
                     *via_hotspot,
                     "user-stop",
                 );
@@ -3611,7 +3584,6 @@ mod firmware {
         state: &mut AppState,
         join_pending: &mut Option<(String, String)>,
         storage_browser: &mut StorageBrowser,
-        mounted: bool,
         via_hotspot: bool,
         reason: &str,
     ) {
@@ -3631,7 +3603,6 @@ mod firmware {
         info!("rustmix-wave=wifi-transfer-server status=stopped reason={reason} via-hotspot={via_hotspot}");
         log_runtime_memory("after-wifi-transfer-stop");
         state.update_wifi_transfer_snapshot(WifiTransferSnapshot::default());
-        state.refresh_lua_app_catalog(mounted);
         state.reader.refresh_library();
         state.calendar.refresh_events();
         storage_browser.refresh();
@@ -3660,7 +3631,6 @@ mod firmware {
         via_hotspot: bool,
         lan_recovering: &mut bool,
         storage_browser: &mut StorageBrowser,
-        mounted: bool,
     ) {
         let Some(active_server) = server.as_ref() else {
             return;
@@ -3694,7 +3664,6 @@ mod firmware {
                 state,
                 join_pending,
                 storage_browser,
-                mounted,
                 via_hotspot,
                 reason,
             );
@@ -3825,7 +3794,6 @@ mod firmware {
                 state,
                 join_pending,
                 storage_browser,
-                mounted,
                 via_hotspot,
                 "network-switched",
             );
@@ -3975,7 +3943,6 @@ mod firmware {
         portal_join_pending: &mut Option<(String, String)>,
         portal_via_hotspot: bool,
         storage_browser: &mut StorageBrowser,
-        mounted_sd: bool,
         voice_recording: &mut Option<VoiceRecordingSession>,
         voice_playback: &mut Option<VoicePlaybackSession>,
         audio_runtime: &mut Option<AudioRuntime<'d, PmicI2c>>,
@@ -4069,7 +4036,6 @@ mod firmware {
             state,
             portal_join_pending,
             storage_browser,
-            mounted_sd,
             portal_via_hotspot,
             "sleep-entry",
         );
@@ -5068,12 +5034,6 @@ mod firmware {
 
     fn sync_panel_refresh_diagnostics(state: &mut AppState, coordinator: &PanelRefreshCoordinator) {
         state.partial_refreshes = coordinator.partial_count();
-    }
-
-    fn log_lua_runtime_events(state: &mut AppState) {
-        for line in state.take_lua_runtime_diagnostics() {
-            info!("{line}");
-        }
     }
 
     fn log_reader_persistence_event(state: &mut AppState) {

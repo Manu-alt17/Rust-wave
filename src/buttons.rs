@@ -171,7 +171,7 @@ where
 /// Dedicated active-low GPIO5 SELECT adapter that distinguishes a normal
 /// short press (the existing confirm/open/type-key meaning, handled by the
 /// caller like any other button event) from a held press, which route-
-/// specific features (Sudoku axis selection, calendar agenda, on-screen
+/// specific features (calendar agenda, on-screen
 /// keyboard axis toggles) use for a contextual action without touching Back
 /// behavior elsewhere.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

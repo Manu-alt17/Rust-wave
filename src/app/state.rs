@@ -10,7 +10,6 @@ use crate::{
     dictionary::DictionaryUiState,
     imu::ImuReading,
     imu_events::{ImuControlOutcome, ImuDetectedEvent, ImuEventBridge},
-    lua_runtime::LuaRuntimeUiState,
     magic_tokens::{MagicRowAction, MagicUiState},
     network::NetworkSnapshot,
     network_saved::NetworkSavedUiState,
@@ -63,8 +62,6 @@ pub struct AppState {
     pub unit_converter: UnitConverterUiState,
     /// TXT / reflowable EPUB Reader library, staged opening, RAM cache and options.
     pub reader: ReaderUiState,
-    /// SD-loaded app catalog, bounded bootstrap executor and native canvas session.
-    pub lua_runtime: LuaRuntimeUiState,
     /// Magic: The Gathering token library, active-selection cursor and
     /// (once the view screen is entered) the loaded 1bpp tiles.
     pub magic: MagicUiState,
@@ -152,7 +149,6 @@ impl Default for AppState {
             dictionary: DictionaryUiState::default(),
             unit_converter: UnitConverterUiState::default(),
             reader: ReaderUiState::default(),
-            lua_runtime: LuaRuntimeUiState::default(),
             magic: MagicUiState::default(),
             imu_events: ImuEventBridge::default(),
             partial_refreshes: 0,
@@ -280,11 +276,6 @@ impl AppState {
                 | ScreenRoute::VoiceNoteRecording
         ) {
             self.apply_voice_notes(event);
-        } else if matches!(
-            route,
-            ScreenRoute::LuaApps | ScreenRoute::LuaGame | ScreenRoute::LuaGameError
-        ) {
-            self.apply_lua_runtime(event);
         } else if route == ScreenRoute::Magic {
             self.apply_magic(event);
         } else if matches!(
@@ -301,9 +292,6 @@ impl AppState {
                 | ScreenRoute::ReaderToc
         ) {
             self.apply_reader(event);
-        } else if route.is_placeholder() {
-            // Placeholders are intentionally inert. Hierarchical navigation is
-            // consistently handled by the dedicated GPIO0 BOOT press.
         } else {
             match (route, event) {
                 (ScreenRoute::Clock, ButtonEvent::Up) => {
@@ -507,9 +495,6 @@ impl AppState {
                 if target == ScreenRoute::Calendar {
                     self.initialize_calendar_if_needed();
                     self.calendar.refresh_events();
-                }
-                if target == ScreenRoute::LuaApps {
-                    self.lua_runtime.refresh_catalog(true);
                 }
                 if target == ScreenRoute::Magic {
                     self.magic.refresh_catalog(true);
@@ -798,32 +783,6 @@ impl AppState {
         }
     }
 
-    fn apply_lua_runtime(&mut self, event: ButtonEvent) {
-        match self.router.current() {
-            ScreenRoute::LuaApps => {
-                if event == ButtonEvent::Select {
-                    self.note_select_press();
-                }
-                if self.lua_runtime.apply_catalog_button(event) {
-                    self.router.navigate_to(ScreenRoute::LuaGame);
-                } else if self.lua_runtime.error.is_some() {
-                    self.router.navigate_to(ScreenRoute::LuaGameError);
-                }
-            }
-            ScreenRoute::LuaGame => {
-                if event == ButtonEvent::Select {
-                    self.note_select_press();
-                }
-                self.lua_runtime.apply_game_button(event);
-                if self.lua_runtime.error.is_some() {
-                    self.router.navigate_to(ScreenRoute::LuaGameError);
-                }
-            }
-            ScreenRoute::LuaGameError => {}
-            _ => {}
-        }
-    }
-
     fn apply_magic(&mut self, event: ButtonEvent) {
         if event == ButtonEvent::Select {
             self.note_select_press();
@@ -841,7 +800,7 @@ impl AppState {
         }
     }
 
-    /// Route a held SELECT into keyboard-style screens before game-specific
+    /// Route a held SELECT into keyboard-style screens before the other
     /// contextual handlers. Future text-entry apps should compose the shared
     /// KeyboardGridNavigation helper and join this routing boundary.
     pub fn apply_keyboard_select_long_press(&mut self) -> bool {
@@ -857,11 +816,6 @@ impl AppState {
         } else {
             false
         }
-    }
-
-    pub fn apply_lua_game_select_long_press(&mut self) -> bool {
-        self.router.current() == ScreenRoute::LuaGame
-            && self.lua_runtime.apply_game_select_long_press()
     }
 
     /// A held SELECT on the reader page opens Reader Options from normal
@@ -922,24 +876,6 @@ impl AppState {
         self.reader.open_book_actions(entry.book);
         self.router.navigate_to(ScreenRoute::LibraryBookActions);
         true
-    }
-
-    #[must_use]
-    pub fn lua_game_needs_imu_events(&self) -> bool {
-        self.router.current() == ScreenRoute::LuaGame && self.lua_runtime.needs_imu_events()
-    }
-
-    pub fn apply_lua_game_motion_event(&mut self, event: ImuDetectedEvent) -> bool {
-        self.router.current() == ScreenRoute::LuaGame
-            && self.lua_runtime.apply_game_motion_event(event)
-    }
-
-    pub fn refresh_lua_app_catalog(&mut self, mounted: bool) {
-        self.lua_runtime.refresh_catalog(mounted);
-    }
-
-    pub fn take_lua_runtime_diagnostics(&mut self) -> Vec<String> {
-        self.lua_runtime.take_diagnostics()
     }
 
     fn apply_reader(&mut self, event: ButtonEvent) {
@@ -1266,12 +1202,6 @@ impl AppState {
         }
         if self.router.current() == ScreenRoute::ReaderPage && self.reader.dictionary_step_back() {
             return;
-        }
-        if matches!(
-            self.router.current(),
-            ScreenRoute::LuaGame | ScreenRoute::LuaGameError
-        ) {
-            self.lua_runtime.close_session();
         }
         if self.router.current() == ScreenRoute::WifiTransfer {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
@@ -2064,19 +1994,6 @@ mod tests {
         assert_eq!(state.unit_converter.active_field, ConverterField::FromUnit);
         state.back();
         assert_eq!(state.active_route(), ScreenRoute::Tools);
-    }
-
-    #[test]
-    fn games_route_opens_sd_lua_catalog_safely_without_sd_card() {
-        let mut state = AppState::default();
-        state.home_selected = 2;
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Games);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::LuaApps);
-        assert!(state.lua_runtime.catalog.warning.is_some());
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Games);
     }
 
     #[test]

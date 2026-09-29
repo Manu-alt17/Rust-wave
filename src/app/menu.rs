@@ -135,16 +135,7 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
     },
 ];
 
-const GAMES_ENTRIES: [MenuEntry; 2] = [
-    MenuEntry {
-        label_en: "SD Lua Apps",
-        label_it: "App Lua da SD",
-        subtitle_en: "SD-loaded apps with native canvas",
-        subtitle_it: "App caricate da SD con canvas nativo",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::LuaApps,
-    },
+const GAMES_ENTRIES: [MenuEntry; 1] = [
     MenuEntry {
         label_en: "Magic Tokens",
         label_it: "Token Magic",
@@ -486,7 +477,7 @@ mod tests {
     #[test]
     fn exposes_requested_main_category_counts_without_synthetic_back_rows() {
         assert_eq!(home_entries().len(), MAIN_CATEGORY_COUNT);
-        assert_eq!(category_entries(ScreenRoute::Games).len(), 2);
+        assert_eq!(category_entries(ScreenRoute::Games).len(), 1);
         assert_eq!(category_entries(ScreenRoute::Tools).len(), TOOLS_ENTRY_COUNT);
         assert_eq!(
             category_entries(ScreenRoute::Settings).len(),

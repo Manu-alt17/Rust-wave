@@ -15,7 +15,7 @@ fi
 
 SRC="$ROOT/examples/sd-card/RUSTMIX"
 DEST="$VOLUME/RUSTMIX"
-mkdir -p "$DEST/SLEEP" "$DEST/BOOKS" "$DEST/READER/CACHE" "$DEST/APPS/HGRID" "$DEST/APPS/SUDOKU" "$DEST/APPS/MINES" "$DEST/APPS/TILTMAZE" "$DEST/APPS/M2048" "$DEST/APPS/SOKOBAN" "$DEST/APPS/DICT/DATA" "$DEST/APPS/CALENDAR"
+mkdir -p "$DEST/SLEEP" "$DEST/BOOKS" "$DEST/READER/CACHE" "$DEST/APPS/DICT/DATA" "$DEST/APPS/CALENDAR"
 
 copy_example() {
   local src="$1"
@@ -35,27 +35,8 @@ copy_example "$SRC/SLEEP/SLEEP.BMP" "$DEST/SLEEP/SLEEP.BMP"
 copy_example "$SRC/SLEEP/SLEEP01.BMP" "$DEST/SLEEP/SLEEP01.BMP"
 copy_example "$SRC/BOOKS/README.TXT.example" "$DEST/BOOKS/README.TXT"
 copy_example "$SRC/READER/PREFS.TXT.example" "$DEST/READER/PREFS.TXT"
-copy_example "$SRC/APPS/HGRID/APP.TOM" "$DEST/APPS/HGRID/APP.TOM"
-copy_example "$SRC/APPS/HGRID/MAIN.LUA" "$DEST/APPS/HGRID/MAIN.LUA"
-copy_example "$SRC/APPS/SUDOKU/APP.TOM" "$DEST/APPS/SUDOKU/APP.TOM"
-copy_example "$SRC/APPS/SUDOKU/MAIN.LUA" "$DEST/APPS/SUDOKU/MAIN.LUA"
-
-copy_example "$SRC/APPS/MINES/APP.TOM" "$DEST/APPS/MINES/APP.TOM"
-copy_example "$SRC/APPS/MINES/MAIN.LUA" "$DEST/APPS/MINES/MAIN.LUA"
 
 echo "rustmix-wave-sd-examples-ready=$DEST"
-echo "rustmix-wave-minesweeper-sd-sample-ready=$DEST/APPS/MINES"
-
-copy_example "$SRC/APPS/TILTMAZE/APP.TOM" "$DEST/APPS/TILTMAZE/APP.TOM"
-copy_example "$SRC/APPS/TILTMAZE/MAIN.LUA" "$DEST/APPS/TILTMAZE/MAIN.LUA"
-echo "rustmix-wave-tilt-maze-sd-sample-ready=$DEST/APPS/TILTMAZE"
-
-copy_example "$SRC/APPS/M2048/APP.TOM" "$DEST/APPS/M2048/APP.TOM"
-copy_example "$SRC/APPS/M2048/MAIN.LUA" "$DEST/APPS/M2048/MAIN.LUA"
-echo "rustmix-wave-motion-2048-sd-sample-ready=$DEST/APPS/M2048"
-copy_example "$SRC/APPS/SOKOBAN/APP.TOM" "$DEST/APPS/SOKOBAN/APP.TOM"
-copy_example "$SRC/APPS/SOKOBAN/MAIN.LUA" "$DEST/APPS/SOKOBAN/MAIN.LUA"
-echo "rustmix-wave-sokoban-tilt-sd-sample-ready=$DEST/APPS/SOKOBAN"
 
 DICT_DEST="$DEST/APPS/DICT"
 if find "$DICT_DEST" -mindepth 1 -print -quit | grep -q .; then
