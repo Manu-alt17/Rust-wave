@@ -1,9 +1,9 @@
-//! Native offline Dictionary engine compatible with the Rustmix X4 SD pack.
+//! Native offline Dictionary engine compatible with the Rustmix X4 SD pack,
+//! behind the Reader's in-page word lookup.
 //!
 //! The X4 pack remains authoritative on removable storage:
 //! `/sdcard/RUSTMIX/APPS/DICT/INDEX.TXT` selects one bounded
-//! `DATA/*.JSN` prefix shard.  The Waveshare port keeps that storage contract
-//! but renders the rotary-first UI natively in Rust.
+//! `DATA/*.JSN` prefix shard.
 //!
 //! INDEX.TXT is byte-sorted, so it is binary-searched in place on the SD card
 //! instead of being loaded whole: a full Italian pack indexes ~28k shards
@@ -21,28 +21,14 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 
-use crate::{buttons::ButtonEvent, keyboard_navigation::KeyboardGridNavigation};
-
 /// Rustmix X4-compatible dictionary app root.
 pub const DICTIONARY_ROOT: &str = "/sdcard/RUSTMIX/APPS/DICT";
 /// X4 pack shard index filename.
 pub const DICTIONARY_INDEX_FILE: &str = "INDEX.TXT";
 /// Prefix-shard files stay intentionally small for bounded SD reads.
 pub const DICTIONARY_SHARD_MAX_BYTES: usize = 16 * 1024;
-/// Search text remains bounded for the rotary keyboard.
-pub const DICTIONARY_QUERY_MAX_CHARS: usize = 32;
 /// Prefix mode retains only a compact page of matches.
 pub const DICTIONARY_MATCH_LIMIT: usize = 8;
-/// X4-style keyboard rows retained for pack compatibility and predictable UI.
-pub const DICTIONARY_KEY_ROWS: [[&str; 6]; 5] = [
-    ["A", "B", "C", "D", "E", "F"],
-    ["G", "H", "I", "J", "K", "L"],
-    ["M", "N", "O", "P", "Q", "R"],
-    ["S", "T", "U", "V", "W", "X"],
-    ["Y", "Z", "DEL", "CLR", "GO", "*"],
-];
-const DICTIONARY_KEY_COLUMNS: usize = 6;
-const DICTIONARY_KEY_COUNT: usize = 30;
 /// Small reads per binary-search probe: index rows are ~20 bytes long.
 const INDEX_PROBE_BUFFER_BYTES: usize = 256;
 /// Upper bound on broader shards considered by one prefix search; results
@@ -248,208 +234,6 @@ impl IndexCursor {
         }
         Ok(rows)
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DictionaryUiState {
-    pub query: String,
-    pub keyboard_navigation: KeyboardGridNavigation,
-    pub matches: Vec<DictionaryMatch>,
-    pub selected_match: usize,
-    pub wildcard: bool,
-    pub message: String,
-    pub pack_ready: bool,
-    /// Opened once per session; holds only the INDEX.TXT path.
-    index: Option<DictionaryIndex>,
-}
-
-impl Default for DictionaryUiState {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            keyboard_navigation: KeyboardGridNavigation::new(
-                DICTIONARY_KEY_COUNT,
-                DICTIONARY_KEY_COLUMNS,
-            ),
-            matches: Vec::new(),
-            selected_match: 0,
-            wildcard: false,
-            message: "Type a word. * does prefix search.".into(),
-            pack_ready: false,
-            index: None,
-        }
-    }
-}
-
-impl DictionaryUiState {
-    fn cached_index(&mut self) -> Result<DictionaryIndex> {
-        if self.index.is_none() {
-            self.index = Some(DictionaryIndex::open(Path::new(DICTIONARY_ROOT))?);
-        }
-        Ok(self.index.clone().expect("just populated above"))
-    }
-
-    pub fn refresh_pack_status(&mut self) {
-        match self.cached_index().and_then(|index| index.first_row()) {
-            Ok(_) => {
-                self.pack_ready = true;
-                self.message = "Pack ready. Type a word.".into();
-            }
-            Err(error) => {
-                self.index = None;
-                self.pack_ready = false;
-                self.message = compact_error(&error.to_string());
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn selected_key_label(&self) -> &'static str {
-        flat_key(self.keyboard_navigation.selected())
-    }
-
-    #[must_use]
-    pub const fn selected_key_index(&self) -> usize {
-        self.keyboard_navigation.selected()
-    }
-
-    #[must_use]
-    pub const fn navigation_mode_label(&self) -> &'static str {
-        self.keyboard_navigation.status_label()
-    }
-
-    pub fn toggle_navigation_axis(&mut self) {
-        self.keyboard_navigation.toggle_axis();
-        self.message = format!(
-            "Keyboard {}. Rotary moves within active axis.",
-            self.navigation_mode_label()
-        );
-    }
-
-    #[must_use]
-    pub fn current_match(&self) -> Option<&DictionaryMatch> {
-        self.matches.get(
-            self.selected_match
-                .min(self.matches.len().saturating_sub(1)),
-        )
-    }
-
-    #[must_use]
-    pub fn match_label(&self) -> String {
-        if self.matches.is_empty() {
-            "NO RESULT".into()
-        } else {
-            format!("{} / {}", self.selected_match + 1, self.matches.len())
-        }
-    }
-
-    pub fn apply_button(&mut self, event: ButtonEvent) {
-        match event {
-            ButtonEvent::Up => self.keyboard_navigation.move_previous(),
-            ButtonEvent::Down => self.keyboard_navigation.move_next(),
-            ButtonEvent::Select => self.apply_selected_key(),
-        }
-    }
-
-    fn apply_selected_key(&mut self) {
-        match self.selected_key_label() {
-            "DEL" => {
-                self.query.pop();
-                self.clear_results("Deleted last character");
-            }
-            "CLR" => {
-                self.query.clear();
-                self.clear_results("Cleared search");
-            }
-            "GO" => self.run_lookup(false),
-            "*" => self.run_lookup(true),
-            letter => {
-                if self.query.chars().count() < DICTIONARY_QUERY_MAX_CHARS {
-                    self.query.push_str(letter);
-                    self.clear_results("Type a word. GO lookup, * prefix.");
-                }
-            }
-        }
-    }
-
-    fn clear_results(&mut self, message: &str) {
-        self.matches.clear();
-        self.selected_match = 0;
-        self.wildcard = false;
-        self.message = message.into();
-    }
-
-    /// Follows the selected match's form-of pointer the first time it is
-    /// shown, so a prefix page costs one extra lookup per viewed result
-    /// rather than one per result.
-    fn explain_selected_match(&mut self) {
-        let Ok(index) = self.cached_index() else {
-            return;
-        };
-        let Some(entry) = self.matches.get_mut(self.selected_match) else {
-            return;
-        };
-        if !entry.explained {
-            entry.definition =
-                resolve_definition(Path::new(DICTIONARY_ROOT), &index, &entry.word, &entry.definition);
-            entry.explained = true;
-        }
-    }
-
-    fn run_lookup(&mut self, prefix_mode: bool) {
-        let normalized = normalize_query(&self.query);
-        if prefix_mode
-            && self.wildcard
-            && !self.matches.is_empty()
-            && normalized == normalize_query(&self.query)
-        {
-            self.selected_match = (self.selected_match + 1) % self.matches.len();
-            self.explain_selected_match();
-            self.message = format!(
-                "Prefix result {} of {}. Press * for next.",
-                self.selected_match + 1,
-                self.matches.len()
-            );
-            return;
-        }
-        let index = match self.cached_index() {
-            Ok(index) => index,
-            Err(error) => {
-                self.matches.clear();
-                self.selected_match = 0;
-                self.wildcard = prefix_mode;
-                self.message = compact_error(&error.to_string());
-                return;
-            }
-        };
-        match lookup_dictionary_with_index(Path::new(DICTIONARY_ROOT), &index, &normalized, prefix_mode)
-        {
-            Ok(result) => {
-                self.matches = result.matches;
-                self.selected_match = 0;
-                self.wildcard = result.prefix_mode;
-                self.explain_selected_match();
-                self.message = if self.matches.is_empty() {
-                    "Word not found".into()
-                } else if self.wildcard {
-                    format!("Prefix results: {}. Press * for next.", self.matches.len())
-                } else {
-                    "Exact match".into()
-                };
-            }
-            Err(error) => {
-                self.matches.clear();
-                self.selected_match = 0;
-                self.wildcard = prefix_mode;
-                self.message = compact_error(&error.to_string());
-            }
-        }
-    }
-}
-
-#[must_use]
-pub const fn flat_key(index: usize) -> &'static str {
-    DICTIONARY_KEY_ROWS[index / 6][index % 6]
 }
 
 pub fn load_dictionary_index(root: &Path) -> Result<Vec<DictionaryIndexRow>> {
@@ -1043,9 +827,8 @@ mod tests {
     use super::{
         alpha_prefix, dedupe_senses, form_of_lemma, lookup_dictionary, lookup_dictionary_exact,
         lookup_dictionary_explained, normalize_query, parse_dictionary_index, DictionaryIndex,
-        DictionaryUiState, DICTIONARY_SHARD_MAX_BYTES,
+        DICTIONARY_SHARD_MAX_BYTES,
     };
-    use crate::buttons::ButtonEvent;
 
     fn temp_root(label: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -1280,32 +1063,6 @@ mod tests {
                 entry.map(|entry| entry.definition)
             );
         }
-    }
-
-    #[test]
-    fn rotary_keyboard_remains_bounded() {
-        let mut state = DictionaryUiState::default();
-        for _ in 0..31 {
-            state.apply_button(ButtonEvent::Down);
-        }
-        assert_eq!(state.selected_key_index(), 1);
-        state.apply_button(ButtonEvent::Select);
-        assert_eq!(state.query, "B");
-    }
-
-    #[test]
-    fn keyboard_boot_axis_toggle_preserves_key_and_changes_movement_direction() {
-        let mut state = DictionaryUiState::default();
-        state.apply_button(ButtonEvent::Down);
-        assert_eq!(state.selected_key_label(), "B");
-        state.toggle_navigation_axis();
-        assert_eq!(state.navigation_mode_label(), "NAV V");
-        assert_eq!(state.selected_key_label(), "B");
-        state.apply_button(ButtonEvent::Down);
-        assert_eq!(state.selected_key_label(), "H");
-        state.toggle_navigation_axis();
-        assert_eq!(state.navigation_mode_label(), "NAV H");
-        assert_eq!(state.selected_key_label(), "H");
     }
 }
 

@@ -109,7 +109,7 @@ mod tests {
         const TITLES: &[&str] = &[
             "AUDIO INFO", "INFO AUDIO",
             "CLOCK", "OROLOGIO",
-            "RTC INFO", "INFO RTC", "DATE & TIME", "DATA E ORA", "DICTIONARY", "DIZIONARIO",
+            "RTC INFO", "INFO RTC", "DATE & TIME", "DATA E ORA",
             "DISPLAY", "SCHERMO",
             "FILE PREVIEW", "ANTEPRIMA", "LANGUAGE", "LINGUA",
             "NETWORK", "RETE",

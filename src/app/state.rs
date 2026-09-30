@@ -5,7 +5,6 @@ use crate::{
     board_services::BoardSnapshot,
     buttons::ButtonEvent,
     clock_time_editor::{self, ClockEditField, ClockTimeEditor},
-    dictionary::DictionaryUiState,
     network::NetworkSnapshot,
     network_saved::NetworkSavedUiState,
     orientation::DisplayOrientation,
@@ -49,8 +48,6 @@ pub struct AppState {
     pub category_usage: CategoryUsage,
     pub display_action_selected: usize,
     pub display: DisplayPreferences,
-    /// Offline X4-pack-compatible native Dictionary keyboard and lookup snapshot.
-    pub dictionary: DictionaryUiState,
     /// Offline fixed-point Unit Converter cursor and editable field.
     pub unit_converter: UnitConverterUiState,
     /// TXT / reflowable EPUB Reader library, staged opening, RAM cache and options.
@@ -131,7 +128,6 @@ impl Default for AppState {
             category_usage: CategoryUsage::default(),
             display_action_selected: 0,
             display: DisplayPreferences::default(),
-            dictionary: DictionaryUiState::default(),
             unit_converter: UnitConverterUiState::default(),
             reader: ReaderUiState::default(),
             partial_refreshes: 0,
@@ -233,8 +229,6 @@ impl AppState {
             self.apply_language(event);
         } else if route == ScreenRoute::PowerKeyMenu {
             self.apply_power_key_menu(event);
-        } else if route == ScreenRoute::Dictionary {
-            self.apply_dictionary(event);
         } else if route == ScreenRoute::UnitConverter {
             self.apply_unit_converter(event);
         } else if route == ScreenRoute::ClockSetTime {
@@ -444,22 +438,12 @@ impl AppState {
                 if target == ScreenRoute::VoiceNotes {
                     self.voice_notes.refresh_catalog();
                 }
-                if target == ScreenRoute::Dictionary {
-                    self.dictionary.refresh_pack_status();
-                }
                 if target == ScreenRoute::OtaUpdate {
                     self.request_ota_check_if_idle();
                 }
                 self.router.navigate_to(target);
             }
         }
-    }
-
-    fn apply_dictionary(&mut self, event: ButtonEvent) {
-        if event == ButtonEvent::Select {
-            self.note_select_press();
-        }
-        self.dictionary.apply_button(event);
     }
 
     fn apply_voice_notes(&mut self, event: ButtonEvent) {
@@ -604,9 +588,6 @@ impl AppState {
             && self.voice_notes.title_editing
         {
             self.voice_notes.toggle_title_editor_navigation_axis()
-        } else if self.router.current() == ScreenRoute::Dictionary {
-            self.dictionary.toggle_navigation_axis();
-            true
         } else {
             false
         }
@@ -1631,23 +1612,6 @@ mod tests {
     }
 
     #[test]
-    fn tools_dictionary_opens_native_screen_without_sd_pack() {
-        let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Tools);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Dictionary);
-        assert!(!state.dictionary.pack_ready);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.dictionary.query, "B");
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
-    }
-
-    #[test]
     fn voice_note_title_editor_select_long_toggles_axis_and_boot_back_cancels() {
         let mut state = AppState::default();
         state
@@ -1679,21 +1643,6 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_keyboard_select_long_toggles_axis_preserves_key_and_boot_back_route() {
-        let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::Dictionary);
-        state.apply(ButtonEvent::Down);
-        assert_eq!(state.dictionary.selected_key_label(), "B");
-        assert!(state.apply_keyboard_select_long_press());
-        assert_eq!(state.dictionary.navigation_mode_label(), "NAV V");
-        assert_eq!(state.dictionary.selected_key_label(), "B");
-        state.apply(ButtonEvent::Down);
-        assert_eq!(state.dictionary.selected_key_label(), "H");
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
-    }
-
-    #[test]
     fn tools_unit_converter_opens_and_edits_without_hardware() {
         use crate::unit_converter::{ConverterField, UnitCategory};
 
@@ -1701,7 +1650,6 @@ mod tests {
         state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
-        state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::UnitConverter);
@@ -1842,7 +1790,6 @@ mod tests {
         state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
-        state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);

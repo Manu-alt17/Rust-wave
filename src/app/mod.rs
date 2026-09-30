@@ -139,24 +139,11 @@ mod tests {
     }
 
     #[test]
-    fn tools_dictionary_route_renders_offline_without_sd_pack() {
-        let mut frame = FrameBuffer::new_white();
-        let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Tools);
-        state.apply(ButtonEvent::Select);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Dictionary);
-        render_current_screen(&mut frame, &state).unwrap();
-    }
-
-    #[test]
     fn tools_unit_converter_route_renders_offline() {
         let mut frame = FrameBuffer::new_white();
         let mut state = AppState::default();
         state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
-        state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::UnitConverter);
@@ -820,12 +807,12 @@ mod tests {
     fn power_key_long_menu_route_renders_and_returns_to_previous_screen() {
         let mut frame = FrameBuffer::new_white();
         let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::Dictionary);
+        state.router.navigate_to(ScreenRoute::Library);
         state.open_power_key_menu();
         assert_eq!(state.active_route(), ScreenRoute::PowerKeyMenu);
         render_current_screen(&mut frame, &state).unwrap();
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Dictionary);
+        assert_eq!(state.active_route(), ScreenRoute::Library);
         assert!(state.take_power_key_manual_refresh_request());
     }
 }

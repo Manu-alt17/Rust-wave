@@ -13,7 +13,7 @@ use super::router::ScreenRoute;
 
 pub const MAIN_CATEGORY_COUNT: usize = 6;
 pub const CATEGORY_COUNT: usize = 2;
-pub const TOOLS_ENTRY_COUNT: usize = 4;
+pub const TOOLS_ENTRY_COUNT: usize = 3;
 pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
 /// heading of the Tools and Settings grids (see
@@ -91,10 +91,10 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
     MenuEntry {
         label_en: "Tools",
         label_it: "Strumenti",
-        subtitle_en: "Files, dictionary and notes",
-        subtitle_it: "File, dizionario e note",
-        badge_en: "4",
-        badge_it: "4",
+        subtitle_en: "Files, notes and converter",
+        subtitle_it: "File, note e convertitore",
+        badge_en: "3",
+        badge_it: "3",
         route: ScreenRoute::Tools,
     },
     MenuEntry {
@@ -134,15 +134,6 @@ const TOOLS_ENTRIES: [MenuEntry; TOOLS_ENTRY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::Files,
-    },
-    MenuEntry {
-        label_en: "Dictionary",
-        label_it: "Dizionario",
-        subtitle_en: "Offline prefix lookup",
-        subtitle_it: "Ricerca per prefisso offline",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Dictionary,
     },
     MenuEntry {
         // Short tile caption in both locales, matching "Update"/"Info"

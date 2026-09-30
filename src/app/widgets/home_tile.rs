@@ -13,9 +13,7 @@ use embedded_graphics::{
 use embedded_iconoir::{
     icons::size48px::{
         actions::{InfoEmpty as CompactInfoEmpty, RefreshDouble as CompactRefreshDouble},
-        activities::{
-            Book as CompactBook, BookStack as CompactBookStack, StatsReport as CompactStatsReport,
-        },
+        activities::{BookStack as CompactBookStack, StatsReport as CompactStatsReport},
         audio::{Mic as CompactMic, SoundLow as CompactSoundLow},
         connectivity::Wifi as CompactWifi,
         docs::{Folder as CompactFolder, MultiplePages as CompactMultiplePages},
@@ -261,9 +259,6 @@ fn draw_route_icon_compact(
         }
         ScreenRoute::Files => {
             draw_iconoir_icon_scaled(display, top_left, &CompactMultiplePages::new(BinaryColor::On))
-        }
-        ScreenRoute::Dictionary => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactBook::new(BinaryColor::On))
         }
         ScreenRoute::UnitConverter => {
             draw_iconoir_icon_scaled(display, top_left, &CompactCalculator::new(BinaryColor::On))

@@ -10,7 +10,6 @@ pub mod audio;
 pub mod category;
 pub mod clock;
 pub mod device_info;
-pub mod dictionary;
 pub mod display;
 pub mod files;
 pub mod home;
@@ -45,7 +44,6 @@ pub fn render_active_screen(
         ScreenRoute::VoiceNotes => voice_notes::render_voice_notes(display, state),
         ScreenRoute::VoiceNoteDetails => voice_notes::render_voice_note_details(display, state),
         ScreenRoute::VoiceNoteRecording => voice_notes::render_voice_note_recording(display, state),
-        ScreenRoute::Dictionary => dictionary::render_dictionary(display, state),
         ScreenRoute::UnitConverter => unit_converter::render_unit_converter(display, state),
         ScreenRoute::Clock => clock::render_clock(display, state),
         ScreenRoute::ClockSetTime => clock::render_clock_set_time(display, state),

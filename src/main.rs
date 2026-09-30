@@ -2521,19 +2521,10 @@ mod firmware {
                                 );
                             }
                             if keyboard_context {
-                                if state.active_route() == ScreenRoute::VoiceNoteDetails
-                                    && state.voice_notes.title_editing
-                                {
-                                    info!(
+                                info!(
                                     "rustmix-wave=voice-note-title-keyboard-nav axis={} outcome=toggled",
                                     state.voice_notes.title_editor_navigation_mode_label()
                                 );
-                                } else {
-                                    info!(
-                                    "rustmix-wave=dictionary-keyboard-nav axis={} outcome=toggled",
-                                    state.dictionary.navigation_mode_label()
-                                );
-                                }
                             }
                             let woke_from_sleep = !state.panel_awake;
                             if woke_from_sleep {
