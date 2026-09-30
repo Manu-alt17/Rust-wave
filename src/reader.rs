@@ -110,8 +110,10 @@ fn is_index_checkpoint(indexed_pages: usize) -> bool {
         && (indexed_pages <= READER_CACHE_CHECKPOINT_DENSE_UNTIL
             || indexed_pages % READER_CACHE_CHECKPOINT_SPARSE_PAGES == 0)
 }
-/// Maximum pre-indexed EPUB page anchors retained for chapter-aware labels.
-pub const READER_EPUB_PAGE_ANCHOR_LIMIT: usize = 4096;
+/// Maximum pre-indexed EPUB page anchors retained for chapter-aware labels:
+/// 8 bytes each. 4096 was within reach of one long novel at the largest
+/// book font (about 570 characters a page).
+pub const READER_EPUB_PAGE_ANCHOR_LIMIT: usize = 16_384;
 
 const READER_PERSISTENCE_VERSION: &str = "1";
 /// Bumped to `"4"` when inline images started reserving aspect-correct
@@ -133,7 +135,9 @@ const READER_PREFS_VERSION: &str = "1";
 /// when image records gained their probed pixel width/height. Bumped to
 /// `"4"` when named entities started decoding to their own characters
 /// (`&uuml;` used to come out as `û`, `&bdquo;` as a left double quote).
-const EPUB_DOCUMENT_CACHE_VERSION: &str = "4";
+/// `"5"` when books past 128 chapter files stopped being cut short and the
+/// contents lost EPUB 3 page lists and regained nested NCX entries.
+const EPUB_DOCUMENT_CACHE_VERSION: &str = "5";
 /// SD-backed EPUB page-offset index cache format version. Unlike the
 /// flattened-text cache, this one is layout-dependent (see [`book_fingerprint`]):
 /// a font or orientation change must invalidate it, since page breaks move.
@@ -5762,7 +5766,7 @@ fn parse_epub_document_cache(
 /// Bounded prefix read for one `.EPX` cache file, big enough for any header
 /// this format can produce (`EPUB_TOC_LIMIT` + `EPUB_SPINE_LIMIT` records,
 /// generously sized) without ever reading the flattened body that follows.
-const EPUB_CACHE_HEADER_MAX_BYTES: usize = 256 * 1024;
+const EPUB_CACHE_HEADER_MAX_BYTES: usize = 1024 * 1024;
 
 /// Read granularity for [`read_epub_cache_header`]. Real headers are a few KB,
 /// so this usually finds the marker in the first one or two reads.

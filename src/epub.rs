@@ -26,7 +26,7 @@ use miniz_oxide::inflate::decompress_to_vec_with_limit;
 /// Maximum EPUB archive bytes accepted from removable storage.
 pub const EPUB_ARCHIVE_BYTES_LIMIT: usize = 16 * 1024 * 1024;
 /// Maximum central-directory records accepted from one EPUB.
-pub const EPUB_ARCHIVE_ENTRY_LIMIT: usize = 512;
+pub const EPUB_ARCHIVE_ENTRY_LIMIT: usize = 4096;
 /// Maximum compressed bytes extracted for one EPUB member.
 pub const EPUB_MEMBER_COMPRESSED_LIMIT: usize = 2 * 1024 * 1024;
 /// Maximum decompressed bytes extracted for one EPUB member.
@@ -42,10 +42,10 @@ pub const EPUB_MEMBER_UNCOMPRESSED_LIMIT: usize = 4 * 1024 * 1024;
 /// *fresh, uncached* open, since that one pass has to hold the flattened text
 /// in RAM until the deferred background write lands it on SD.
 pub const EPUB_REFLOW_TEXT_LIMIT: usize = 8 * 1024 * 1024;
-/// Maximum manifest records retained from one OPF package.
-pub const EPUB_MANIFEST_LIMIT: usize = 256;
-/// Maximum spine records retained from one OPF package.
-pub const EPUB_SPINE_LIMIT: usize = 128;
+/// Most spine records (chapter files) one EPUB may have. A book with more is
+/// refused with an error rather than silently cut short: books split per
+/// page by some converters reach a few hundred, so this leaves room.
+pub const EPUB_SPINE_LIMIT: usize = 2048;
 /// Maximum TOC records rendered by the Reader UI.
 pub const EPUB_TOC_LIMIT: usize = 128;
 /// Dedicated parser-worker stack budget. Real EPUB DEFLATE and XHTML work
@@ -1084,12 +1084,12 @@ pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
     })
 }
 
+/// Every manifest item, however many: a few bytes each, and a chapter
+/// listed past an arbitrary cutoff made the whole book fail to open ("spine
+/// item missing from manifest") in books with many images or fonts.
 fn parse_manifest(package: &str) -> Result<BTreeMap<String, ManifestItem>, String> {
     let mut manifest = BTreeMap::new();
-    for tag in open_tags(package, "item")
-        .into_iter()
-        .take(EPUB_MANIFEST_LIMIT)
-    {
+    for tag in open_tags(package, "item") {
         let Some(id) = attribute(tag, "id") else {
             continue;
         };
@@ -1115,14 +1115,15 @@ fn parse_manifest(package: &str) -> Result<BTreeMap<String, ManifestItem>, Strin
 }
 
 fn parse_spine_ids(package: &str) -> Result<Vec<String>, String> {
-    let mut ids = Vec::new();
-    for tag in open_tags(package, "itemref")
+    let ids: Vec<String> = open_tags(package, "itemref")
         .into_iter()
-        .take(EPUB_SPINE_LIMIT)
-    {
-        if let Some(idref) = attribute(tag, "idref") {
-            ids.push(idref);
-        }
+        .filter_map(|tag| attribute(tag, "idref"))
+        .collect();
+    if ids.len() > EPUB_SPINE_LIMIT {
+        return Err(format!(
+            "EPUB has {} chapter files, more than the {EPUB_SPINE_LIMIT} this reader opens",
+            ids.len()
+        ));
     }
     Ok(ids)
 }
@@ -1142,7 +1143,7 @@ fn parse_navigation_toc(
         let member = normalize_archive_path(package_dir, &nav.href);
         let nav_text = utf8_member(archive, &member)?;
         let base = archive_parent(&member);
-        let toc = links_to_toc(&nav_text, &base, chapter_offsets);
+        let toc = links_to_toc(toc_nav_region(&nav_text), &base, chapter_offsets);
         if !toc.is_empty() {
             return Ok(toc);
         }
@@ -1164,6 +1165,34 @@ fn parse_navigation_toc(
         return Ok(ncx_to_toc(&ncx_text, &base, chapter_offsets));
     }
     Ok(Vec::new())
+}
+
+/// The table of contents inside an EPUB 3 navigation document: the
+/// `<nav epub:type="toc">` element. The same document usually also holds a
+/// page list and landmarks, whose links would fill the Reader's contents
+/// with page numbers. Without a marked `toc` nav, the whole document.
+fn toc_nav_region(html: &str) -> &str {
+    let mut cursor = 0;
+    while let Some(start_rel) = html[cursor..].find("<nav") {
+        let start = cursor + start_rel;
+        let Some(open_end_rel) = html[start..].find('>') else {
+            break;
+        };
+        let tag = &html[start + 1..start + open_end_rel];
+        let open_end = start + open_end_rel + 1;
+        // `attribute` matches local names, so "type" finds `epub:type`.
+        let is_toc = attribute(tag, "type")
+            .is_some_and(|value| value.split_whitespace().any(|word| word == "toc"))
+            || attribute(tag, "role").is_some_and(|value| value == "doc-toc");
+        if is_toc {
+            let end = html[open_end..]
+                .find("</nav>")
+                .map_or(html.len(), |end| open_end + end);
+            return &html[open_end..end];
+        }
+        cursor = open_end;
+    }
+    html
 }
 
 fn links_to_toc(
@@ -1212,10 +1241,22 @@ fn ncx_to_toc(
             break;
         };
         let start = cursor + start_rel;
-        let end = ncx[start..]
-            .find("</navPoint>")
-            .map_or(ncx.len(), |value| start + value + "</navPoint>".len());
-        let block = &ncx[start..end];
+        let open_end = ncx[start..]
+            .find('>')
+            .map_or(ncx.len(), |value| start + value + 1);
+        // A point's own label and target come before its first nested point
+        // (or its end). The next search starts right after its opening tag,
+        // so nested points are read too: stopping at the first
+        // `</navPoint>`, which closes the first child, skipped that child.
+        let own_end = [
+            ncx[open_end..].find("<navPoint"),
+            ncx[open_end..].find("</navPoint>"),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .map_or(ncx.len(), |value| open_end + value);
+        let block = &ncx[open_end..own_end];
         let href = first_open_tag(block, "content").and_then(|tag| attribute(tag, "src"));
         let label = first_element_text(block, "text").unwrap_or_else(|| "Chapter".into());
         if let Some(href) = href {
@@ -1223,7 +1264,7 @@ fn ncx_to_toc(
                 toc.push(entry);
             }
         }
-        cursor = end;
+        cursor = open_end;
     }
     toc
 }
@@ -1932,6 +1973,74 @@ mod tests {
             ),
             "Perché «così»… disse lei\u{2014}e tacque."
         );
+    }
+
+    fn offsets_for(names: &[&str]) -> std::collections::BTreeMap<String, (usize, u64)> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                (
+                    super::normalize_archive_path("OEBPS", name),
+                    (index, index as u64 * 100),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ncx_keeps_every_nested_point_in_order() {
+        let ncx = r#"<navMap>
+            <navPoint id="p1"><navLabel><text>Parte prima</text></navLabel><content src="p1.xhtml"/>
+                <navPoint id="c1"><navLabel><text>Capitolo 1</text></navLabel><content src="c1.xhtml"/></navPoint>
+                <navPoint id="c2"><navLabel><text>Capitolo 2</text></navLabel><content src="c2.xhtml"/></navPoint>
+            </navPoint>
+            <navPoint id="p2"><navLabel><text>Parte seconda</text></navLabel><content src="p2.xhtml"/></navPoint>
+        </navMap>"#;
+        let offsets = offsets_for(&["p1.xhtml", "c1.xhtml", "c2.xhtml", "p2.xhtml"]);
+        let toc = super::ncx_to_toc(ncx, "OEBPS", &offsets);
+        let labels: Vec<&str> = toc.iter().map(|entry| entry.label.as_str()).collect();
+        assert_eq!(labels, ["Parte prima", "Capitolo 1", "Capitolo 2", "Parte seconda"]);
+    }
+
+    #[test]
+    fn epub3_contents_come_from_the_toc_nav_only() {
+        let nav = r#"<body>
+            <nav epub:type="landmarks"><ol><li><a href="c1.xhtml">Inizio</a></li></ol></nav>
+            <nav epub:type="toc"><ol>
+                <li><a href="c1.xhtml">Uno</a></li><li><a href="c2.xhtml">Due</a></li>
+            </ol></nav>
+            <nav epub:type="page-list"><ol><li><a href="c1.xhtml#p1">1</a></li><li><a href="c2.xhtml#p9">9</a></li></ol></nav>
+        </body>"#;
+        let offsets = offsets_for(&["c1.xhtml", "c2.xhtml"]);
+        let toc = super::links_to_toc(super::toc_nav_region(nav), "OEBPS", &offsets);
+        let labels: Vec<&str> = toc.iter().map(|entry| entry.label.as_str()).collect();
+        assert_eq!(labels, ["Uno", "Due"]);
+        // No marked toc nav: every link, as before.
+        assert_eq!(super::toc_nav_region("<a href=\"x\">x</a>"), "<a href=\"x\">x</a>");
+    }
+
+    #[test]
+    fn long_spines_and_manifests_are_read_whole() {
+        let items: String = (0..600)
+            .map(|index| format!(r#"<item id="c{index}" href="c{index}.xhtml" media-type="application/xhtml+xml"/>"#))
+            .collect();
+        let itemrefs: String = (0..600)
+            .map(|index| format!(r#"<itemref idref="c{index}"/>"#))
+            .collect();
+        let package = format!("<manifest>{items}</manifest><spine>{itemrefs}</spine>");
+        // Past the old 256-item manifest and 128-item spine cutoffs.
+        let manifest = super::parse_manifest(&package).unwrap();
+        assert!(manifest.contains_key("c599"));
+        let spine = super::parse_spine_ids(&package).unwrap();
+        assert_eq!(spine.len(), 600);
+        assert_eq!(spine[599], "c599");
+        // Beyond the limit: an explicit error, never a silently short book.
+        let huge: String = (0..=super::EPUB_SPINE_LIMIT)
+            .map(|index| format!(r#"<itemref idref="c{index}"/>"#))
+            .collect();
+        let error = super::parse_spine_ids(&format!("<spine>{huge}</spine>")).unwrap_err();
+        assert!(error.contains("chapter files"), "{error}");
     }
 
     #[test]
