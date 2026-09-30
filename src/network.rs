@@ -472,16 +472,12 @@ pub mod espidf {
             // ever reaching one that would have associated immediately.
             // `advance_boot_phase`'s `Scanning` arm reorders `candidates`
             // once the scan settles, trying any saved SSID actually seen in
-            // range first, and only then requests the real connection. If
-            // the scan itself fails to start, fall back to the previous
-            // behavior (try saved order, starting from `first`) rather than
-            // blocking boot on a driver problem the boot sequence can't fix.
-            let scan_started =
-                unsafe { sys::esp_wifi_scan_start(core::ptr::null(), false) } == sys::ESP_OK;
+            // range first, and only then requests the real connection. With
+            // a single saved network, or if the scan fails to start, connect
+            // in saved order, starting from `first` (see
+            // `start_candidate_scan`).
+            let scan_started = start_candidate_scan(config.networks.len(), "wifi-boot-scan");
             if !scan_started {
-                warn!(
-                    "rustmix-wave=wifi-boot-scan status=failed-to-start falling-back=saved-order"
-                );
                 wifi.set_configuration(&Configuration::Client(client_configuration(first)?))?;
             }
 
@@ -608,12 +604,8 @@ pub mod espidf {
                 .context("at least one saved network is required")?;
             let wifi = self.wifi.as_mut().context("Wi-Fi runtime is unavailable")?;
             wifi.wifi_mut().start()?;
-            let scan_started =
-                unsafe { sys::esp_wifi_scan_start(core::ptr::null(), false) } == sys::ESP_OK;
+            let scan_started = start_candidate_scan(self.candidates.len(), "wifi-resume-scan");
             if !scan_started {
-                warn!(
-                    "rustmix-wave=wifi-resume-scan status=failed-to-start falling-back=saved-order"
-                );
                 wifi.set_configuration(&Configuration::Client(client_configuration(&first)?))?;
             }
             self.snapshot.wifi_state = WifiConnectionState::Connecting;
@@ -913,12 +905,8 @@ pub mod espidf {
                 .cloned()
                 .context("at least one saved network is required")?;
             wifi.set_configuration(&Configuration::Client(client_configuration(&first)?))?;
-            let scan_started =
-                unsafe { sys::esp_wifi_scan_start(core::ptr::null(), false) } == sys::ESP_OK;
+            let scan_started = start_candidate_scan(candidates.len(), "wifi-reconnect-scan");
             if !scan_started {
-                warn!(
-                    "rustmix-wave=wifi-reconnect-scan status=failed-to-start falling-back=saved-order"
-                );
                 wifi.wifi_mut().connect()?;
             }
             self.candidates = candidates;
@@ -1297,6 +1285,23 @@ pub mod espidf {
                 ALPHABET[index] as char
             })
             .collect()
+    }
+
+    /// Start the scan that decides which saved network to try first, when
+    /// there is a choice to make. With a single saved network there is none,
+    /// and `esp_wifi_connect` looks for it on every channel by itself: a scan
+    /// before that only delayed the connection by one more full sweep.
+    /// `false` (a single network, or a scan that failed to start) means
+    /// connecting in saved order.
+    fn start_candidate_scan(saved_networks: usize, marker: &str) -> bool {
+        if saved_networks < 2 {
+            return false;
+        }
+        let started = unsafe { sys::esp_wifi_scan_start(core::ptr::null(), false) } == sys::ESP_OK;
+        if !started {
+            warn!("rustmix-wave={marker} status=failed-to-start falling-back=saved-order");
+        }
+        started
     }
 
     fn read_rssi_dbm() -> Option<i32> {
