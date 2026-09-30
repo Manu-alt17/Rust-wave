@@ -99,8 +99,10 @@ const FLAG_PLACEHOLDER: u8 = 0x01;
 const CACHE_FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const CACHE_FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 /// Bumped whenever the on-disk format, thumbnail size, or dithering changes
-/// in a way that must invalidate every existing cache entry.
-const COVER_CACHE_FORMAT_VERSION: &str = "1";
+/// in a way that must invalidate every existing cache entry. `"2"`: covers
+/// centre-cropped instead of stretched. The Wi-Fi portal computes the same
+/// fingerprint in the browser (`coverFingerprint`), so the two must match.
+const COVER_CACHE_FORMAT_VERSION: &str = "2";
 
 /// One decoded 1bpp thumbnail, packed MSB-first, bit `1` = ink (black) —
 /// directly usable as the byte slice backing an
@@ -573,8 +575,11 @@ struct GrayImage {
     pixels: Vec<u8>,
 }
 
+/// Library and Home thumbnails: centre-cropped to the cell's shape, like
+/// the full-screen cover. Stretching a 2:3 cover into the 208x252 cell
+/// widened it by a quarter.
 fn decode_and_dither_cover(bytes: &[u8], media_type: &str) -> Result<CachedThumbnail, String> {
-    decode_and_dither_to_size(bytes, media_type, u32::from(THUMB_WIDTH), u32::from(THUMB_HEIGHT))
+    decode_and_dither_fill(bytes, media_type, u32::from(THUMB_WIDTH), u32::from(THUMB_HEIGHT))
 }
 
 /// Dispatch to the right decoder by sniffed magic bytes (falling back to the
@@ -601,37 +606,6 @@ fn decode_gray(
     } else {
         Err(format!("unsupported image media type: {media_type}"))
     }
-}
-
-/// Decode + resize + dither one embedded EPUB image to an arbitrary target
-/// size, sharing every stage (scaled JPEG decode, full-res PNG decode, box
-/// resize, Floyd-Steinberg dither) with the cover thumbnail path instead of
-/// duplicating it. `decode_and_dither_cover` is the `THUMB_WIDTH`/
-/// `THUMB_HEIGHT` case; the inline-image spike PoC bench below is the other
-/// caller, decoding at full reader page width to measure real cost outside
-/// thumbnail scale before any inline-image integration is built. Stretches
-/// to the exact target size regardless of the source's own aspect ratio --
-/// fine for a thumbnail grid cell, wrong for an inline EPUB illustration
-/// (see [`decode_and_dither_fit_within`] for that case instead).
-fn decode_and_dither_to_size(
-    bytes: &[u8],
-    media_type: &str,
-    target_width: u32,
-    target_height: u32,
-) -> Result<CachedThumbnail, String> {
-    let target_width_u16 = u16::try_from(target_width)
-        .map_err(|_| format!("target width exceeds u16: {target_width}"))?;
-    let target_height_u16 = u16::try_from(target_height)
-        .map_err(|_| format!("target height exceeds u16: {target_height}"))?;
-    let gray = decode_gray(bytes, media_type, target_width_u16, target_height_u16)?;
-    let resized = resize_area_average(&gray, target_width, target_height);
-    let bits = floyd_steinberg_to_1bpp(resized);
-    Ok(CachedThumbnail {
-        width: target_width_u16,
-        height: target_height_u16,
-        bits,
-        placeholder: false,
-    })
 }
 
 /// Decode + center-crop + resize + dither to exactly `target_width x
@@ -691,8 +665,8 @@ fn crop_to_aspect(src: GrayImage, aspect_w: u32, aspect_h: u32) -> GrayImage {
 /// Decode + resize + dither one embedded EPUB image to fit within
 /// `max_width x max_height`, preserving its own aspect ratio (scaled up or
 /// down to fill as much of the box as possible on the binding axis) rather
-/// than stretching to the box's exact dimensions the way
-/// [`decode_and_dither_to_size`] does. Used for an inline EPUB illustration,
+/// than cropping to the box's exact shape the way
+/// [`decode_and_dither_fill`] does. Used for an inline EPUB illustration,
 /// whose real aspect ratio the Reader has no reason to know or reserve exact
 /// layout space for ahead of decode (unlike a cover thumbnail grid cell,
 /// which always wants the exact same shape) -- pagination only reserves a
@@ -1313,7 +1287,7 @@ mod tests {
     };
 
     use super::{
-        decode_and_dither_cover, decode_and_dither_fit_within, decode_and_dither_to_size,
+        decode_and_dither_cover, decode_and_dither_fill, decode_and_dither_fit_within,
         fit_within, floyd_steinberg_to_1bpp, parse_cache_bytes, parse_inline_image_cache_bytes,
         placeholder_bitmap, resize_area_average, write_cache_bytes,
         write_inline_image_cache_bytes, CoverCache, EpubImageCache, GrayImage, CACHE_HEADER_BYTES,
@@ -1617,7 +1591,7 @@ mod tests {
         ] {
             let started = std::time::Instant::now();
             let thumbnail =
-                decode_and_dither_to_size(&png_bytes, "image/png", target_width, target_height)
+                decode_and_dither_fill(&png_bytes, "image/png", target_width, target_height)
                     .unwrap();
             let elapsed = started.elapsed();
             assert_eq!(thumbnail.width, target_width as u16);
@@ -1649,7 +1623,7 @@ mod tests {
         let png_bytes = encode_flat_rgba_png(width, height);
 
         let started = std::time::Instant::now();
-        let result = decode_and_dither_to_size(&png_bytes, "image/png", 432, 300);
+        let result = decode_and_dither_fill(&png_bytes, "image/png", 432, 300);
         let elapsed = started.elapsed();
 
         let error = result.expect_err("oversized PNG must be rejected, not decoded");
@@ -1732,8 +1706,8 @@ mod tests {
     fn decode_and_dither_fit_within_preserves_aspect_and_fits_the_box() {
         // 400x100 landscape source into a 100x50 box: at width=100 the
         // implied height is 25, which fits under 50, so the result must be
-        // exactly 100x25, not stretched to fill the full 100x50 box the way
-        // `decode_and_dither_to_size` deliberately would.
+        // exactly 100x25, not cropped to fill the full 100x50 box the way
+        // `decode_and_dither_fill` deliberately would.
         let png_bytes = encode_flat_rgba_png(400, 100);
         let thumbnail =
             decode_and_dither_fit_within(&png_bytes, "image/png", 100, 50).unwrap();

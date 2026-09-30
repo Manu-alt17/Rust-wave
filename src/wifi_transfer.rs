@@ -693,7 +693,8 @@ function coverFingerprint(absPath,sizeBytes,modifiedSeconds){
   const str=s=>{for(const b of new TextEncoder().encode(s))buf.push(b)};
   const u64=n=>{let v=BigInt(Math.trunc(n));for(let i=0;i<8;i++){buf.push(Number(v&0xffn));v>>=8n}};
   const u16=n=>{buf.push(n&0xff);buf.push((n>>8)&0xff)};
-  str(absPath);u64(sizeBytes);u64(modifiedSeconds);str('epub');u16(COVER_THUMB_W);u16(COVER_THUMB_H);str('1');
+  // The last string is the firmware's COVER_CACHE_FORMAT_VERSION: the two must match.
+  str(absPath);u64(sizeBytes);u64(modifiedSeconds);str('epub');u16(COVER_THUMB_W);u16(COVER_THUMB_H);str('2');
   return fnv1a64(Uint8Array.from(buf));
 }
 function zipParseCentralDirectory(bytes){
@@ -766,7 +767,11 @@ async function buildCoverBits(imageBytes,mediaType){
   let canvas=document.createElement('canvas');
   canvas.width=COVER_THUMB_W;canvas.height=COVER_THUMB_H;
   let ctx=canvas.getContext('2d');
-  ctx.drawImage(bitmap,0,0,COVER_THUMB_W,COVER_THUMB_H);
+  // Centre-crop to the cell's shape, as the firmware does: stretching made
+  // a 2:3 cover a quarter too wide.
+  let sx=0,sy=0,sw=bitmap.width,sh=bitmap.height,cell=COVER_THUMB_W/COVER_THUMB_H;
+  if(sw/sh>cell){let w=Math.round(sh*cell);sx=Math.floor((sw-w)/2);sw=w}else{let h=Math.round(sw/cell);sy=Math.floor((sh-h)/2);sh=h}
+  ctx.drawImage(bitmap,sx,sy,sw,sh,0,0,COVER_THUMB_W,COVER_THUMB_H);
   let imageData=ctx.getImageData(0,0,COVER_THUMB_W,COVER_THUMB_H);
   let lum=computeLuminance(imageData.data,COVER_THUMB_W,COVER_THUMB_H,0,0);
   let dithered=ditherFloydSteinberg(lum,COVER_THUMB_W,COVER_THUMB_H);
