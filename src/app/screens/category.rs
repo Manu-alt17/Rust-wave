@@ -68,6 +68,8 @@ const CONTINUE_TILE_THUMB_CORNER_RADIUS: i32 = 12;
 /// Selected-tile indicator dot, matching `home_tile`'s.
 const CONTINUE_TILE_DOT_SIZE: Size = Size::new(10, 10);
 const CONTINUE_TILE_DOT_INSET: i32 = 18;
+/// Space kept between the caption and the selection dot.
+const CONTINUE_TILE_CAPTION_DOT_GAP: i32 = 6;
 
 /// Continue Reading's full-width hero card (cover, title, reading progress),
 /// drawn only on the Home dashboard (see `screens::home::render_home`) —
@@ -160,12 +162,18 @@ pub(crate) fn draw_continue_reading_tile(
     // title down instead of overlapping it.
     let mut cursor_top = top_left.y + CONTINUE_TILE_PAD;
 
-    let caption = t(locale, "CONTINUE READING", "CONTINUA A LEGGERE");
+    let caption = t(locale, "CONTINUE READING", "CONTINUA");
     let caption_line_step = i32::from(caption_style.line_height());
+    // The caption shares the tile's top edge with the selection dot: it
+    // stays clear of the dot whether or not the dot is showing, so selecting
+    // the tile never reflows it.
+    let dot_left =
+        top_left.x + width - CONTINUE_TILE_DOT_INSET - CONTINUE_TILE_DOT_SIZE.width as i32;
+    let caption_width = (dot_left - CONTINUE_TILE_CAPTION_DOT_GAP - text_left).clamp(0, text_width);
     for line in wrap_to_width(
         caption_style,
         caption,
-        text_width,
+        caption_width,
         CONTINUE_TILE_CAPTION_MAX_LINES,
     ) {
         let baseline = cursor_top + caption_line_step;
