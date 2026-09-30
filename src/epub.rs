@@ -1718,65 +1718,86 @@ fn decode_entities(value: &str) -> String {
     output
 }
 
+/// HTML's named entities for Latin-1, U+00A0..=U+00FF in code point order.
+const LATIN1_ENTITIES: [&str; 96] = [
+    "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf",
+    "laquo", "not", "shy", "reg", "macr", "deg", "plusmn", "sup2", "sup3", "acute", "micro",
+    "para", "middot", "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest",
+    "Agrave", "Aacute", "Acirc", "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute",
+    "Ecirc", "Euml", "Igrave", "Iacute", "Icirc", "Iuml", "ETH", "Ntilde", "Ograve", "Oacute",
+    "Ocirc", "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute",
+    "THORN", "szlig", "agrave", "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil",
+    "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml", "eth", "ntilde",
+    "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute",
+    "ucirc", "uuml", "yacute", "thorn", "yuml",
+];
+
+/// Decode one character reference (the text between `&` and `;`): numeric
+/// ones, and HTML's named entities for Latin-1 and for the punctuation
+/// books use. Anything else becomes `?`.
 fn decode_entity(entity: &str) -> String {
-    match entity {
-        "amp" => "&".into(),
-        "lt" => "<".into(),
-        "gt" => ">".into(),
-        "quot" => "\"".into(),
-        "apos" => "'".into(),
-        "nbsp" => " ".into(),
-        // Typographic punctuation. Reader text normalization
-        // (`push_normalized_character` in reader.rs) folds the real Unicode
-        // characters below into plain ASCII, so decoding the named entity
-        // form here is what lets that normalization run at all; left
-        // undecoded, each one was silently replaced by a stray '?' that
-        // broke sentence flow mid-page.
-        "hellip" => "\u{2026}".into(),
-        "mdash" => "\u{2014}".into(),
-        "ndash" => "\u{2013}".into(),
-        "lsquo" | "sbquo" => "\u{2018}".into(),
-        "rsquo" => "\u{2019}".into(),
-        "ldquo" | "bdquo" => "\u{201C}".into(),
-        "rdquo" => "\u{201D}".into(),
-        "laquo" => "\u{00AB}".into(),
-        "raquo" => "\u{00BB}".into(),
-        // Accented letters some EPUBs spell as named entities rather than
-        // raw UTF-8 (common in older Italian-language exports).
-        "agrave" => "à".into(),
-        "egrave" => "è".into(),
-        "eacute" => "é".into(),
-        "igrave" => "ì".into(),
-        "ograve" => "ò".into(),
-        "ugrave" => "ù".into(),
-        "Agrave" => "À".into(),
-        "Egrave" => "È".into(),
-        "Eacute" => "É".into(),
-        "Igrave" => "Ì".into(),
-        "Ograve" => "Ò".into(),
-        "Ugrave" => "Ù".into(),
-        "acirc" | "auml" => "â".into(),
-        "ecirc" | "euml" => "ê".into(),
-        "icirc" | "iuml" => "î".into(),
-        "ocirc" | "ouml" => "ô".into(),
-        "ucirc" | "uuml" => "û".into(),
-        "ccedil" => "ç".into(),
-        "Ccedil" => "Ç".into(),
-        "ntilde" => "ñ".into(),
-        "Ntilde" => "Ñ".into(),
+    let character = match entity {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        // Some converters write &nbsp; for every space: an ordinary space
+        // keeps those paragraphs breakable.
+        "nbsp" => ' ',
+        "OElig" => '\u{0152}',
+        "oelig" => '\u{0153}',
+        "Scaron" => '\u{0160}',
+        "scaron" => '\u{0161}',
+        "Yuml" => '\u{0178}',
+        "fnof" => '\u{0192}',
+        "circ" => '\u{02C6}',
+        "tilde" => '\u{02DC}',
+        "ensp" => '\u{2002}',
+        "emsp" => '\u{2003}',
+        "thinsp" => '\u{2009}',
+        "zwnj" => '\u{200C}',
+        "zwj" => '\u{200D}',
+        "lrm" => '\u{200E}',
+        "rlm" => '\u{200F}',
+        "ndash" => '\u{2013}',
+        "mdash" => '\u{2014}',
+        "lsquo" => '\u{2018}',
+        "rsquo" => '\u{2019}',
+        "sbquo" => '\u{201A}',
+        "ldquo" => '\u{201C}',
+        "rdquo" => '\u{201D}',
+        "bdquo" => '\u{201E}',
+        "dagger" => '\u{2020}',
+        "Dagger" => '\u{2021}',
+        "bull" => '\u{2022}',
+        "hellip" => '\u{2026}',
+        "permil" => '\u{2030}',
+        "prime" => '\u{2032}',
+        "Prime" => '\u{2033}',
+        "lsaquo" => '\u{2039}',
+        "rsaquo" => '\u{203A}',
+        "euro" => '\u{20AC}',
+        "trade" => '\u{2122}',
+        "minus" => '\u{2212}',
         value if value.starts_with("#x") || value.starts_with("#X") => {
             u32::from_str_radix(&value[2..], 16)
                 .ok()
                 .and_then(char::from_u32)
-                .map_or_else(|| "?".into(), |character| character.to_string())
+                .unwrap_or('?')
         }
         value if value.starts_with('#') => value[1..]
             .parse::<u32>()
             .ok()
             .and_then(char::from_u32)
-            .map_or_else(|| "?".into(), |character| character.to_string()),
-        _ => "?".into(),
-    }
+            .unwrap_or('?'),
+        value => LATIN1_ENTITIES
+            .iter()
+            .position(|name| *name == value)
+            .and_then(|index| char::from_u32(0xA0 + index as u32))
+            .unwrap_or('?'),
+    };
+    character.to_string()
 }
 
 #[cfg(test)]
@@ -1910,6 +1931,16 @@ mod tests {
                 "<p>Perch&eacute; &laquo;cos&igrave;&raquo;&hellip; disse lei&mdash;e tacque.</p>"
             ),
             "Perché «così»… disse lei\u{2014}e tacque."
+        );
+    }
+
+    #[test]
+    fn decodes_every_latin1_and_book_punctuation_entity_to_its_own_character() {
+        assert_eq!(
+            html_to_text(
+                "<p>&bdquo;Gr&uuml;&szlig;e&ldquo; &sbquo;&OElig;uvre&lsquo; na&iuml;ve &Aring;&yuml; 3&euro; &frac12;&trade; &bogus;</p>"
+            ),
+            "\u{201E}Grüße\u{201C} \u{201A}Œuvre\u{2018} naïve Åÿ 3€ ½™ ?"
         );
     }
 

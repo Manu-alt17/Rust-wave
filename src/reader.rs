@@ -130,8 +130,10 @@ const READER_PREFS_VERSION: &str = "1";
 /// cache file simply has none, but bumping still forces one clean reparse per
 /// book on upgrade so every already-cached book picks up its image table
 /// instead of silently reading back an empty one forever. Bumped to `"3"`
-/// when image records gained their probed pixel width/height.
-const EPUB_DOCUMENT_CACHE_VERSION: &str = "3";
+/// when image records gained their probed pixel width/height. Bumped to
+/// `"4"` when named entities started decoding to their own characters
+/// (`&uuml;` used to come out as `û`, `&bdquo;` as a left double quote).
+const EPUB_DOCUMENT_CACHE_VERSION: &str = "4";
 /// SD-backed EPUB page-offset index cache format version. Unlike the
 /// flattened-text cache, this one is layout-dependent (see [`book_fingerprint`]):
 /// a font or orientation change must invalidate it, since page breaks move.
@@ -4512,9 +4514,10 @@ struct TitleCacheEntry {
 /// reopening and re-parsing that EPUB's ZIP archive every time either one
 /// starts from an empty in-memory `previous` list. Purely regenerable: a
 /// missing or corrupt cache just means the next scan re-derives every title
-/// once, exactly like before this cache existed.
+/// once, exactly like before this cache existed. Version `"2"` re-derives
+/// titles decoded with the old, approximate entity table.
 const READER_TITLE_CACHE_FILE: &str = "TITLES.TXT";
-const READER_TITLE_CACHE_VERSION: &str = "1";
+const READER_TITLE_CACHE_VERSION: &str = "2";
 
 fn title_cache_path() -> PathBuf {
     Path::new(READER_STATE_DIRECTORY)
