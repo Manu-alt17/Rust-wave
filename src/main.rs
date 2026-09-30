@@ -207,6 +207,18 @@ mod firmware {
         }
     }
 
+    /// Frames drawn so far. What the Library grid shows can only change
+    /// together with a redraw, so the main loop works out the visible books
+    /// again only when this has moved (see its Library step).
+    static FRAMES_RENDERED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// Every frame is drawn through here, to keep [`FRAMES_RENDERED`] exact.
+    fn render_frame(frame: &mut FrameBuffer, state: &AppState) -> Result<()> {
+        FRAMES_RENDERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        render_current_screen(frame, state)?;
+        Ok(())
+    }
+
     pub fn run() -> Result<()> {
         // Wall-clock anchor for `rustmix-wave=wake-overlay-timing` and the
         // `global-refresh-ms` log at the final wake paint, so boot-to-ready
@@ -897,7 +909,7 @@ mod firmware {
         // dropped or silently ignored.
         if boot_cause.is_sleep_resume() {
             let render_span = boot_profile::span("render-first-frame");
-            render_current_screen(&mut frame, &state)?;
+            render_frame(&mut frame, &state)?;
             render_span.end();
             // Timed the same way as `wake-overlay-timing`'s partial-refresh
             // phase, so the two can be compared directly: this is the global
@@ -948,7 +960,7 @@ mod firmware {
             timing_log_span.end();
         } else {
             let render_span = boot_profile::span("render-first-frame");
-            render_current_screen(&mut frame, &state)?;
+            render_frame(&mut frame, &state)?;
             render_span.end();
             let show_span = boot_profile::span("show-base-first-frame");
             panel.show_base(frame.as_bytes())?;
@@ -1188,6 +1200,11 @@ mod firmware {
         let cover_cache = CoverCache::new(state.reader.cache_directory());
         let mut last_library_thumbnail_refresh = Instant::now();
         let mut library_thumbnail_refresh_pending = false;
+        // The books on the Library page, and the `FRAMES_RENDERED` value they
+        // were worked out at: `library_visible_books` classifies the whole
+        // library, too much to redo on every tick of the loop.
+        let mut library_visible: (u32, Vec<waveshare_epd397_rust_app::reader::ReaderBook>) =
+            (u32::MAX, Vec::new());
         // Reader battery power-save: Wi-Fi and the ES8311 audio rail are
         // otherwise held on for the whole session regardless of screen route.
         // Track continuous dwell time on a reader-active route separately from
@@ -1357,8 +1374,13 @@ mod firmware {
                 // current page into the render-side map (no-op once synced,
                 // since a HashMap lookup skips the read for anything already
                 // present).
-                let visible_books = library_visible_books(&state);
-                for book in &visible_books {
+                let frames_rendered =
+                    FRAMES_RENDERED.load(std::sync::atomic::Ordering::Relaxed);
+                if library_visible.0 != frames_rendered {
+                    library_visible = (frames_rendered, library_visible_books(&state));
+                }
+                let visible_books = &library_visible.1;
+                for book in visible_books {
                     if !state.reader.library_thumbnails.contains_key(&book.path) {
                         if let Some(thumbnail) = cover_cache.load_cached_thumbnail(book) {
                             state
@@ -1655,7 +1677,7 @@ mod firmware {
                                 // whatever was last computed before sleeping.
                                 refresh_reading_stats_snapshot_now(&mut state);
                             }
-                            render_current_screen(&mut frame, &state)?;
+                            render_frame(&mut frame, &state)?;
                             panel.show_base(frame.as_bytes())?;
                             panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
                             sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
@@ -3802,7 +3824,7 @@ mod firmware {
             && state.reader.preferences.theme == ReadingTheme::HighContrast;
         let plan = coordinator.plan_for_frame(coordinator_request, full_page_image, inverted);
         sync_panel_refresh_diagnostics(state, coordinator);
-        render_current_screen(frame, state)?;
+        render_frame(frame, state)?;
 
         match plan {
             PanelRefreshPlan::GlobalBase { reason } => {
