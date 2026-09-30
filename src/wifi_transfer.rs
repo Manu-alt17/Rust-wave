@@ -201,23 +201,27 @@ impl WifiTransferSnapshot {
     }
 }
 
-/// Reject empty, traversal, absolute and overlong relative portal paths.
-/// Returned paths always stay beneath `/sdcard/RUSTMIX`.
+/// Resolve one portal path, as it arrives from [`query_value`] (already
+/// percent-decoded, and decoded only once), beneath `/sdcard/RUSTMIX`.
+/// Rejects traversal, absolute and overlong paths, names that are not FAT
+/// 8.3-safe, and the protected configuration files -- judged on the path
+/// actually resolved, so no other spelling of one (`./WIFI.TXT`,
+/// `wifi.txt`, `WIFI.TXT/`) gets past the check, and a twice-encoded name
+/// is not decoded a second time here.
 pub fn resolve_portal_path(relative: &str) -> Result<PathBuf, &'static str> {
-    let decoded = percent_decode(relative)?;
-    if decoded.len() > WIFI_TRANSFER_MAX_PATH_BYTES {
+    if relative.len() > WIFI_TRANSFER_MAX_PATH_BYTES {
         return Err("path exceeds portal limit");
     }
-    let trimmed = decoded.trim_start_matches('/');
-    let relative_path = Path::new(trimmed);
     let mut safe = PathBuf::from(WIFI_TRANSFER_ROOT);
-    for component in relative_path.components() {
+    let mut resolved = Vec::new();
+    for component in Path::new(relative.trim_start_matches('/')).components() {
         match component {
             Component::Normal(name) => {
                 let name = name.to_str().ok_or("path is not UTF-8")?;
                 if !is_fat83_component(name) {
                     return Err("use FAT 8.3-safe names");
                 }
+                resolved.push(name);
                 safe.push(name);
             }
             Component::CurDir => {}
@@ -226,16 +230,25 @@ pub fn resolve_portal_path(relative: &str) -> Result<PathBuf, &'static str> {
             }
         }
     }
+    if is_protected_portal_path(&resolved.join("/")) {
+        return Err("protected configuration file");
+    }
     Ok(safe)
 }
 
 /// Configuration files stay hidden and cannot be modified by the initial LAN
 /// portal.  This prevents accidental credential disclosure or live config
-/// replacement while services are running.
+/// replacement while services are running. FAT names are case-insensitive,
+/// and empty or `.` components name nothing, so neither counts.
 #[must_use]
 pub fn is_protected_portal_path(relative: &str) -> bool {
-    let upper = relative.trim_start_matches('/').to_ascii_uppercase();
-    matches!(upper.as_str(), "WIFI.TXT" | "CLOCK.TXT" | "DISPLAY.TXT")
+    let canonical = relative
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>()
+        .join("/");
+    matches!(canonical.as_str(), "WIFI.TXT" | "CLOCK.TXT" | "DISPLAY.TXT")
 }
 
 /// Folder names are at most eight uppercase-safe characters.  Files are 8.3.
@@ -1332,7 +1345,6 @@ tryAutoUnlock();
             server.fn_handler("/api/download", Method::Get, move |request| {
                 authenticate(request.uri(), &download_code)?;
                 let relative = required_query(request.uri(), "path")?;
-                reject_protected(&relative)?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 let mut file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
                 let mut response = request.into_ok_response()?;
@@ -1354,7 +1366,6 @@ tryAutoUnlock();
             server.fn_handler("/api/upload", Method::Post, move |mut request| {
                 authenticate(request.uri(), &upload_code)?;
                 let relative = required_query(request.uri(), "path")?;
-                reject_protected(&relative)?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 let temporary = temporary_path(&path)?;
                 if temporary.exists() {
@@ -1396,7 +1407,6 @@ tryAutoUnlock();
             server.fn_handler("/api/delete", Method::Post, move |request| {
                 authenticate(request.uri(), &delete_code)?;
                 let relative = required_query(request.uri(), "path")?;
-                reject_protected(&relative)?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 if path.is_dir() { fs::remove_dir(&path)?; } else { fs::remove_file(&path)?; }
                 lock(&delete_shared).touch(format!("Deleted {relative}"), 0);
@@ -1410,7 +1420,6 @@ tryAutoUnlock();
             server.fn_handler("/api/mkdir", Method::Post, move |request| {
                 authenticate(request.uri(), &mkdir_code)?;
                 let relative = required_query(request.uri(), "path")?;
-                reject_protected(&relative)?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 fs::create_dir(&path)?;
                 lock(&mkdir_shared).touch(format!("Created {relative}"), 0);
@@ -1425,8 +1434,6 @@ tryAutoUnlock();
                 authenticate(request.uri(), &rename_code)?;
                 let from = required_query(request.uri(), "from")?;
                 let to = required_query(request.uri(), "to")?;
-                reject_protected(&from)?;
-                reject_protected(&to)?;
                 let source = resolve_portal_path(&from).map_err(|error| anyhow!(error))?;
                 let destination = resolve_portal_path(&to).map_err(|error| anyhow!(error))?;
                 fs::rename(&source, &destination)?;
@@ -1696,13 +1703,6 @@ tryAutoUnlock();
         query_value(uri, key).ok_or_else(|| anyhow!("missing query parameter: {key}"))
     }
 
-    fn reject_protected(relative: &str) -> Result<()> {
-        if is_protected_portal_path(relative) {
-            bail!("protected configuration file")
-        }
-        Ok(())
-    }
-
     fn sibling_path(path: &Path, extension: &str) -> Result<std::path::PathBuf> {
         let stem = path
             .file_stem()
@@ -1950,6 +1950,34 @@ mod tests {
         assert!(is_protected_portal_path("/WIFI.TXT"));
         assert!(is_protected_portal_path("CLOCK.TXT"));
         assert!(!is_protected_portal_path("/BOOKS/NOTES001.TXT"));
+    }
+
+    /// Every spelling that resolves to a protected file is refused by the
+    /// resolver itself, which every file endpoint goes through.
+    #[test]
+    fn no_spelling_of_a_protected_file_resolves() {
+        let from_query = |raw: &str| query_value(&format!("/api/download?path={raw}"), "path");
+        for raw in [
+            "WIFI.TXT",
+            "/WIFI.TXT",
+            "./WIFI.TXT",
+            "/./WIFI.TXT",
+            "WIFI.TXT/",
+            "//WIFI.TXT",
+            "wifi.txt",
+            "WiFi.Txt",
+            "%2E%2FWIFI.TXT",
+            "%57IFI.TXT",
+            "%2557IFI.TXT",
+            "BOOKS/../WIFI.TXT",
+            "display.txt",
+        ] {
+            let decoded = from_query(raw).unwrap();
+            assert!(resolve_portal_path(&decoded).is_err(), "{raw} -> {decoded}");
+        }
+        // Ordinary files next to them still resolve.
+        assert!(resolve_portal_path("./BOOKS/WIFI.TXT").is_ok());
+        assert!(resolve_portal_path("MENU.TXT").is_ok());
     }
 
     #[test]
