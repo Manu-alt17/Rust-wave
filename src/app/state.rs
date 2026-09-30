@@ -18,7 +18,6 @@ use crate::{
     regional::RegionalPreferences,
     storage::StorageSnapshot,
     unit_converter::UnitConverterUiState,
-    voice_notes::{VoiceNotesUiRequest, VoiceNotesUiState},
     wifi_transfer::{WifiTransferSnapshot, WifiTransferState, WifiTransferUiRequest},
 };
 
@@ -93,8 +92,6 @@ pub struct AppState {
     /// the phone portal.
     pub network_saved: NetworkSavedUiState,
     network_saved_forget_request: Option<String>,
-    /// SD-backed PCM WAV voice-note catalog and recorder UI snapshot.
-    pub voice_notes: VoiceNotesUiState,
     /// Global display-maintenance menu opened by a physical Power long press.
     pub power_key_menu: PowerKeyMenuUiState,
     power_key_menu_return_route: ScreenRoute,
@@ -150,7 +147,6 @@ impl Default for AppState {
             wifi_transfer_request: None,
             network_saved: NetworkSavedUiState::default(),
             network_saved_forget_request: None,
-            voice_notes: VoiceNotesUiState::default(),
             power_key_menu: PowerKeyMenuUiState::default(),
             power_key_menu_return_route: ScreenRoute::Home,
             power_key_manual_refresh_requested: false,
@@ -233,13 +229,6 @@ impl AppState {
             self.apply_unit_converter(event);
         } else if route == ScreenRoute::ClockSetTime {
             self.apply_clock_set_time(event);
-        } else if matches!(
-            route,
-            ScreenRoute::VoiceNotes
-                | ScreenRoute::VoiceNoteDetails
-                | ScreenRoute::VoiceNoteRecording
-        ) {
-            self.apply_voice_notes(event);
         } else if matches!(
             route,
             ScreenRoute::ContinueReading
@@ -435,55 +424,11 @@ impl AppState {
                 if target == ScreenRoute::Display {
                     self.display_action_selected = 0;
                 }
-                if target == ScreenRoute::VoiceNotes {
-                    self.voice_notes.refresh_catalog();
-                }
                 if target == ScreenRoute::OtaUpdate {
                     self.request_ota_check_if_idle();
                 }
                 self.router.navigate_to(target);
             }
-        }
-    }
-
-    fn apply_voice_notes(&mut self, event: ButtonEvent) {
-        match self.router.current() {
-            ScreenRoute::VoiceNotes => {
-                if event == ButtonEvent::Select {
-                    self.note_select_press();
-                }
-                let start = self.voice_notes.apply_list_button(event);
-                if start {
-                    self.router.navigate_to(ScreenRoute::VoiceNoteRecording);
-                } else if event == ButtonEvent::Select && self.voice_notes.selected >= 2 {
-                    self.voice_notes.clear_transient_details();
-                    self.router.navigate_to(ScreenRoute::VoiceNoteDetails);
-                }
-            }
-            ScreenRoute::VoiceNoteDetails => {
-                if event == ButtonEvent::Select {
-                    self.note_select_press();
-                }
-                let was_title_editing = self.voice_notes.title_editing;
-                let was_delete_confirmation = self.voice_notes.delete_confirmation;
-                self.voice_notes.apply_detail_button(event);
-                if event == ButtonEvent::Select
-                    && !was_title_editing
-                    && !was_delete_confirmation
-                    && self.voice_notes.detail_selected == 4
-                {
-                    self.voice_notes.request_stop_playback();
-                    self.voice_notes.clear_transient_details();
-                    self.router.navigate_to(ScreenRoute::VoiceNotes);
-                }
-            }
-            ScreenRoute::VoiceNoteRecording => {
-                if event == ButtonEvent::Select {
-                    self.note_select_press();
-                }
-                self.voice_notes.apply_recording_button(event);
-            }
-            _ => {}
         }
     }
 
@@ -577,19 +522,6 @@ impl AppState {
                 self.note_select_press();
                 self.unit_converter.select_next_field();
             }
-        }
-    }
-
-    /// Route a held SELECT into keyboard-style screens before the other
-    /// contextual handlers. Future text-entry apps should compose the shared
-    /// KeyboardGridNavigation helper and join this routing boundary.
-    pub fn apply_keyboard_select_long_press(&mut self) -> bool {
-        if self.router.current() == ScreenRoute::VoiceNoteDetails
-            && self.voice_notes.title_editing
-        {
-            self.voice_notes.toggle_title_editor_navigation_axis()
-        } else {
-            false
         }
     }
 
@@ -981,21 +913,6 @@ impl AppState {
         if self.router.current() == ScreenRoute::WifiTransfer {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
         }
-        if self.router.current() == ScreenRoute::VoiceNoteRecording {
-            self.voice_notes.request_cancel_recording();
-        }
-        if self.router.current() == ScreenRoute::VoiceNoteDetails {
-            if self.voice_notes.title_editing {
-                self.voice_notes.cancel_title_edit();
-                return;
-            }
-            if self.voice_notes.delete_confirmation {
-                self.voice_notes.clear_transient_details();
-                return;
-            }
-            self.voice_notes.request_stop_playback();
-            self.voice_notes.clear_transient_details();
-        }
         if self.router.current() == ScreenRoute::ClockSetTime {
             self.clock_time_editor = None;
         }
@@ -1083,15 +1000,6 @@ impl AppState {
     #[must_use]
     pub fn take_network_saved_forget_request(&mut self) -> Option<String> {
         self.network_saved_forget_request.take()
-    }
-
-    pub fn refresh_voice_notes_catalog(&mut self) {
-        self.voice_notes.refresh_catalog();
-    }
-
-    #[must_use]
-    pub fn take_voice_notes_request(&mut self) -> Option<VoiceNotesUiRequest> {
-        self.voice_notes.take_request()
     }
 
     pub fn request_wifi_transfer_stop(&mut self) {
@@ -1612,37 +1520,6 @@ mod tests {
     }
 
     #[test]
-    fn voice_note_title_editor_select_long_toggles_axis_and_boot_back_cancels() {
-        let mut state = AppState::default();
-        state
-            .voice_notes
-            .notes
-            .push(crate::voice_notes::VoiceNoteEntry {
-                file_name: "VOICE001.WAV".into(),
-                title: "VOICE NOTE 001".into(),
-                recorded_at: "2026-06-06  11:43:24".into(),
-                wav_bytes: 44,
-                pcm_bytes: 0,
-                duration_seconds: 0,
-            });
-        state.voice_notes.selected = 2;
-        state.voice_notes.begin_title_edit();
-        state.router.navigate_to(ScreenRoute::VoiceNoteDetails);
-        assert_eq!(
-            state.voice_notes.title_editor_navigation_mode_label(),
-            "NAV H"
-        );
-        assert!(state.apply_keyboard_select_long_press());
-        assert_eq!(
-            state.voice_notes.title_editor_navigation_mode_label(),
-            "NAV V"
-        );
-        state.back();
-        assert!(!state.voice_notes.title_editing);
-        assert_eq!(state.active_route(), ScreenRoute::VoiceNoteDetails);
-    }
-
-    #[test]
     fn tools_unit_converter_opens_and_edits_without_hardware() {
         use crate::unit_converter::{ConverterField, UnitCategory};
 
@@ -1783,23 +1660,6 @@ mod tests {
         // BACK on the flat list (no editor open) leaves for Reader Options.
         state.back();
         assert_eq!(state.active_route(), ScreenRoute::ReaderOptions);
-    }
-    #[test]
-    fn productivity_voice_notes_opens_recording_route_and_queues_start() {
-        let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Tools);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::VoiceNotes);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::VoiceNoteRecording);
-        assert_eq!(
-            state.take_voice_notes_request(),
-            Some(crate::voice_notes::VoiceNotesUiRequest::StartRecording)
-        );
     }
 
     #[test]

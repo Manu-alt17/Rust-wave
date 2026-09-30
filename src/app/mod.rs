@@ -61,9 +61,6 @@ pub const CHARGING_STATUS_POLL_SECONDS: u64 = 5;
 pub const NETWORK_LIVE_REFRESH_SECONDS: u64 = 10;
 /// Concise network serial heartbeat; UI refresh remains independent.
 pub const NETWORK_LOG_HEARTBEAT_SECONDS: u64 = 30;
-/// Voice-recording e-paper timer updates stay deliberately coarse.
-pub const VOICE_RECORD_SCREEN_REFRESH_SECONDS: u64 =
-    crate::voice_notes::VOICE_RECORD_SCREEN_REFRESH_SECONDS;
 /// Minimum spacing between panel refreshes triggered by newly generated
 /// Library cover thumbnails. Thumbnail *generation* is bounded to ~20-40ms
 /// and safe every loop iteration, but the panel refresh itself is not — a

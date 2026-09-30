@@ -14,7 +14,7 @@ use embedded_iconoir::{
     icons::size48px::{
         actions::{InfoEmpty as CompactInfoEmpty, RefreshDouble as CompactRefreshDouble},
         activities::{BookStack as CompactBookStack, StatsReport as CompactStatsReport},
-        audio::{Mic as CompactMic, SoundLow as CompactSoundLow},
+        audio::SoundLow as CompactSoundLow,
         connectivity::Wifi as CompactWifi,
         docs::{Folder as CompactFolder, MultiplePages as CompactMultiplePages},
         editor::TextSize as CompactTextSize,
@@ -262,9 +262,6 @@ fn draw_route_icon_compact(
         }
         ScreenRoute::UnitConverter => {
             draw_iconoir_icon_scaled(display, top_left, &CompactCalculator::new(BinaryColor::On))
-        }
-        ScreenRoute::VoiceNotes => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactMic::new(BinaryColor::On))
         }
         _ => Ok(()),
     }

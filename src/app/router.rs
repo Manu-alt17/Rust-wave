@@ -20,9 +20,6 @@ pub enum ScreenRoute {
     ReaderPreferences,
     ReaderToc,
     ReadingStats,
-    VoiceNotes,
-    VoiceNoteDetails,
-    VoiceNoteRecording,
     Files,
     UnitConverter,
     Audio,
@@ -61,9 +58,6 @@ impl ScreenRoute {
             Self::ReaderPreferences => "Reading Preferences",
             Self::ReaderToc => "Table of Contents",
             Self::ReadingStats => "Reading Stats",
-            Self::VoiceNotes => "Voice Notes",
-            Self::VoiceNoteDetails => "Voice Note",
-            Self::VoiceNoteRecording => "Record Voice Note",
             Self::Files => "File Browser",
             Self::UnitConverter => "Unit Converter",
             Self::Audio => "Audio",
@@ -116,9 +110,6 @@ impl ScreenRoute {
                 Self::ReaderPreferences => "Preferenze di lettura",
                 Self::ReaderToc => "Indice",
                 Self::ReadingStats => "Statistiche di lettura",
-                Self::VoiceNotes => "Note vocali",
-                Self::VoiceNoteDetails => "Nota vocale",
-                Self::VoiceNoteRecording => "Registra nota vocale",
                 Self::Files => "Esplora file",
                 Self::UnitConverter => "Conv",
                 Self::Audio => "Audio",
@@ -158,9 +149,6 @@ impl ScreenRoute {
             Self::ReaderPreferences => "reader-preferences",
             Self::ReaderToc => "reader-toc",
             Self::ReadingStats => "reading-stats",
-            Self::VoiceNotes => "voice-notes",
-            Self::VoiceNoteDetails => "voice-note-details",
-            Self::VoiceNoteRecording => "voice-note-recording",
             Self::Files => "file-browser",
             Self::UnitConverter => "unit-converter",
             Self::Audio => "audio",
@@ -218,8 +206,6 @@ impl ScreenRoute {
             Self::ReaderOptions => Some(Self::ReaderPage),
             Self::ReaderPreferences => Some(Self::ReaderOptions),
             Self::ReaderToc => Some(Self::ReaderOptions),
-            Self::VoiceNotes => Some(Self::Tools),
-            Self::VoiceNoteDetails | Self::VoiceNoteRecording => Some(Self::VoiceNotes),
             Self::Files | Self::UnitConverter => Some(Self::Tools),
             Self::PowerKeyMenu => Some(Self::Home),
             Self::Audio
@@ -249,7 +235,6 @@ impl ScreenRoute {
                 | Self::NetworkSaved
                 | Self::WifiTransfer
                 | Self::ReaderLoading
-                | Self::VoiceNoteRecording
         )
     }
 }

@@ -21,7 +21,6 @@ pub mod epub;
 pub mod framebuffer;
 pub mod imu;
 pub mod input_events;
-pub mod keyboard_navigation;
 pub mod mcu_deep_sleep;
 pub mod network;
 pub mod network_config;
@@ -49,6 +48,4 @@ pub mod sleep_network;
 
 pub mod storage;
 pub mod unit_converter;
-pub mod voice_note_metadata;
-pub mod voice_notes;
 pub mod wifi_transfer;

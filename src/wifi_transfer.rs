@@ -235,14 +235,7 @@ pub fn resolve_portal_path(relative: &str) -> Result<PathBuf, &'static str> {
 #[must_use]
 pub fn is_protected_portal_path(relative: &str) -> bool {
     let upper = relative.trim_start_matches('/').to_ascii_uppercase();
-    matches!(
-        upper.as_str(),
-        "WIFI.TXT"
-            | "CLOCK.TXT"
-            | "DISPLAY.TXT"
-            | "VOICE/META.TXT"
-            | "VOICE/SETTINGS.TXT"
-    )
+    matches!(upper.as_str(), "WIFI.TXT" | "CLOCK.TXT" | "DISPLAY.TXT")
 }
 
 /// Folder names are at most eight uppercase-safe characters.  Files are 8.3.
@@ -1956,9 +1949,6 @@ mod tests {
     fn configuration_files_are_protected() {
         assert!(is_protected_portal_path("/WIFI.TXT"));
         assert!(is_protected_portal_path("CLOCK.TXT"));
-        assert!(is_protected_portal_path("/VOICE/META.TXT"));
-        assert!(is_protected_portal_path("VOICE/SETTINGS.TXT"));
-        assert!(!is_protected_portal_path("/VOICE/VOICE001.WAV"));
         assert!(!is_protected_portal_path("/BOOKS/NOTES001.TXT"));
     }
 

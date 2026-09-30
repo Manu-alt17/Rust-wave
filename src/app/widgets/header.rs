@@ -117,9 +117,7 @@ mod tests {
             "UPDATE", "POWER KEY", "TASTO POWER", "BOOK OPTIONS", "OPZIONI LIBRO",
             "BOOKMARKS", "SEGNALIBRI", "CONTINUE", "CONTINUA", "LIBRARY", "LIBRERIA",
             "OPENING BOOK", "APERTURA", "OPTIONS", "OPZIONI", "PREFERENCES", "PREFERENZE",
-            "CONTENTS", "INDICE", "STATISTICS", "STATISTICHE", "RECORD", "REGISTRA",
-            "VOICE NOTE", "NOTA VOCALE", "NOTE TITLE", "TITOLO NOTA", "VOICE NOTES",
-            "NOTE VOCALI",
+            "CONTENTS", "INDICE", "STATISTICS", "STATISTICHE",
         ];
         let mut titles: Vec<&str> = TITLES.to_vec();
         for preference in ReadingPreference::ALL {

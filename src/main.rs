@@ -1,7 +1,6 @@
 #[cfg(target_os = "espidf")]
 mod firmware {
     use std::{
-        ffi::CString,
         io::Write,
         time::{Duration, Instant},
     };
@@ -19,7 +18,7 @@ mod firmware {
                     ClockSource, Config as I2sChannelConfig, DataBitWidth, MclkMultiple, SlotMode,
                     StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
                 },
-                I2sBiDir, I2sDriver,
+                I2sDriver, I2sTx,
             },
             peripherals::Peripherals,
             reset::restart,
@@ -49,7 +48,6 @@ mod firmware {
             DEV_BENCH_BUILD, CHARGING_STATUS_POLL_SECONDS, LIBRARY_THUMBNAIL_REFRESH_SECONDS,
             NETWORK_LIVE_REFRESH_SECONDS, NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
             READER_POWER_SAVE_GRACE_SECONDS, SAMPLE_LIVE_REFRESH_SECONDS,
-            VOICE_RECORD_SCREEN_REFRESH_SECONDS,
         },
         audio::{
             espidf::AudioRuntime, AudioPlaybackState, AudioSnapshot, AudioUiRequest, AUDIO_MCLK_HZ,
@@ -107,15 +105,6 @@ mod firmware {
         storage::{
             StorageBrowser, StorageSnapshot, StorageUiOutcome, SDMMC_COMMAND_TIMEOUT_MS,
             SDMMC_STABLE_SPEED_KHZ, SD_MOUNT_POINT, STORAGE_IO_RETRY_ATTEMPTS,
-        },
-        voice_note_metadata::{
-            load_voice_notes_preferences, save_voice_notes_preferences, VoiceNotesPreferences,
-            VOICE_UNKNOWN_RECORDED_AT,
-        },
-        voice_notes::{
-            cleanup_stale_voice_tmp, delete_voice_note, save_voice_note_title, VoiceNotesUiRequest,
-            VoicePlaybackSession, VoiceRecordingSession, VOICE_NOTES_ROOT,
-            VOICE_PCM_MONO_CHUNK_BYTES, VOICE_PCM_STEREO_CAPTURE_BYTES,
         },
         wifi_transfer::{
             espidf::WifiTransferServer, WifiTransferSnapshot, WifiTransferUiRequest,
@@ -726,7 +715,7 @@ mod firmware {
         if let Ok(usage) = CategoryUsage::load_from_path(MENU_USAGE_CONFIG_PATH) {
             state.category_usage = usage;
         }
-        // Reader/voice-notes SD catalog scans, and the audio codec
+        // Reader SD catalog scans, and the audio codec
         // bring-up right after them, are deferred until after the first
         // e-paper frame is visible (see below the panel draw). The Home
         // screen's menu tiles are a static const list and never read these,
@@ -903,7 +892,7 @@ mod firmware {
         // network config loads, board services, the
         // reader-resume decision) touches the panel, and none of it affects
         // what Home/Reader draws either (Home's menu tiles are a static
-        // const list, and reader/voice/audio state isn't read by Home), so
+        // const list, and reader/audio state isn't read by Home), so
         // painting here matches the timing cold boot always used. The
         // button-polling loop still doesn't start draining `input_queue`
         // until the deferred work further below finishes (same as it always
@@ -977,7 +966,7 @@ mod firmware {
         boot_profile::mark_with("first-frame-visible", Some(state.active_route().marker()));
         let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::BootFirstFrame);
 
-        // Reader/voice-notes SD catalog scans and the audio codec
+        // Reader SD catalog scans and the audio codec
         // bring-up happen only after the first e-paper frame is visible.
         // None of them are needed to draw the Home screen (its menu tiles
         // are a static const list), and on a real deep-sleep wake this is a
@@ -999,27 +988,15 @@ mod firmware {
             .reader
             .seed_background_warmup(active_on_open.as_deref());
         warmup_span.end();
-        // The Reader/Voice Notes library scans themselves (as opposed to
-        // the cheap STATE/POSITS/RECENT text-file reads above) are not run
-        // here at all: `apply_category` already calls exactly these same
-        // `refresh_*` methods the moment the user actually navigates into
-        // Library or Voice Notes (and `activate_continue_reading`
-        // does the same for a direct Continue-Reading resume), and neither
-        // Home nor the category menu itself ever reads these catalogs. On
-        // both a cold boot and a deep-sleep wake (a full reboot -- nothing
-        // in RAM survives it) this used to mean re-scanning every book/note
-        // directory unconditionally before the button-polling loop
-        // could even start, whether or not the user opened those screens
-        // this session at all. Leaving `books`/`notes` at their
-        // empty `Default` here and letting the first real navigation do the
-        // one scan it already needed removes that duplicate work entirely.
-        // Stale-tmp cleanup and SETTINGS.TXT (mic gain) are no longer loaded
-        // here unconditionally at boot: like `refresh_catalog` above, they
-        // now run from `ensure_voice_notes_ready` below the moment the user
-        // actually navigates into Voice Notes, since most boots never open
-        // it. `refresh_voice_note_storage_available` stays here -- it only
-        // reads the `_mounted_sd` flag already known, no SD I/O of its own.
-        refresh_voice_note_storage_available(&mut state, _mounted_sd.is_some());
+        // The Library scan itself (as opposed to the cheap
+        // STATE/POSITS/RECENT text-file reads above) is not run here at all:
+        // `apply_home` already runs it the moment the user actually opens
+        // Library (and `activate_continue_reading` does the same for a direct
+        // Continue-Reading resume), and neither Home nor the category menus
+        // ever read the catalog. On both a cold boot and a deep-sleep wake (a
+        // full reboot -- nothing in RAM survives it) this used to mean
+        // re-scanning every book directory unconditionally before the
+        // button-polling loop could even start.
         info!(
             "rustmix-wave=reader-persistence-load state-loaded={} preferences-loaded={} positions={} recent={} bookmarks={} warning={}",
             reader_persistence.state_loaded,
@@ -1030,37 +1007,35 @@ mod firmware {
             reader_persistence.warning.as_deref().unwrap_or("none")
         );
 
-        // Bidirectional ES8311 Voice Notes codec. The uploaded BSP uses I2S0
-        // with MCLK GPIO13, BCLK GPIO14, WS GPIO47, ESP-to-codec DOUT GPIO48,
-        // codec-to-ESP DIN GPIO21 and amplifier GPIO39.
+        // ES8311 codec. The uploaded BSP uses I2S0 with MCLK GPIO13, BCLK
+        // GPIO14, WS GPIO47, ESP-to-codec DOUT GPIO48 and amplifier GPIO39.
+        // The codec-to-ESP DIN line (GPIO21) is left unclaimed: nothing
+        // records, so the channel is TX-only.
         //
         // This used to probe and configure the codec unconditionally at
-        // boot. It's deferred now: most boots never touch Voice Notes or the
-        // Audio screen, so most boots paid for several I2C/I2S setup calls
-        // (including the I2C rail's own settle time) for nothing. The
-        // I2S0/pin peripherals are only *moved* out of `peripherals` here --
-        // a plain field move, no I/O -- and held until `try_bring_up_audio`
-        // below is actually called, from one of two sites further down:
-        // entering Voice Notes or entering Audio. `audio_runtime` starts at `None`, and
+        // boot. It's deferred now: most boots never touch the Audio screen,
+        // so most boots paid for several I2C/I2S setup calls (including the
+        // I2C rail's own settle time) for nothing. The I2S0/pin peripherals
+        // are only *moved* out of `peripherals` here -- a plain field move,
+        // no I/O -- and held until `try_bring_up_audio` below is actually
+        // called on entering Audio. `audio_runtime` starts at `None`, and
         // `state.audio` at its `AudioSnapshot::default()`, which already
         // reads "has not been initialized" rather than an error.
         let mut audio_peripherals = Some((
             peripherals.i2s0,
             peripherals.pins.gpio13,
             peripherals.pins.gpio14,
-            peripherals.pins.gpio21,
             peripherals.pins.gpio47,
             peripherals.pins.gpio48,
             peripherals.pins.gpio39,
         ));
         let shared_i2c_for_audio = shared_i2c.clone();
         // Takes the peripherals at most once (`.take()`): later calls, once
-        // Voice Notes or Audio have already triggered one attempt,
+        // Audio has already triggered one attempt,
         // just see `None` and no-op, matching the old single-attempt-at-boot
         // behavior, just moved to whenever that attempt first happens.
         let mut try_bring_up_audio = move || -> Option<Result<AudioRuntime<'_, _>>> {
-            let (i2s0, gpio13, gpio14, gpio21, gpio47, gpio48, gpio39) =
-                audio_peripherals.take()?;
+            let (i2s0, gpio13, gpio14, gpio47, gpio48, gpio39) = audio_peripherals.take()?;
             info!(
                 "rustmix-wave=audio-init status=starting codec=es8311 address=0x18 wire-write=0x30"
             );
@@ -1075,17 +1050,15 @@ mod firmware {
                     StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
                     StdGpioConfig::default(),
                 );
-                let mut i2s = I2sDriver::<I2sBiDir>::new_std_bidir(
+                let mut i2s = I2sDriver::<I2sTx>::new_std_tx(
                     i2s0,
                     &i2s_config,
                     gpio14,
-                    gpio21,
                     gpio48,
                     Some(gpio13),
                     gpio47,
                 )?;
                 i2s.tx_enable()?;
-                i2s.rx_enable()?;
                 let amplifier = PinDriver::output(gpio39)?;
                 AudioRuntime::initialize(
                     shared_i2c_for_audio.clone(),
@@ -1096,9 +1069,7 @@ mod firmware {
             })())
         };
         let mut audio_runtime: Option<AudioRuntime<'_, SharedI2cBus<I2cDriver<'_>>>> = None;
-        // Shared by the two lazy-init call sites below (entering Voice
-        // Notes, entering Audio): turns the
-        // deferred `try_bring_up_audio` attempt above into an updated
+        // Turns the deferred `try_bring_up_audio` attempt above into an updated
         // `audio_runtime`/`state.audio`, doing nothing if audio is already
         // up (`Some`) or was already attempted once and failed (the closure
         // then returns `None` every time, its peripherals already spent).
@@ -1131,7 +1102,7 @@ mod firmware {
                         profile.adc17,
                         profile.gp45
                     );
-                    info!("rustmix-wave=audio-i2s status=ready direction=bidir sample-rate={AUDIO_SAMPLE_RATE_HZ} bits=16 tx-channels=2 rx-channels=2 voice-wav-channels=1 mclk-gpio=13 bclk-gpio=14 ws-gpio=47 dout-gpio=48 din-gpio=21");
+                    info!("rustmix-wave=audio-i2s status=ready direction=tx sample-rate={AUDIO_SAMPLE_RATE_HZ} bits=16 tx-channels=2 mclk-gpio=13 bclk-gpio=14 ws-gpio=47 dout-gpio=48");
                     info!("rustmix-wave=audio-amp status=ready gpio=39 default=off");
                     info!("rustmix-wave=audio-subsystem-ready mute=true volume={DEFAULT_AUDIO_VOLUME_PERCENT}");
                     *audio_runtime = Some(runtime);
@@ -1209,10 +1180,6 @@ mod firmware {
         let mut network_provision_join_pending: Option<(String, String)> = None;
         let mut network_provision_last_rescan = Instant::now();
         state.set_saved_networks(saved_network_entries(&network_config, None));
-        let mut voice_recording: Option<VoiceRecordingSession> = None;
-        let mut voice_playback: Option<VoicePlaybackSession> = None;
-        let mut voice_stereo_buffer = vec![0_u8; VOICE_PCM_STEREO_CAPTURE_BYTES];
-        let mut voice_mono_buffer = vec![0_u8; VOICE_PCM_MONO_CHUNK_BYTES];
         debug_runtime_memory("boot-complete");
 
         let mut last_activity = Instant::now();
@@ -1238,7 +1205,6 @@ mod firmware {
         let mut ota_check_in_flight: Option<
             std::sync::mpsc::Receiver<Result<ReleaseInfo, ReleaseCheckError>>,
         > = None;
-        let mut last_voice_record_refresh = Instant::now();
         // Amortized EPUB cover-thumbnail generation: no dedicated thread (the
         // main loop is single-threaded and this is the project's only SD
         // consumer, so there is nothing to contend with). At most one
@@ -1262,7 +1228,7 @@ mod firmware {
         // Main-loop pacing. Every iteration ends in
         // `input_queue.wait_timeout`, which returns the moment a key event is
         // queued, so input latency does not depend on these values. While
-        // something needs frequent service (audio streaming, voice capture,
+        // something needs frequent service (audio streaming,
         // the transfer portal, a Reader open in progress) the loop keeps the
         // historical 20 ms cadence; otherwise it waits 100 ms, long enough
         // for automatic light sleep (>= 30 ms of idle) and still well inside
@@ -1327,13 +1293,12 @@ mod firmware {
                     >= Duration::from_secs(POWER_PROFILE_LOG_SECONDS)
             {
                 power_profile_tracker.log_window(&format!(
-                    "route={} panel-awake={} wifi={:?} wifi-suspended-for-reading={} audio-suspended-for-reading={} voice-active={}",
+                    "route={} panel-awake={} wifi={:?} wifi-suspended-for-reading={} audio-suspended-for-reading={}",
                     state.active_route().marker(),
                     state.panel_awake,
                     state.network.wifi_state,
                     wifi_suspended_for_reading,
                     audio_suspended_for_reading,
-                    voice_recording.is_some() || voice_playback.is_some(),
                 ));
                 last_power_profile_log = Instant::now();
             }
@@ -1415,86 +1380,6 @@ mod firmware {
                 panel.sleep()?;
                 state.panel_awake = false;
                 info!("rustmix-wave=epd397-panel-sleep");
-            }
-
-            let mut voice_capture_failure = None;
-            if let Some(session) = voice_recording.as_mut() {
-                if state.voice_notes.recording_paused {
-                    let discard = audio_runtime
-                        .as_mut()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "audio runtime unavailable during paused voice recording"
-                            )
-                        })
-                        .and_then(|runtime| runtime.discard_voice_pcm(&mut voice_stereo_buffer));
-                    if let Err(error) = discard {
-                        voice_capture_failure = Some(format!("{error:#}"));
-                    }
-                } else {
-                    let capture = audio_runtime
-                        .as_mut()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("audio runtime unavailable during voice recording")
-                        })
-                        .and_then(|runtime| {
-                            runtime.read_voice_pcm_mono(
-                                &mut voice_stereo_buffer,
-                                &mut voice_mono_buffer,
-                                state.voice_notes.mic_gain,
-                            )
-                        });
-                    match capture {
-                        Ok(metrics) if metrics.bytes > 0 => {
-                            session.add_clipped_samples(metrics.clipped_samples);
-                            if let Err(error) =
-                                session.append_pcm16_mono(&voice_mono_buffer[..metrics.bytes])
-                            {
-                                voice_capture_failure = Some(format!("{error:#}"));
-                            } else {
-                                state.voice_notes.update_recording_progress(
-                                    session.pcm_bytes(),
-                                    session.peak(),
-                                    session.clipped_samples(),
-                                );
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => voice_capture_failure = Some(format!("{error:#}")),
-                    }
-                }
-                if voice_capture_failure.is_none()
-                    && state.panel_awake
-                    && state.active_route() == ScreenRoute::VoiceNoteRecording
-                    && last_voice_record_refresh.elapsed()
-                        >= Duration::from_secs(VOICE_RECORD_SCREEN_REFRESH_SECONDS)
-                {
-                    if state.voice_notes.recording_paused {
-                        info!("rustmix-wave=voice-record status=paused file={} elapsed-seconds={} pcm-bytes={} peak={} clipped-samples={} mic-gain={}", session.file_name(), state.voice_notes.elapsed_seconds, session.pcm_bytes(), session.peak(), session.clipped_samples(), state.voice_notes.mic_gain.marker());
-                    } else {
-                        info!("rustmix-wave=voice-record status=active file={} elapsed-seconds={} pcm-bytes={} peak={} clipped-samples={} mic-gain={}", session.file_name(), state.voice_notes.elapsed_seconds, session.pcm_bytes(), session.peak(), session.clipped_samples(), state.voice_notes.mic_gain.marker());
-                    }
-                    refresh_screen(
-                        &mut panel,
-                        &mut frame,
-                        &mut state,
-                        &mut panel_refresh,
-                        RefreshRequest::Normal,
-                    )?;
-                    last_voice_record_refresh = Instant::now();
-                }
-            }
-            if let Some(error) = voice_capture_failure {
-                warn!("rustmix-wave=voice-record status=failed stage=capture error={error}");
-                if let Some(active) = voice_recording.take() {
-                    let _ = active.cancel();
-                }
-                if let Some(runtime) = audio_runtime.as_mut() {
-                    let _ = runtime.finish_voice_recording();
-                    state.update_audio_snapshot(runtime.snapshot());
-                }
-                state.voice_notes.fail(error);
-                log_runtime_memory("after-voice-record-stop");
             }
 
             if state.panel_awake && state.active_route() == ScreenRoute::Library {
@@ -1587,117 +1472,35 @@ mod firmware {
                 }
             }
 
-            let mut voice_playback_finished = None;
-            let mut voice_playback_failure = None;
-            if voice_recording.is_none() {
-                if let Some(session) = voice_playback.as_mut() {
-                    match session.read_pcm16_mono(&mut voice_mono_buffer) {
-                        Ok(0) => voice_playback_finished = Some(session.file_name().to_string()),
-                        Ok(bytes) => {
-                            let output = audio_runtime
-                                .as_mut()
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "audio runtime unavailable during voice-note playback"
-                                    )
-                                })
-                                .and_then(|runtime| {
-                                    runtime.write_voice_pcm16_mono(
-                                        &voice_mono_buffer[..bytes],
-                                        &mut voice_stereo_buffer,
-                                    )
-                                });
-                            match output {
-                                Ok(()) => {
-                                    state.voice_notes.update_playback_progress(
-                                        session.played_pcm_bytes(),
-                                        session.total_pcm_bytes(),
-                                    );
-                                    if session.is_complete() {
-                                        voice_playback_finished =
-                                            Some(session.file_name().to_string());
-                                    }
-                                }
-                                Err(error) => {
-                                    voice_playback_failure = Some(format!("{error:#}"));
-                                }
-                            }
-                        }
-                        Err(error) => voice_playback_failure = Some(format!("{error:#}")),
-                    }
-                }
-            }
-            if let Some(file_name) = voice_playback_finished {
-                stop_voice_note_playback(
-                    &mut voice_playback,
-                    &mut audio_runtime,
-                    &mut state,
-                    "completed",
-                );
-                info!("rustmix-wave=voice-note-playback status=completed file={file_name}");
-                if state.panel_awake && state.active_route() == ScreenRoute::VoiceNoteDetails {
-                    refresh_screen(
-                        &mut panel,
-                        &mut frame,
-                        &mut state,
-                        &mut panel_refresh,
-                        RefreshRequest::Normal,
-                    )?;
-                }
-            }
-            if let Some(error) = voice_playback_failure {
-                warn!("rustmix-wave=voice-note-playback status=failed error={error}");
-                stop_voice_note_playback(
-                    &mut voice_playback,
-                    &mut audio_runtime,
-                    &mut state,
-                    "stream-error",
-                );
-                state.voice_notes.fail(format!("Playback failed: {error}"));
-                if state.panel_awake && state.active_route() == ScreenRoute::VoiceNoteDetails {
-                    refresh_screen(
-                        &mut panel,
-                        &mut frame,
-                        &mut state,
-                        &mut panel_refresh,
-                        RefreshRequest::Normal,
-                    )?;
-                }
-            }
-
-            if voice_recording.is_none() && voice_playback.is_none() {
-                if let Some(runtime) = audio_runtime.as_mut() {
-                    match runtime.tick() {
-                        Ok(changed) => {
-                            let latest = runtime.snapshot();
-                            if latest != state.audio {
-                                state.update_audio_snapshot(latest);
-                                log_audio_snapshot(&state.audio);
-                                if changed
-                                    && state.panel_awake
-                                    && matches!(
-                                        state.active_route(),
-                                        ScreenRoute::Audio | ScreenRoute::AudioDetails
-                                    )
-                                {
-                                    refresh_screen(
-                                        &mut panel,
-                                        &mut frame,
-                                        &mut state,
-                                        &mut panel_refresh,
-                                        RefreshRequest::Normal,
-                                    )?;
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            warn!(
-                                "rustmix-wave=audio-event outcome=playback-error error={error:#}"
-                            );
-                            runtime.record_failure(format!("{error:#}"));
-                            state.update_audio_snapshot(runtime.snapshot());
+            if let Some(runtime) = audio_runtime.as_mut() {
+                match runtime.tick() {
+                    Ok(changed) => {
+                        let latest = runtime.snapshot();
+                        if latest != state.audio {
+                            state.update_audio_snapshot(latest);
                             log_audio_snapshot(&state.audio);
+                            if changed
+                                && state.panel_awake
+                                && matches!(
+                                    state.active_route(),
+                                    ScreenRoute::Audio | ScreenRoute::AudioDetails
+                                )
+                            {
+                                refresh_screen(
+                                    &mut panel,
+                                    &mut frame,
+                                    &mut state,
+                                    &mut panel_refresh,
+                                    RefreshRequest::Normal,
+                                )?;
+                            }
                         }
+                    }
+                    Err(error) => {
+                        warn!("rustmix-wave=audio-event outcome=playback-error error={error:#}");
+                        runtime.record_failure(format!("{error:#}"));
+                        state.update_audio_snapshot(runtime.snapshot());
+                        log_audio_snapshot(&state.audio);
                     }
                 }
             }
@@ -1805,17 +1608,15 @@ mod firmware {
                 wifi_suspended_for_reading = false;
             }
 
-            let audio_idle = voice_recording.is_none()
-                && voice_playback.is_none()
-                && audio_runtime.as_ref().map_or(true, |runtime| {
-                    matches!(
-                        runtime.snapshot().playback_state,
-                        AudioPlaybackState::Muted
-                            | AudioPlaybackState::Ready
-                            | AudioPlaybackState::Unavailable
-                            | AudioPlaybackState::Error
-                    )
-                });
+            let audio_idle = audio_runtime.as_ref().map_or(true, |runtime| {
+                matches!(
+                    runtime.snapshot().playback_state,
+                    AudioPlaybackState::Muted
+                        | AudioPlaybackState::Ready
+                        | AudioPlaybackState::Unavailable
+                        | AudioPlaybackState::Error
+                )
+            });
             if reader_power_save_ready && !audio_suspended_for_reading && audio_idle {
                 suspend_audio_for_reading(&mut audio_runtime, &mut misc_power, &mut state);
                 audio_suspended_for_reading = true;
@@ -1945,8 +1746,6 @@ mod firmware {
                                 &mut network_provision_join_pending,
                                 portal_via_hotspot,
                                 &mut storage_browser,
-                                &mut voice_recording,
-                                &mut voice_playback,
                                 &mut audio_runtime,
                                 &mut network_runtime,
                                 &mut sleep_network,
@@ -2000,8 +1799,6 @@ mod firmware {
                     &mut network_provision_join_pending,
                     portal_via_hotspot,
                     &mut storage_browser,
-                    &mut voice_recording,
-                    &mut voice_playback,
                     &mut audio_runtime,
                     &mut network_runtime,
                     &mut sleep_network,
@@ -2212,8 +2009,6 @@ mod firmware {
                     &mut portal_via_hotspot,
                     &mut portal_lan_recovering,
                     &mut storage_browser,
-                    voice_recording.is_some(),
-                    voice_playback.is_some(),
                 );
                 apply_network_saved_ui_request(
                     &mut network_config,
@@ -2380,13 +2175,6 @@ mod firmware {
                             info!("rustmix-wave=hierarchical-back outcome=ignored route=home");
                         } else {
                             state.back();
-                            apply_voice_notes_ui_request(
-                                &mut voice_recording,
-                                &mut voice_playback,
-                                &mut audio_runtime,
-                                &mut state,
-                                _mounted_sd.is_some(),
-                            );
                             apply_portal_ui_request(
                                 &mut network_runtime,
                                 &mut wifi_transfer_server,
@@ -2396,8 +2184,6 @@ mod firmware {
                                 &mut portal_via_hotspot,
                                 &mut portal_lan_recovering,
                                 &mut storage_browser,
-                                voice_recording.is_some(),
-                                voice_playback.is_some(),
                             );
                             info!(
                                 "rustmix-wave=hierarchical-back outcome=navigated from={} to={}",
@@ -2412,7 +2198,7 @@ mod firmware {
                         // Compare against `previous_route == Home` (whether `state.back()`
                         // ran at all) rather than `state.active_route() != previous_route`:
                         // several back-handled sub-states (the reader preferences row
-                        // editor, voice note title/delete confirmation) undo themselves
+                        // editor, the in-page dictionary steps) undo themselves
                         // without changing `ScreenRoute`, so a route-equality check would
                         // skip the redraw and leave the stale screen on the panel until
                         // some later input forced one.
@@ -2474,28 +2260,16 @@ mod firmware {
                             FreeRtos::delay_ms(20);
                             continue;
                         }
-                        let keyboard_context = state.apply_keyboard_select_long_press();
-                        let reader_dictionary_context = if keyboard_context {
-                            false
-                        } else {
-                            state.apply_reader_dictionary_select_long_press()
-                        };
-                        let network_saved_context = if keyboard_context || reader_dictionary_context
-                        {
-                            false
-                        } else {
-                            state.apply_network_saved_select_long_press()
-                        };
-                        let library_book_actions_context = if keyboard_context
-                            || reader_dictionary_context
-                            || network_saved_context
-                        {
-                            false
-                        } else {
-                            state.apply_library_select_long_press()
-                        };
-                        if keyboard_context
-                            || reader_dictionary_context
+                        // Each handler only acts on its own route, so at most
+                        // one of them claims the press.
+                        let reader_dictionary_context =
+                            state.apply_reader_dictionary_select_long_press();
+                        let network_saved_context = !reader_dictionary_context
+                            && state.apply_network_saved_select_long_press();
+                        let library_book_actions_context = !reader_dictionary_context
+                            && !network_saved_context
+                            && state.apply_library_select_long_press();
+                        if reader_dictionary_context
                             || network_saved_context
                             || library_book_actions_context
                         {
@@ -2518,12 +2292,6 @@ mod firmware {
                                 info!(
                                     "rustmix-wave=library-book-actions outcome=opened route={}",
                                     state.active_route().marker()
-                                );
-                            }
-                            if keyboard_context {
-                                info!(
-                                    "rustmix-wave=voice-note-title-keyboard-nav axis={} outcome=toggled",
-                                    state.voice_notes.title_editor_navigation_mode_label()
                                 );
                             }
                             let woke_from_sleep = !state.panel_awake;
@@ -2591,47 +2359,11 @@ mod firmware {
                                 state.update_storage_snapshot(storage_browser.snapshot());
                                 log_storage_snapshot(&state.storage);
                             }
-                            // Lazy Voice Notes / Audio bring-up: on first
-                            // entry into either screen (not on every button
-                            // press within it -- `previous_route` already
-                            // matching means this already ran), do the
-                            // stale-tmp cleanup and SETTINGS.TXT load that
-                            // used to run unconditionally at boot, plus the
-                            // shared lazy audio codec bring-up. `Library` gets
-                            // the equivalent catalog-refresh
-                            // treatment already, inside `apply_category`
-                            // itself, since it does not touch this hardware.
-                            if previous_route != ScreenRoute::VoiceNotes
-                                && state.active_route() == ScreenRoute::VoiceNotes
-                            {
-                                if _mounted_sd.is_some() {
-                                    match cleanup_stale_voice_tmp(std::path::Path::new(
-                                        VOICE_NOTES_ROOT,
-                                    )) {
-                                        Ok(removed) => info!(
-                                            "rustmix-wave=voice-note-stale-tmp-cleanup status=completed removed={removed} root={VOICE_NOTES_ROOT}"
-                                        ),
-                                        Err(error) => warn!(
-                                            "rustmix-wave=voice-note-stale-tmp-cleanup status=failed root={VOICE_NOTES_ROOT} error={error:#}"
-                                        ),
-                                    }
-                                    match load_voice_notes_preferences(std::path::Path::new(
-                                        VOICE_NOTES_ROOT,
-                                    )) {
-                                        Ok(preferences) => {
-                                            state.voice_notes.mic_gain = preferences.mic_gain;
-                                            info!(
-                                                "rustmix-wave=voice-note-settings-load status=completed mic-gain={} path={VOICE_NOTES_ROOT}/SETTINGS.TXT",
-                                                preferences.mic_gain.marker()
-                                            );
-                                        }
-                                        Err(error) => warn!(
-                                            "rustmix-wave=voice-note-settings-load status=failed path={VOICE_NOTES_ROOT}/SETTINGS.TXT error={error:#}"
-                                        ),
-                                    }
-                                }
-                                ensure_audio_runtime(&mut audio_runtime, &mut state, &mut misc_power);
-                            } else if previous_route != ScreenRoute::Audio
+                            // Lazy audio codec bring-up on first entry into the
+                            // Audio screen (not on every button press within it
+                            // -- `previous_route` already matching means this
+                            // already ran).
+                            if previous_route != ScreenRoute::Audio
                                 && state.active_route() == ScreenRoute::Audio
                             {
                                 ensure_audio_runtime(&mut audio_runtime, &mut state, &mut misc_power);
@@ -2646,13 +2378,6 @@ mod firmware {
                             &mut state,
                             &wifi_transfer_server,
                         );
-                        apply_voice_notes_ui_request(
-                            &mut voice_recording,
-                            &mut voice_playback,
-                            &mut audio_runtime,
-                            &mut state,
-                            _mounted_sd.is_some(),
-                        );
                         apply_portal_ui_request(
                             &mut network_runtime,
                             &mut wifi_transfer_server,
@@ -2662,8 +2387,6 @@ mod firmware {
                             &mut portal_via_hotspot,
                             &mut portal_lan_recovering,
                             &mut storage_browser,
-                            voice_recording.is_some(),
-                            voice_playback.is_some(),
                         );
                         apply_clock_set_time_ui_request(
                             &mut board_services,
@@ -2767,9 +2490,7 @@ mod firmware {
                 }
             }
 
-            let needs_fast_tick = voice_recording.is_some()
-                || voice_playback.is_some()
-                || !matches!(
+            let needs_fast_tick = !matches!(
                     state.audio.playback_state,
                     AudioPlaybackState::Muted
                         | AudioPlaybackState::Ready
@@ -2905,8 +2626,6 @@ mod firmware {
         via_hotspot: &mut bool,
         lan_recovering: &mut bool,
         storage_browser: &mut StorageBrowser,
-        voice_recording_active: bool,
-        voice_playback_active: bool,
     ) {
         let Some(request) = state.take_wifi_transfer_request() else {
             return;
@@ -2917,20 +2636,6 @@ mod firmware {
                     return;
                 }
                 *lan_recovering = false;
-                if voice_recording_active {
-                    state.update_wifi_transfer_snapshot(WifiTransferSnapshot::failed(
-                        "Voice recording is active; stop recording before Wi-Fi transfer",
-                    ));
-                    warn!("rustmix-wave=wifi-transfer-server status=rejected reason=voice-recording-active");
-                    return;
-                }
-                if voice_playback_active {
-                    state.update_wifi_transfer_snapshot(WifiTransferSnapshot::failed(
-                        "Voice-note playback is active; stop playback before Wi-Fi transfer",
-                    ));
-                    warn!("rustmix-wave=wifi-transfer-server status=rejected reason=voice-note-playback-active");
-                    return;
-                }
                 state.update_wifi_transfer_snapshot(WifiTransferSnapshot::starting());
                 let code = format!("{:06}", unsafe { sys::esp_random() } % 1_000_000);
                 // Free the background-warmed book sessions first, exactly as
@@ -3372,7 +3077,7 @@ mod firmware {
     }
 
     /// Enter real MCU hardware deep sleep: show a sleep-confirmation image,
-    /// tear down Wi-Fi transfer/voice/audio/network, cut the panel and audio
+    /// tear down Wi-Fi transfer/audio/network, cut the panel and audio
     /// PMIC rails, disarm the RTC alarm, and arm
     /// GPIO5 as the wakeup source. Shared by both triggers into this path --
     /// an explicit power-key press and the idle-timeout auto-sleep check --
@@ -3392,8 +3097,6 @@ mod firmware {
         portal_join_pending: &mut Option<(String, String)>,
         portal_via_hotspot: bool,
         storage_browser: &mut StorageBrowser,
-        voice_recording: &mut Option<VoiceRecordingSession>,
-        voice_playback: &mut Option<VoicePlaybackSession>,
         audio_runtime: &mut Option<AudioRuntime<'d, PmicI2c>>,
         network_runtime: &mut NetworkRuntime,
         sleep_network: &mut SleepNetworkState,
@@ -3428,7 +3131,7 @@ mod firmware {
             finish_boot_profile("sleep-entry", true);
         }
         // Draw the sleep-confirmation image first, before any of the slower
-        // teardown below (Wi-Fi transfer server, voice/audio cleanup,
+        // teardown below (Wi-Fi transfer server, audio cleanup,
         // network suspend). The user pressed power (or, for the idle-timeout
         // trigger, simply stopped interacting) to get immediate visual
         // confirmation the command was received; making them wait through
@@ -3487,18 +3190,6 @@ mod firmware {
             portal_via_hotspot,
             "sleep-entry",
         );
-        if let Some(active) = voice_recording.take() {
-            let _ = active.cancel();
-            if let Some(runtime) = audio_runtime.as_mut() {
-                let _ = runtime.finish_voice_recording();
-                state.update_audio_snapshot(runtime.snapshot());
-            }
-            state.voice_notes.cancel_recording();
-            info!("rustmix-wave=voice-record status=cancelled reason=sleep-entry");
-        }
-        if voice_playback.is_some() {
-            stop_voice_note_playback(voice_playback, audio_runtime, state, "sleep-entry");
-        }
         if let Some(runtime) = audio_runtime.as_mut() {
             match runtime.stop_playback() {
                 Ok(()) => info!("rustmix-wave=audio-event outcome=playback-stop reason=sleep-mode"),
@@ -3836,325 +3527,6 @@ mod firmware {
         }
         state.update_audio_snapshot(runtime.snapshot());
         log_audio_snapshot(&state.audio);
-    }
-
-    fn sd_available_bytes(path: &str) -> Option<u64> {
-        let path = CString::new(path).ok()?;
-        let mut total_bytes = 0_u64;
-        let mut free_bytes = 0_u64;
-        if unsafe { sys::esp_vfs_fat_info(path.as_ptr(), &mut total_bytes, &mut free_bytes) }
-            != sys::ESP_OK
-        {
-            return None;
-        }
-        Some(free_bytes)
-    }
-
-    fn refresh_voice_note_storage_available(state: &mut AppState, mounted: bool) {
-        let available = mounted
-            .then(|| sd_available_bytes(SD_MOUNT_POINT))
-            .flatten();
-        state.voice_notes.set_available_storage_bytes(available);
-    }
-
-    fn stop_voice_note_playback<'d, I2C>(
-        session: &mut Option<VoicePlaybackSession>,
-        audio_runtime: &mut Option<AudioRuntime<'d, I2C>>,
-        state: &mut AppState,
-        reason: &str,
-    ) where
-        I2C: embedded_hal::i2c::I2c,
-        I2C::Error: core::fmt::Debug,
-    {
-        let Some(active) = session.take() else {
-            return;
-        };
-        let file_name = active.file_name().to_string();
-        if let Some(runtime) = audio_runtime.as_mut() {
-            if let Err(error) = runtime.finish_voice_note_playback() {
-                warn!("rustmix-wave=voice-note-playback status=stop-failed file={file_name} reason={reason} error={error:#}");
-                runtime.record_failure(format!("{error:#}"));
-            }
-            state.update_audio_snapshot(runtime.snapshot());
-            log_audio_snapshot(&state.audio);
-        }
-        state.voice_notes.stop_playback();
-        info!("rustmix-wave=voice-note-playback status=stopped file={file_name} reason={reason}");
-    }
-
-    fn apply_voice_notes_ui_request<'d, I2C>(
-        session: &mut Option<VoiceRecordingSession>,
-        playback: &mut Option<VoicePlaybackSession>,
-        audio_runtime: &mut Option<AudioRuntime<'d, I2C>>,
-        state: &mut AppState,
-        mounted: bool,
-    ) where
-        I2C: embedded_hal::i2c::I2c,
-        I2C::Error: core::fmt::Debug,
-    {
-        let Some(request) = state.take_voice_notes_request() else {
-            return;
-        };
-        match request {
-            VoiceNotesUiRequest::StartRecording => {
-                if !mounted {
-                    state.voice_notes.fail("SD card unavailable");
-                    warn!("rustmix-wave=voice-record status=rejected reason=sd-unavailable");
-                    return;
-                }
-                if state.wifi_transfer.is_active() {
-                    state
-                        .voice_notes
-                        .fail("Stop Wi-Fi Transfer before recording");
-                    warn!("rustmix-wave=voice-record status=rejected reason=wifi-transfer-active");
-                    return;
-                }
-                if playback.is_some() {
-                    stop_voice_note_playback(playback, audio_runtime, state, "recording-start");
-                }
-                let Some(runtime) = audio_runtime.as_mut() else {
-                    state.voice_notes.fail("Microphone unavailable");
-                    warn!("rustmix-wave=voice-record status=rejected reason=audio-unavailable");
-                    return;
-                };
-                if session.is_some() {
-                    return;
-                }
-                let recorded_at = state
-                    .board
-                    .rtc
-                    .map(|rtc| state.regional.localize_rtc(rtc).date_time())
-                    .unwrap_or_else(|| VOICE_UNKNOWN_RECORDED_AT.into());
-                log_runtime_memory("before-voice-record");
-                match VoiceRecordingSession::start_with_recorded_at(
-                    std::path::Path::new(VOICE_NOTES_ROOT),
-                    recorded_at.clone(),
-                ) {
-                    Ok(created) => {
-                        if let Err(error) = runtime.begin_voice_recording() {
-                            let _ = created.cancel();
-                            state.voice_notes.fail(format!("{error:#}"));
-                            warn!("rustmix-wave=voice-record status=failed stage=audio-start error={error:#}");
-                            return;
-                        }
-                        let file_name = created.file_name().to_string();
-                        state
-                            .voice_notes
-                            .begin_recording(file_name.clone(), recorded_at.clone());
-                        *session = Some(created);
-                        log_runtime_memory("after-voice-record-start");
-                        info!("rustmix-wave=voice-record status=starting file={} recorded-at={} sample-rate=16000 bits=16 channels=1 chunk-bytes={} capture=cooperative-bounded-i2s-rx mic-gain={}", file_name, recorded_at, VOICE_PCM_MONO_CHUNK_BYTES, state.voice_notes.mic_gain.marker());
-                    }
-                    Err(error) => {
-                        state.voice_notes.fail(format!("{error:#}"));
-                        warn!("rustmix-wave=voice-record status=failed stage=storage-start error={error:#}");
-                    }
-                }
-            }
-            VoiceNotesUiRequest::StopRecording => {
-                let Some(active) = session.take() else {
-                    return;
-                };
-                match active.finalize() {
-                    Ok(entry) => {
-                        if let Some(runtime) = audio_runtime.as_mut() {
-                            let _ = runtime.finish_voice_recording();
-                            state.update_audio_snapshot(runtime.snapshot());
-                        }
-                        info!("rustmix-wave=voice-record status=completed file={} recorded-at={} duration-seconds={} pcm-bytes={} wav-bytes={}", entry.file_name, entry.recorded_at, entry.duration_seconds, entry.pcm_bytes, entry.wav_bytes);
-                        state.voice_notes.complete_recording(entry);
-                        state.refresh_voice_notes_catalog();
-                        refresh_voice_note_storage_available(state, mounted);
-                        log_runtime_memory("after-voice-record-stop");
-                    }
-                    Err(error) => {
-                        if let Some(runtime) = audio_runtime.as_mut() {
-                            let _ = runtime.finish_voice_recording();
-                            state.update_audio_snapshot(runtime.snapshot());
-                        }
-                        state.voice_notes.fail(format!("{error:#}"));
-                        warn!("rustmix-wave=voice-record status=failed stage=finalize error={error:#}");
-                        log_runtime_memory("after-voice-record-stop");
-                    }
-                }
-            }
-            VoiceNotesUiRequest::PauseRecording => {
-                if session.is_some() {
-                    state.voice_notes.pause_recording();
-                    info!("rustmix-wave=voice-record status=paused");
-                }
-            }
-            VoiceNotesUiRequest::ResumeRecording => {
-                if session.is_some() {
-                    state.voice_notes.resume_recording();
-                    info!("rustmix-wave=voice-record status=resumed");
-                }
-            }
-            VoiceNotesUiRequest::CancelRecording => {
-                if let Some(active) = session.take() {
-                    let _ = active.cancel();
-                }
-                if let Some(runtime) = audio_runtime.as_mut() {
-                    let _ = runtime.finish_voice_recording();
-                    state.update_audio_snapshot(runtime.snapshot());
-                }
-                state.voice_notes.cancel_recording();
-                refresh_voice_note_storage_available(state, mounted);
-                info!("rustmix-wave=voice-record status=cancelled");
-            }
-            VoiceNotesUiRequest::StartPlayback => {
-                if !mounted {
-                    state.voice_notes.fail("SD card unavailable");
-                    warn!("rustmix-wave=voice-note-playback status=rejected reason=sd-unavailable");
-                    return;
-                }
-                if session.is_some() {
-                    state.voice_notes.fail("Stop recording before playback");
-                    warn!("rustmix-wave=voice-note-playback status=rejected reason=voice-recording-active");
-                    return;
-                }
-                if state.wifi_transfer.is_active() {
-                    state
-                        .voice_notes
-                        .fail("Stop Wi-Fi Transfer before playback");
-                    warn!("rustmix-wave=voice-note-playback status=rejected reason=wifi-transfer-active");
-                    return;
-                }
-                let Some(file_name) = state
-                    .voice_notes
-                    .selected_note()
-                    .map(|note| note.file_name.clone())
-                else {
-                    state.voice_notes.fail("No voice note selected");
-                    warn!("rustmix-wave=voice-note-playback status=rejected reason=no-selection");
-                    return;
-                };
-                if audio_runtime.is_none() {
-                    state.voice_notes.fail("Speaker unavailable");
-                    warn!(
-                        "rustmix-wave=voice-note-playback status=rejected reason=audio-unavailable"
-                    );
-                    return;
-                }
-                if playback.is_some() {
-                    stop_voice_note_playback(playback, audio_runtime, state, "replace-selection");
-                }
-                match VoicePlaybackSession::open(std::path::Path::new(VOICE_NOTES_ROOT), &file_name)
-                {
-                    Ok(created) => {
-                        let total_pcm_bytes = created.total_pcm_bytes();
-                        let runtime = audio_runtime
-                            .as_mut()
-                            .expect("audio runtime checked before playback start");
-                        if let Err(error) = runtime.begin_voice_note_playback() {
-                            runtime.record_failure(format!(
-                                "Voice-note playback start failed: {error:#}"
-                            ));
-                            state.update_audio_snapshot(runtime.snapshot());
-                            state.voice_notes.fail(format!("{error:#}"));
-                            warn!("rustmix-wave=voice-note-playback status=failed stage=audio-start file={file_name} error={error:#}");
-                            return;
-                        }
-                        state
-                            .voice_notes
-                            .begin_playback(file_name.clone(), total_pcm_bytes);
-                        *playback = Some(created);
-                        state.update_audio_snapshot(runtime.snapshot());
-                        log_audio_snapshot(&state.audio);
-                        info!("rustmix-wave=voice-note-playback status=starting file={file_name} pcm-bytes={total_pcm_bytes} sample-rate=16000 bits=16 source-channels=1 output-channels=2 chunk-bytes={VOICE_PCM_MONO_CHUNK_BYTES} volume={}", state.audio.volume_percent);
-                    }
-                    Err(error) => {
-                        state.voice_notes.fail(format!("{error:#}"));
-                        warn!("rustmix-wave=voice-note-playback status=failed stage=storage-open file={file_name} error={error:#}");
-                    }
-                }
-            }
-            VoiceNotesUiRequest::StopPlayback => {
-                stop_voice_note_playback(playback, audio_runtime, state, "ui-stop");
-            }
-            VoiceNotesUiRequest::PersistMicGain(mic_gain) => {
-                let preferences = VoiceNotesPreferences { mic_gain };
-                match save_voice_notes_preferences(std::path::Path::new(VOICE_NOTES_ROOT), preferences) {
-                    Ok(()) => info!("rustmix-wave=voice-note-settings-write status=completed mic-gain={} path={VOICE_NOTES_ROOT}/SETTINGS.TXT", mic_gain.marker()),
-                    Err(error) => {
-                        state.voice_notes.fail(format!("{error:#}"));
-                        warn!("rustmix-wave=voice-note-settings-write status=failed mic-gain={} error={error:#}", mic_gain.marker());
-                    }
-                }
-            }
-            VoiceNotesUiRequest::SaveEditedTitle { file_name, title } => {
-                match save_voice_note_title(
-                    std::path::Path::new(VOICE_NOTES_ROOT),
-                    &file_name,
-                    &title,
-                ) {
-                    Ok(()) => {
-                        state.refresh_voice_notes_catalog();
-                        info!("rustmix-wave=voice-note-title-write status=completed file={file_name} title={title}");
-                    }
-                    Err(error) => {
-                        state.voice_notes.fail(format!("{error:#}"));
-                        warn!("rustmix-wave=voice-note-title-write status=failed file={file_name} error={error:#}");
-                    }
-                }
-            }
-            VoiceNotesUiRequest::ExportSelected => {
-                if !mounted {
-                    state.voice_notes.fail("SD card unavailable");
-                    warn!("rustmix-wave=voice-note-export status=rejected reason=sd-unavailable");
-                    return;
-                }
-                if session.is_some() {
-                    state.voice_notes.fail("Stop recording before export");
-                    warn!("rustmix-wave=voice-note-export status=rejected reason=voice-recording-active");
-                    return;
-                }
-                if playback.is_some() {
-                    stop_voice_note_playback(playback, audio_runtime, state, "export-note");
-                }
-                let Some(file_name) = state
-                    .voice_notes
-                    .selected_note()
-                    .map(|note| note.file_name.clone())
-                else {
-                    state.voice_notes.fail("No voice note selected");
-                    return;
-                };
-                state.voice_notes.mark_export_requested(file_name.clone());
-                state.request_wifi_transfer_start();
-                info!("rustmix-wave=voice-note-export status=requested file={file_name} portal-path=VOICE/{file_name}");
-            }
-            VoiceNotesUiRequest::DeleteSelected => {
-                if playback.is_some() {
-                    stop_voice_note_playback(playback, audio_runtime, state, "delete-note");
-                }
-                let selected = state
-                    .voice_notes
-                    .selected_note()
-                    .map(|note| note.file_name.clone());
-                if let Some(file_name) = selected {
-                    match delete_voice_note(std::path::Path::new(VOICE_NOTES_ROOT), &file_name) {
-                        Ok(()) => {
-                            state.voice_notes.remove_selected_note();
-                            state.refresh_voice_notes_catalog();
-                            refresh_voice_note_storage_available(state, mounted);
-                            state.router.navigate_to(ScreenRoute::VoiceNotes);
-                            info!(
-                                "rustmix-wave=voice-note-delete status=completed file={file_name} confirmation=accepted"
-                            );
-                        }
-                        Err(error) => {
-                            state.voice_notes.fail(format!("{error:#}"));
-                            warn!("rustmix-wave=voice-note-delete status=failed file={file_name} error={error:#}");
-                        }
-                    }
-                }
-            }
-            VoiceNotesUiRequest::RefreshCatalog => {
-                state.refresh_voice_notes_catalog();
-                refresh_voice_note_storage_available(state, mounted);
-            }
-        }
     }
 
     fn apply_storage_event(browser: &mut StorageBrowser, state: &mut AppState, event: ButtonEvent) {

@@ -214,15 +214,14 @@ impl NetworkConfig {
         // names must fit the legacy 8.3 short-name format: at most one dot,
         // at most 8 characters before it. Appending `.tmp` after the real
         // `.TXT` extension (a second dot) fails `File::create` outright with
-        // `EINVAL`, so the extension is replaced instead, exactly like the
-        // voice-note recorder's own FAT-safe temp file in `voice_notes.rs`.
+        // `EINVAL`, so the extension is replaced instead.
         let temp_path = parent.join(format!("{stem}.TMP"));
         // ELM FatFs's `f_rename` (what `fs::rename` reaches through ESP-IDF's
         // FAT VFS) refuses to replace an existing destination, unlike POSIX
         // rename: renaming straight onto an already-present `WIFI.TXT` fails
         // with `EEXIST`. The previous file is moved aside to `.BAK` first,
         // matching the same backup-then-rename dance already used for the
-        // reader's and voice notes' own state files.
+        // reader's own state files.
         let backup_path = parent.join(format!("{stem}.BAK"));
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&backup_path);
