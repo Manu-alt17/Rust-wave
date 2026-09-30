@@ -5,7 +5,8 @@
 //! passing through the logical 480 × 800 portrait UI rotation layer.
 
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
@@ -254,12 +255,9 @@ impl SleepImageCatalog {
 
         let mut valid = Vec::new();
         for path in candidates {
-            match fs::read(&path)
-                .ok()
-                .and_then(|bytes| decode_sleep_bmp(&bytes).ok())
-            {
-                Some(_) => valid.push(path),
-                None => stats.rejected_entries = stats.rejected_entries.saturating_add(1),
+            match validate_sleep_bmp_file(&path) {
+                Ok(()) => valid.push(path),
+                Err(_) => stats.rejected_entries = stats.rejected_entries.saturating_add(1),
             }
         }
         Ok((valid, stats))
@@ -349,29 +347,34 @@ pub fn decode_sleep_bmp_file(path: &Path) -> Result<FrameBuffer> {
     decode_sleep_bmp(&bytes)
 }
 
-/// Decode bytes using a deliberately narrow hardware-safe BMP contract.
-pub fn decode_sleep_bmp(bytes: &[u8]) -> Result<FrameBuffer> {
-    if bytes.len() < BMP_MIN_PIXEL_OFFSET {
+/// Where a sleep BMP's pixels start, and whether its palette is reversed.
+struct SleepBmpLayout {
+    pixel_offset: usize,
+    invert_bits: bool,
+}
+
+/// Check a BMP of `file_len` bytes against the narrow sleep-image contract
+/// from its first [`BMP_MIN_PIXEL_OFFSET`] bytes alone: file and DIB
+/// headers, and palette.
+fn parse_sleep_bmp_header(header: &[u8], file_len: usize) -> Result<SleepBmpLayout> {
+    if header.len() < BMP_MIN_PIXEL_OFFSET || file_len < BMP_MIN_PIXEL_OFFSET {
         bail!("BMP is shorter than the required header and palette");
     }
-    if &bytes[0..2] != b"BM" {
+    if &header[0..2] != b"BM" {
         bail!("BMP signature is missing");
     }
 
-    let declared_size = read_u32(bytes, 2)? as usize;
-    let pixel_offset = read_u32(bytes, 10)? as usize;
-    let dib_header_size = read_u32(bytes, 14)? as usize;
-    let width = read_i32(bytes, 18)?;
-    let height = read_i32(bytes, 22)?;
-    let planes = read_u16(bytes, 26)?;
-    let bits_per_pixel = read_u16(bytes, 28)?;
-    let compression = read_u32(bytes, 30)?;
+    let declared_size = read_u32(header, 2)? as usize;
+    let pixel_offset = read_u32(header, 10)? as usize;
+    let dib_header_size = read_u32(header, 14)? as usize;
+    let width = read_i32(header, 18)?;
+    let height = read_i32(header, 22)?;
+    let planes = read_u16(header, 26)?;
+    let bits_per_pixel = read_u16(header, 28)?;
+    let compression = read_u32(header, 30)?;
 
-    if declared_size != bytes.len() {
-        bail!(
-            "BMP declared size {declared_size} does not match actual size {}",
-            bytes.len()
-        );
+    if declared_size != file_len {
+        bail!("BMP declared size {declared_size} does not match actual size {file_len}");
     }
     if dib_header_size < BMP_INFO_HEADER_BYTES {
         bail!("unsupported BMP DIB header size {dib_header_size}");
@@ -382,17 +385,41 @@ pub fn decode_sleep_bmp(bytes: &[u8]) -> Result<FrameBuffer> {
     if planes != 1 || bits_per_pixel != 1 || compression != 0 {
         bail!("sleep BMP must be uncompressed 1-bpp BI_RGB");
     }
-    if pixel_offset < BMP_MIN_PIXEL_OFFSET || pixel_offset + FRAMEBUFFER_SIZE > bytes.len() {
+    if pixel_offset < BMP_MIN_PIXEL_OFFSET || pixel_offset + FRAMEBUFFER_SIZE > file_len {
         bail!("sleep BMP pixel payload is truncated or has an invalid offset");
     }
 
-    let palette0 = palette_luma(bytes, 54)?;
-    let palette1 = palette_luma(bytes, 58)?;
+    let palette0 = palette_luma(header, 54)?;
+    let palette1 = palette_luma(header, 58)?;
     let invert_bits = match (palette0, palette1) {
         (0, 255) => false,
         (255, 0) => true,
         _ => bail!("sleep BMP palette must contain one black and one white entry"),
     };
+    Ok(SleepBmpLayout {
+        pixel_offset,
+        invert_bits,
+    })
+}
+
+/// Check a sleep BMP on SD from its header alone. Picking an image used to
+/// read and decode every candidate in full, 48 KB each and up to
+/// [`MAX_SLEEP_IMAGE_CANDIDATES`] of them, on every standby; now only the
+/// image actually shown is read whole.
+fn validate_sleep_bmp_file(path: &Path) -> Result<()> {
+    let mut file = fs::File::open(path)?;
+    let file_len = usize::try_from(file.metadata()?.len())?;
+    let mut header = [0_u8; BMP_MIN_PIXEL_OFFSET];
+    file.read_exact(&mut header)?;
+    parse_sleep_bmp_header(&header, file_len).map(|_| ())
+}
+
+/// Decode bytes using a deliberately narrow hardware-safe BMP contract.
+pub fn decode_sleep_bmp(bytes: &[u8]) -> Result<FrameBuffer> {
+    let SleepBmpLayout {
+        pixel_offset,
+        invert_bits,
+    } = parse_sleep_bmp_header(bytes, bytes.len())?;
 
     let source = &bytes[pixel_offset..pixel_offset + FRAMEBUFFER_SIZE];
     let mut native = vec![0_u8; FRAMEBUFFER_SIZE];
@@ -604,6 +631,28 @@ mod tests {
         assert_eq!(selection.candidate_entries, 1);
         assert_eq!(selection.ignored_entries, 1);
         assert!(selection.scan_error.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_rejects_invalid_assets_from_their_headers() {
+        let root = unique_temp_dir("header-only");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("A.BMP"), fixture()).unwrap();
+        // Pixels cut short: the header still declares the full size.
+        let mut truncated = fixture();
+        truncated.truncate(truncated.len() - 1);
+        fs::write(root.join("B.BMP"), truncated).unwrap();
+        let mut wrong_width = fixture();
+        wrong_width[18..22].copy_from_slice(&640_i32.to_le_bytes());
+        fs::write(root.join("C.BMP"), wrong_width).unwrap();
+        fs::write(root.join("D.BMP"), b"BM").unwrap();
+        let mut catalog = SleepImageCatalog::new(&root);
+        let selection = catalog.select_random(0);
+        assert!(!selection.fallback);
+        assert_eq!(selection.valid_count, 1);
+        assert_eq!(selection.rejected_count, 3);
+        assert_eq!(selection.file_name, "A.BMP");
         let _ = fs::remove_dir_all(root);
     }
 
