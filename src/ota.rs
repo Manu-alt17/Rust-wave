@@ -22,6 +22,11 @@ pub const OTA_DOWNLOAD_CHUNK_BYTES: usize = 4096;
 /// background, while Wi-Fi is connected. The Settings > Software Update
 /// screen can always trigger an immediate check regardless of this timer.
 pub const OTA_CHECK_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
+/// Whether that background check runs at all. Off until this firmware has
+/// a release repository of its own: [`crate::build_info::OTA_REPO_OWNER`]
+/// still names the upstream fork, whose releases carry a different feature
+/// set. The manual check in Settings > Software Update keeps working.
+pub const OTA_AUTO_CHECK_ENABLED: bool = false;
 
 /// One parsed GitHub "latest release" response.
 #[derive(Clone, Debug, Eq, PartialEq)]

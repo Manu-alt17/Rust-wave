@@ -77,7 +77,7 @@ mod firmware {
                 spawn_latest_release_check,
             },
             OtaCheckState, OtaUiRequest, ReleaseCheckError, ReleaseInfo,
-            OTA_CHECK_INTERVAL_SECONDS,
+            OTA_AUTO_CHECK_ENABLED, OTA_CHECK_INTERVAL_SECONDS,
         },
         panel_refresh::{
             parse_sleep_timestamp, wake_uses_fast_waveform, PanelGlobalReason,
@@ -1866,7 +1866,8 @@ mod firmware {
             // install it. The Settings > Software Update screen's manual
             // "Check Now" button is a separate request path and is
             // unaffected, so the user can still re-check on demand.
-            if !sleep_network.is_suspended()
+            if OTA_AUTO_CHECK_ENABLED
+                && !sleep_network.is_suspended()
                 && state.ota.can_check()
                 && !state.ota.is_update_available()
                 && state.network.wifi_state == WifiConnectionState::Connected
