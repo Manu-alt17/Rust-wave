@@ -51,6 +51,11 @@ pub struct Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER> {
     busy: BUSY,
     delay: DELAY,
     power: POWER,
+    /// Whether the controller's temperature register has been set since its
+    /// last reset. Partial refreshes skip reading the sensor (0x22 0xDF),
+    /// which is only valid once something has: right after a reset the
+    /// first one reads it (0xFF).
+    temperature_loaded: bool,
 }
 
 impl<SPI, DC, RST, CS, BUSY, DELAY, POWER> Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER>
@@ -96,6 +101,7 @@ where
             busy,
             delay,
             power,
+            temperature_loaded: false,
         })
     }
 
@@ -132,6 +138,7 @@ where
         let swreset_span = crate::boot_profile::span("epd-swreset");
         self.command(0x12)?; // SWRESET
         self.wait_until_idle()?;
+        self.temperature_loaded = false;
         swreset_span.end();
         let _config_span = crate::boot_profile::span("epd-controller-config");
 
@@ -178,7 +185,9 @@ where
         self.data(frame)?;
         transfer_span.end();
         let _refresh_span = crate::boot_profile::span("epd-global-refresh-wait");
-        self.turn_on_display(0xF7)
+        self.turn_on_display(0xF7)?;
+        self.temperature_loaded = true;
+        Ok(())
     }
 
     /// Transfer a base frame to both controller RAM planes and run a global
@@ -203,7 +212,30 @@ where
         self.command(0x26)?;
         self.data(frame)?;
         self.command_data(0x1A, &[FAST_GLOBAL_TEMPERATURE])?;
-        self.turn_on_display(0xD7)
+        self.turn_on_display(0xD7)?;
+        self.temperature_loaded = true;
+        Ok(())
+    }
+
+    /// Write `frame` to both controller RAM planes without refreshing the
+    /// glass. After the panel's idle sleep (controller in deep sleep, rail
+    /// off) the image is still on the glass, but the RAM the partial refresh
+    /// compares against is lost: loading the frame the glass shows puts it
+    /// back, and the next [`Self::show_partial_fullscreen`] then changes
+    /// only what changes, instead of the global refresh (a flash on nearly
+    /// every page turn after a minute of reading) that was needed before.
+    pub fn load_base_silent(&mut self, frame: &[u8]) -> Result<()> {
+        validate_frame(frame)?;
+        debug!("epd397: silent base load");
+        let _span = crate::boot_profile::span("epd-silent-base-load");
+        self.command_data(0x4E, &[0x00, 0x00])?;
+        self.command_data(0x4F, &[0x00, 0x00])?;
+        self.command(0x24)?;
+        self.data(frame)?;
+        self.command_data(0x4E, &[0x00, 0x00])?;
+        self.command_data(0x4F, &[0x00, 0x00])?;
+        self.command(0x26)?;
+        self.data(frame)
     }
 
     /// Apply a full-screen partial refresh. This intentionally mirrors the
@@ -218,10 +250,10 @@ where
     /// Skips the controller's temperature reload (0x22 bit 0x20): re-reading
     /// the sensor on every partial refresh spends time on a value that can't
     /// have drifted between two UI updates. `show_base` still reloads it on
-    /// every global refresh (boot, wake, periodic ghost cleanup, manual
-    /// cleanup, safety fallback), which bounds staleness to at most
-    /// `PANEL_PARTIAL_REFRESH_LIMIT` partials instead of a whole idle-sleep
-    /// interval.
+    /// every global refresh (boot, periodic ghost cleanup, manual cleanup,
+    /// safety fallback), and the first partial after a controller reset
+    /// reads it itself (0xFF), which bounds staleness to at most
+    /// `PANEL_PARTIAL_REFRESH_LIMIT` partials or one idle-sleep interval.
     pub fn show_partial_fullscreen(&mut self, frame: &[u8]) -> Result<()> {
         validate_frame(frame)?;
         debug!("epd397: partial full-screen refresh");
@@ -234,7 +266,10 @@ where
         self.command_data(0x4F, &[0x00, 0x00])?;
         self.command(0x24)?;
         self.data(frame)?;
-        self.turn_on_display(0xDF)
+        let control = if self.temperature_loaded { 0xDF } else { 0xFF };
+        self.turn_on_display(control)?;
+        self.temperature_loaded = true;
+        Ok(())
     }
 
     /// Put the panel controller into deep sleep and disable its PMIC rail.

@@ -2161,10 +2161,7 @@ mod firmware {
                         }
                         let woke_from_sleep = !state.panel_awake;
                         if woke_from_sleep {
-                            panel.initialize()?;
-                            state.panel_awake = true;
-                            panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
-                            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                            wake_panel_silently(&mut panel, &frame, &mut state)?;
                         }
                         state.update_board_snapshot(board_services.read_light_snapshot());
                         let previous_route = state.active_route();
@@ -2232,11 +2229,7 @@ mod firmware {
                                 sync_continue_reading_thumbnail(&mut state, &cover_cache);
                             }
                             log_board_snapshot(state.board, state.regional);
-                            let request = if woke_from_sleep {
-                                RefreshRequest::ForceGlobalAfterWake
-                            } else {
-                                RefreshRequest::Normal
-                            };
+                            let request = RefreshRequest::Normal;
                             refresh_screen(
                                 &mut panel,
                                 &mut frame,
@@ -2298,19 +2291,11 @@ mod firmware {
                             }
                             let woke_from_sleep = !state.panel_awake;
                             if woke_from_sleep {
-                                panel.initialize()?;
-                                state.panel_awake = true;
-                                panel_refresh
-                                    .reset_after_external_global(PanelGlobalReason::AfterWake);
-                                sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                                wake_panel_silently(&mut panel, &frame, &mut state)?;
                             }
                             state.update_board_snapshot(board_services.read_light_snapshot());
                             log_board_snapshot(state.board, state.regional);
-                            let request = if woke_from_sleep {
-                                RefreshRequest::ForceGlobalAfterWake
-                            } else {
-                                RefreshRequest::Normal
-                            };
+                            let request = RefreshRequest::Normal;
                             refresh_screen(
                                 &mut panel,
                                 &mut frame,
@@ -2336,10 +2321,7 @@ mod firmware {
                         }
                         let woke_from_sleep = !state.panel_awake;
                         if woke_from_sleep {
-                            panel.initialize()?;
-                            state.panel_awake = true;
-                            panel_refresh.reset_after_external_global(PanelGlobalReason::AfterWake);
-                            sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
+                            wake_panel_silently(&mut panel, &frame, &mut state)?;
                         }
 
                         state.update_board_snapshot(board_services.read_light_snapshot());
@@ -2543,9 +2525,7 @@ mod firmware {
                         let reader_clear_ghost = state.take_reader_clear_ghost_request();
                         let power_key_clear_ghost = state.take_power_key_manual_refresh_request();
                         log_board_snapshot(state.board, state.regional);
-                        let request = if woke_from_sleep {
-                            RefreshRequest::ForceGlobalAfterWake
-                        } else if reader_clear_ghost || power_key_clear_ghost {
+                        let request = if reader_clear_ghost || power_key_clear_ghost {
                             RefreshRequest::ForceGlobalManual
                         } else {
                             RefreshRequest::Normal
@@ -3684,7 +3664,6 @@ mod firmware {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum RefreshRequest {
         Normal,
-        ForceGlobalAfterWake,
         ForceGlobalManual,
         #[allow(dead_code)]
         ForceGlobalSafetyFallback,
@@ -3761,6 +3740,42 @@ mod firmware {
         }
     }
 
+    /// Bring the panel back from its idle sleep without a global refresh.
+    /// The glass still shows `frame`, the last frame drawn: only the
+    /// controller's RAM went with its rail. Loading `frame` back into both
+    /// RAM planes lets the next frame go out as an ordinary partial refresh,
+    /// where before it was a global one, a flash on nearly every page turn
+    /// after a minute of reading. The partial counter carries on, since the
+    /// ghosting it tracks stayed on the glass too.
+    fn wake_panel_silently<SPI, DC, RST, CS, BUSY, DELAY, POWER>(
+        panel: &mut Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER>,
+        frame: &FrameBuffer,
+        state: &mut AppState,
+    ) -> Result<()>
+    where
+        SPI: embedded_hal::spi::SpiBus<u8>,
+        SPI::Error: core::fmt::Debug,
+        DC: embedded_hal::digital::OutputPin,
+        DC::Error: core::fmt::Debug,
+        RST: embedded_hal::digital::OutputPin,
+        RST::Error: core::fmt::Debug,
+        CS: embedded_hal::digital::OutputPin,
+        CS::Error: core::fmt::Debug,
+        BUSY: embedded_hal::digital::InputPin,
+        BUSY::Error: core::fmt::Debug,
+        DELAY: DelayNs,
+        POWER: waveshare_epd397_rust_app::power::PanelPower,
+    {
+        panel.initialize()?;
+        panel.load_base_silent(frame.as_bytes())?;
+        state.panel_awake = true;
+        info!(
+            "rustmix-wave=panel-wake mode=silent-reload route={}",
+            state.active_route().marker()
+        );
+        Ok(())
+    }
+
     fn refresh_screen<SPI, DC, RST, CS, BUSY, DELAY, POWER>(
         panel: &mut Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER>,
         frame: &mut FrameBuffer,
@@ -3791,24 +3806,18 @@ mod firmware {
         // high through its pull-up, and `wait_until_idle` times out after
         // 15 s with an error that ends the firmware. Every caller is meant to
         // check `panel_awake` first; wake the panel here instead of trusting
-        // that, and treat the frame as the global after-wake refresh a
-        // freshly initialized controller needs anyway.
-        let request = if state.panel_awake {
-            request
-        } else {
+        // that, the same silent way they do.
+        if !state.panel_awake {
             let line = format!(
                 "rustmix-wave=panel-refresh status=woke-sleeping-panel route={}",
                 state.active_route().marker()
             );
             warn!("{line}");
             append_reset_log(&line);
-            panel.initialize()?;
-            state.panel_awake = true;
-            RefreshRequest::ForceGlobalAfterWake
-        };
+            wake_panel_silently(panel, frame, state)?;
+        }
         let coordinator_request = match request {
             RefreshRequest::Normal => PanelRefreshRequest::Normal,
-            RefreshRequest::ForceGlobalAfterWake => PanelRefreshRequest::AfterWake,
             RefreshRequest::ForceGlobalManual => PanelRefreshRequest::ManualGhostCleanup,
             RefreshRequest::ForceGlobalSafetyFallback => PanelRefreshRequest::SafetyFallback,
         };
