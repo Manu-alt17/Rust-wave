@@ -15,6 +15,11 @@
 //! issue, see `docs/KNOWN_ISSUES.md`), so a session's boundaries are defined
 //! purely by page-turn activity and an explicit inactivity timeout -- never
 //! by whether the screen happens to be lit.
+//!
+//! Days, weeks and months are the reader's own, in the timezone chosen on the
+//! device. Counted in UTC, reading in Rome between midnight and 1 or 2 a.m.
+//! went to the day before. The per-month log files stay keyed by UTC month,
+//! a storage detail the aggregation reads around.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -25,7 +30,7 @@ use std::{
 
 use log::warn;
 
-use crate::{ntp, rtc::RtcDateTime};
+use crate::{ntp, regional::TimeZoneProfile, rtc::RtcDateTime};
 
 /// SD directory holding one append-only log file per calendar month, plus
 /// nothing else -- there is no cross-month summary cache; see this module's
@@ -209,9 +214,21 @@ fn unix_seconds_from_utc(utc: RtcDateTime) -> u64 {
     (days_since_epoch.max(0) as u64) * 86_400 + seconds_of_day
 }
 
-fn yyyymmdd_from_unix_seconds(seconds: u64) -> u32 {
-    let utc = ntp::utc_from_unix_seconds(seconds);
-    u32::from(utc.year) * 10_000 + u32::from(utc.month) * 100 + u32::from(utc.day)
+/// Local wall-clock fields of the UTC instant `seconds` in `zone`.
+fn local_date(seconds: u64, zone: TimeZoneProfile) -> RtcDateTime {
+    zone.localize_utc(ntp::utc_from_unix_seconds(seconds))
+}
+
+/// `YYYYMMDD` of a date: ordered like the dates themselves.
+fn yyyymmdd(date: RtcDateTime) -> u32 {
+    u32::from(date.year) * 10_000 + u32::from(date.month) * 100 + u32::from(date.day)
+}
+
+/// The calendar date `days` days before `date`. Plain calendar arithmetic:
+/// stepping back 86 400 seconds instead skips or repeats a local date
+/// across a daylight saving change.
+fn days_before(date: RtcDateTime, days: u32) -> RtcDateTime {
+    date.shift_minutes(-(days as i32) * 24 * 60)
 }
 
 fn month_log_path(stats_root: &str, year: u16, month: u8) -> PathBuf {
@@ -272,13 +289,13 @@ fn read_recent_month_logs(
     months
 }
 
-fn aggregate_daily(sessions: &[ReadingSession]) -> Vec<DailyStats> {
+fn aggregate_daily(sessions: &[ReadingSession], zone: TimeZoneProfile) -> Vec<DailyStats> {
     let mut days: Vec<DailyStats> = Vec::new();
     for session in sessions {
-        // Attribute the session to the day it ended on -- a session that
-        // happens to straddle midnight is rare enough on a single sitting
-        // that splitting it isn't worth the complexity.
-        let date = yyyymmdd_from_unix_seconds(session.end_ts);
+        // Attribute the session to the local day it ended on -- a session
+        // that happens to straddle midnight is rare enough on a single
+        // sitting that splitting it isn't worth the complexity.
+        let date = yyyymmdd(local_date(session.end_ts, zone));
         let seconds = session.duration_seconds().min(u64::from(u32::MAX)) as u32;
         let chars = session.chars_read().min(u64::from(u32::MAX)) as u32;
         if let Some(day) = days.iter_mut().find(|day| day.date == date) {
@@ -297,15 +314,15 @@ fn aggregate_daily(sessions: &[ReadingSession]) -> Vec<DailyStats> {
     days
 }
 
-/// Consecutive days, counted back from `now`, with `total_seconds > 0`.
-/// Stops at the first gap -- if today has no reading logged yet, the streak
-/// is reported as 0 until today's first session closes.
+/// Consecutive local days, counted back from `now`, with `total_seconds >
+/// 0`. Stops at the first gap -- if today has no reading logged yet, the
+/// streak is reported as 0 until today's first session closes.
 #[must_use]
-pub fn current_streak_days(daily: &[DailyStats], now: u64) -> u32 {
+pub fn current_streak_days(daily: &[DailyStats], now: u64, zone: TimeZoneProfile) -> u32 {
+    let today = local_date(now, zone);
     let mut streak = 0;
-    let mut cursor = now;
-    for _ in 0..STREAK_SAFETY_CAP_DAYS {
-        let date = yyyymmdd_from_unix_seconds(cursor);
+    for days in 0..STREAK_SAFETY_CAP_DAYS {
+        let date = yyyymmdd(days_before(today, days));
         let has_reading = daily
             .iter()
             .any(|day| day.date == date && day.total_seconds > 0);
@@ -313,10 +330,6 @@ pub fn current_streak_days(daily: &[DailyStats], now: u64) -> u32 {
             break;
         }
         streak += 1;
-        let Some(previous_day) = cursor.checked_sub(86_400) else {
-            break;
-        };
-        cursor = previous_day;
     }
     streak
 }
@@ -442,43 +455,52 @@ pub struct ReadingStatsSnapshot {
 /// Lazily aggregate everything the Reading Stats screen shows by reading
 /// only the current month's log plus, for the streak, up to
 /// [`STREAK_LOOKBACK_MONTHS`] preceding months -- never the device's entire
-/// reading history.
+/// reading history. Days, the week and the month are local to `zone`.
 #[must_use]
 pub fn compute_snapshot(
     stats_root: &str,
     now: u64,
     book_progress: Option<CurrentBookProgress>,
+    zone: TimeZoneProfile,
 ) -> ReadingStatsSnapshot {
     let _span = crate::boot_profile::span("reading-stats-compute");
-    let today = yyyymmdd_from_unix_seconds(now);
+    let local_now = local_date(now, zone);
+    let today = yyyymmdd(local_now);
 
     // Every log is read once: the current month, the recent window and the
     // streak window below are all prefixes of this newest-first list.
     let months = read_recent_month_logs(stats_root, STREAK_LOOKBACK_MONTHS, now);
-    let month_sessions = months.first().map_or(&[][..], Vec::as_slice);
+
+    // Current + previous log always covers any trailing 7-day window, the
+    // 10-session speed window and the whole local month: the logs are split
+    // by UTC month, which is never more than a day away from the local one.
+    let recent_sessions: Vec<ReadingSession> = months.iter().take(2).flatten().copied().collect();
+    let month_sessions: Vec<ReadingSession> = recent_sessions
+        .iter()
+        .filter(|session| {
+            let local = local_date(session.end_ts, zone);
+            (local.year, local.month) == (local_now.year, local_now.month)
+        })
+        .copied()
+        .collect();
     let month_seconds: u32 = month_sessions
         .iter()
         .map(ReadingSession::duration_seconds)
         .sum::<u64>()
         .min(u64::from(u32::MAX)) as u32;
-
-    // Current + previous month always covers any trailing 7-day window and
-    // the 10-session speed window, regardless of where in the month `now`
-    // falls.
-    let recent_sessions: Vec<ReadingSession> = months.iter().take(2).flatten().copied().collect();
-    let recent_daily = aggregate_daily(&recent_sessions);
+    let recent_daily = aggregate_daily(&recent_sessions, zone);
     let today_stats = recent_daily.iter().find(|day| day.date == today).copied();
-    let week_start = now.saturating_sub(6 * 86_400);
-    let week_seconds: u32 = recent_sessions
+    let week_start = yyyymmdd(days_before(local_now, 6));
+    let week_seconds: u32 = recent_daily
         .iter()
-        .filter(|session| session.end_ts >= week_start && session.end_ts <= now)
-        .map(ReadingSession::duration_seconds)
+        .filter(|day| (week_start..=today).contains(&day.date))
+        .map(|day| u64::from(day.total_seconds))
         .sum::<u64>()
         .min(u64::from(u32::MAX)) as u32;
 
     let streak_sessions: Vec<ReadingSession> = months.iter().flatten().copied().collect();
-    let streak_daily = aggregate_daily(&streak_sessions);
-    let streak_days = current_streak_days(&streak_daily, now);
+    let streak_daily = aggregate_daily(&streak_sessions, zone);
+    let streak_days = current_streak_days(&streak_daily, now, zone);
 
     let chars_per_second = weighted_chars_per_second(&recent_sessions, now);
     let chars_per_minute = chars_per_second.map(|value| (value * 60.0).round() as u32);
@@ -506,8 +528,8 @@ pub fn compute_snapshot(
         chars_per_minute,
         remaining_chapter_seconds,
         remaining_book_seconds,
-        last_7_days: last_7_days_bars(&recent_daily, now),
-        books_this_month: top_books_this_month(month_sessions),
+        last_7_days: last_7_days_bars(&recent_daily, now, zone),
+        books_this_month: top_books_this_month(&month_sessions),
     }
 }
 
@@ -515,15 +537,13 @@ pub fn compute_snapshot(
 /// an already-aggregated daily list -- `recent_daily` in [`compute_snapshot`]
 /// always covers the current + previous month, which is always enough for
 /// any trailing 7-day window regardless of where in the month `now` falls.
-fn last_7_days_bars(daily: &[DailyStats], now: u64) -> [DayBar; 7] {
+fn last_7_days_bars(daily: &[DailyStats], now: u64, zone: TimeZoneProfile) -> [DayBar; 7] {
+    let today = local_date(now, zone);
     let mut bars = [DayBar::default(); 7];
     for (offset, bar) in bars.iter_mut().enumerate() {
-        let days_back = 6 - offset as u64;
-        let Some(timestamp) = now.checked_sub(days_back * 86_400) else {
-            continue;
-        };
-        let date = yyyymmdd_from_unix_seconds(timestamp);
-        let weekday = ntp::utc_from_unix_seconds(timestamp).weekday;
+        let day = days_before(today, 6 - offset as u32);
+        let date = yyyymmdd(day);
+        let weekday = day.weekday;
         let total_seconds = daily
             .iter()
             .find(|day| day.date == date)
@@ -676,12 +696,91 @@ mod tests {
         weighted_chars_per_second, CurrentBookProgress, DailyStats, ReadingSession,
         ReadingStatsTracker,
     };
-    use crate::{ntp::utc_from_unix_seconds, rtc::RtcDateTime};
+    use crate::{ntp::utc_from_unix_seconds, regional::TimeZoneProfile, rtc::RtcDateTime};
     use std::{
         fs,
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    const UTC: TimeZoneProfile = TimeZoneProfile::Utc;
+    const ROME: TimeZoneProfile = TimeZoneProfile::EuropeRome;
+
+    fn utc_day(seconds: u64) -> u32 {
+        super::yyyymmdd(utc_from_unix_seconds(seconds))
+    }
+
+    fn unix(month: u8, day: u8, hour: u8, minute: u8) -> u64 {
+        unix_seconds_from_utc(RtcDateTime {
+            year: 2026,
+            month,
+            day,
+            weekday: 0,
+            hour,
+            minute,
+            second: 0,
+        })
+    }
+
+    fn reading_day(date: u32) -> DailyStats {
+        DailyStats {
+            date,
+            total_seconds: 600,
+            sessions: 1,
+            chars_read: 6_000,
+        }
+    }
+
+    #[test]
+    fn days_are_local_to_the_chosen_timezone() {
+        // 23:30 UTC on 3 June is 01:30 on 4 June in Rome (CEST).
+        let late = session(1, unix(6, 3, 23, 20), unix(6, 3, 23, 30), 0, 6_000);
+        assert_eq!(aggregate_daily(&[late], ROME)[0].date, 20260604);
+        assert_eq!(aggregate_daily(&[late], UTC)[0].date, 20260603);
+
+        let root = fixture_root("local-days");
+        append_session(&root, late).unwrap();
+        let now = unix(6, 4, 8, 0);
+        let rome = compute_snapshot(&root, now, None, ROME);
+        assert_eq!(rome.today_seconds, 600);
+        assert_eq!(rome.streak_days, 1);
+        assert_eq!(rome.last_7_days[6].total_seconds, 600);
+        let utc = compute_snapshot(&root, now, None, UTC);
+        assert_eq!(utc.today_seconds, 0);
+        assert_eq!(utc.last_7_days[5].total_seconds, 600);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_month_is_the_local_one() {
+        // 22:30 UTC on 30 June, logged in June's file, is 00:30 on 1 July in
+        // Rome: July's reading there, June's in UTC.
+        let root = fixture_root("local-month");
+        append_session(&root, session(1, unix(6, 30, 22, 20), unix(6, 30, 22, 30), 0, 6_000))
+            .unwrap();
+        let now = unix(7, 1, 8, 0);
+        assert_eq!(compute_snapshot(&root, now, None, ROME).month_seconds, 600);
+        assert_eq!(compute_snapshot(&root, now, None, ROME).books_this_month.len(), 1);
+        assert_eq!(compute_snapshot(&root, now, None, UTC).month_seconds, 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn streak_steps_through_a_daylight_saving_change() {
+        // 29 March 2026 is 23 hours long in Rome. At 00:30 on 30 March, 24
+        // hours earlier is already 28 March: stepping by seconds skipped the
+        // 29th.
+        let now = unix(3, 29, 22, 30);
+        let daily = [reading_day(20260330), reading_day(20260329), reading_day(20260328)];
+        assert_eq!(current_streak_days(&daily, now, ROME), 3);
+        let bars = last_7_days_bars(&daily, now, ROME);
+        assert_eq!(
+            bars.map(|bar| bar.total_seconds),
+            [0, 0, 0, 0, 600, 600, 600]
+        );
+        // 30 March 2026 is a Monday.
+        assert_eq!(bars[6].weekday, 1);
+    }
 
     fn fixture_root(label: &str) -> String {
         let nonce = SystemTime::now()
@@ -838,7 +937,7 @@ mod tests {
             session(1, day_seconds + 100, day_seconds + 700, 0, 600),
             session(1, day_seconds + 800, day_seconds + 1_100, 600, 900),
         ];
-        let daily = aggregate_daily(&sessions);
+        let daily = aggregate_daily(&sessions, UTC);
         assert_eq!(daily.len(), 1);
         assert_eq!(daily[0].total_seconds, 600 + 300);
         assert_eq!(daily[0].sessions, 2);
@@ -848,9 +947,9 @@ mod tests {
     #[test]
     fn streak_counts_back_from_today_and_stops_at_a_gap() {
         let now = 10 * 86_400 + 3_600; // some time on "day 10".
-        let today = super::yyyymmdd_from_unix_seconds(now);
-        let yesterday = super::yyyymmdd_from_unix_seconds(now - 86_400);
-        let two_days_ago = super::yyyymmdd_from_unix_seconds(now - 2 * 86_400);
+        let today = utc_day(now);
+        let yesterday = utc_day(now - 86_400);
+        let two_days_ago = utc_day(now - 2 * 86_400);
         let daily = vec![
             DailyStats {
                 date: today,
@@ -871,20 +970,20 @@ mod tests {
                 chars_read: 0,
             },
         ];
-        assert_eq!(current_streak_days(&daily, now), 2);
+        assert_eq!(current_streak_days(&daily, now, UTC), 2);
     }
 
     #[test]
     fn streak_is_zero_when_today_has_no_reading_yet() {
         let now = 10 * 86_400 + 3_600;
-        let yesterday = super::yyyymmdd_from_unix_seconds(now - 86_400);
+        let yesterday = utc_day(now - 86_400);
         let daily = vec![DailyStats {
             date: yesterday,
             total_seconds: 60,
             sessions: 1,
             chars_read: 10,
         }];
-        assert_eq!(current_streak_days(&daily, now), 0);
+        assert_eq!(current_streak_days(&daily, now, UTC), 0);
     }
 
     #[test]
@@ -945,7 +1044,7 @@ mod tests {
     #[test]
     fn compute_snapshot_reports_unavailable_speed_without_history() {
         let root = fixture_root("empty-snapshot");
-        let snapshot = compute_snapshot(&root, 1_780_488_000, None);
+        let snapshot = compute_snapshot(&root, 1_780_488_000, None, UTC);
         assert!(snapshot.available);
         assert_eq!(snapshot.today_seconds, 0);
         assert_eq!(snapshot.streak_days, 0);
@@ -964,7 +1063,7 @@ mod tests {
             chapter_end_position: Some(400),
             book_end_position: Some(1_000),
         };
-        let snapshot = compute_snapshot(&root, now, Some(progress));
+        let snapshot = compute_snapshot(&root, now, Some(progress), UTC);
         assert_eq!(snapshot.chars_per_minute, Some(120));
         assert_eq!(snapshot.remaining_chapter_seconds, Some(100));
         assert_eq!(snapshot.remaining_book_seconds, Some(400));
@@ -974,8 +1073,8 @@ mod tests {
     #[test]
     fn last_7_days_bars_places_today_last_and_fills_gaps_with_zero() {
         let now = 1_780_488_000_u64; // 2026-06-03, some weekday.
-        let today = super::yyyymmdd_from_unix_seconds(now);
-        let two_days_ago = super::yyyymmdd_from_unix_seconds(now - 2 * 86_400);
+        let today = utc_day(now);
+        let two_days_ago = utc_day(now - 2 * 86_400);
         let daily = vec![
             DailyStats {
                 date: today,
@@ -990,7 +1089,7 @@ mod tests {
                 chars_read: 50,
             },
         ];
-        let bars = last_7_days_bars(&daily, now);
+        let bars = last_7_days_bars(&daily, now, UTC);
         assert_eq!(bars[6].total_seconds, 600, "today must be the last entry");
         assert_eq!(
             bars[4].total_seconds, 300,

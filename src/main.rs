@@ -1793,6 +1793,7 @@ mod firmware {
                             STATS_DIRECTORY,
                             now,
                             state.reader.continue_reading_progress(),
+                            state.regional.timezone,
                         )
                     });
                 state.update_reading_stats_snapshot(snapshot);
@@ -2588,7 +2589,12 @@ mod firmware {
     /// clause isn't blank until the reader navigates away and back.
     fn refresh_reading_stats_snapshot_now(state: &mut AppState) {
         let snapshot = reading_stats_now(state).map_or_else(ReadingStatsSnapshot::default, |now| {
-            compute_snapshot(STATS_DIRECTORY, now, state.reader.continue_reading_progress())
+            compute_snapshot(
+                STATS_DIRECTORY,
+                now,
+                state.reader.continue_reading_progress(),
+                state.regional.timezone,
+            )
         });
         state.update_reading_stats_snapshot(snapshot);
     }
