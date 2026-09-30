@@ -20,7 +20,6 @@ use embedded_iconoir::{
         connectivity::Wifi as CompactWifi,
         docs::{Folder as CompactFolder, MultiplePages as CompactMultiplePages},
         editor::TextSize as CompactTextSize,
-        gaming::Gamepad as CompactGamepad,
         navigation::Compass as CompactCompass,
         other::{
             Alarm as CompactAlarm, Clock as CompactClock, Import as CompactImport,
@@ -214,7 +213,7 @@ fn draw_tile_frame(
 
 /// Dispatch to the category glyph, drawn as a `size48px` `embedded-iconoir`
 /// outline glyph nearest-neighbor upscaled to [`COMPACT_ICON_DRAW_SIZE`] (see
-/// [`draw_iconoir_icon_scaled`]): BookStack/StatsReport/Gamepad/Import/
+/// [`draw_iconoir_icon_scaled`]): BookStack/StatsReport/Import/
 /// Folder/Settings on the Home grid (Continue Reading draws its own cover art
 /// instead of a glyph — see
 /// `screens::category::draw_continue_reading_tile`; Bookmarks has no tile of
@@ -233,9 +232,6 @@ fn draw_route_icon_compact(
         }
         ScreenRoute::ReadingStats => {
             draw_iconoir_icon_scaled(display, top_left, &CompactStatsReport::new(BinaryColor::On))
-        }
-        ScreenRoute::Games => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactGamepad::new(BinaryColor::On))
         }
         ScreenRoute::WifiTransfer => {
             draw_iconoir_icon_scaled(display, top_left, &CompactImport::new(BinaryColor::On))

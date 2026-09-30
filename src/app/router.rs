@@ -7,7 +7,6 @@ use crate::regional::Locale;
 pub enum ScreenRoute {
     #[default]
     Home,
-    Games,
     Tools,
     Settings,
     ContinueReading,
@@ -29,8 +28,6 @@ pub enum ScreenRoute {
     VoiceNotes,
     VoiceNoteDetails,
     VoiceNoteRecording,
-    Magic,
-    MagicView,
     Files,
     Dictionary,
     UnitConverter,
@@ -63,7 +60,6 @@ impl ScreenRoute {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Home => "Home",
-            Self::Games => "Games",
             Self::Tools => "Tools",
             Self::Settings => "Settings",
             Self::ContinueReading => "Continue Reading",
@@ -85,8 +81,6 @@ impl ScreenRoute {
             Self::VoiceNotes => "Voice Notes",
             Self::VoiceNoteDetails => "Voice Note",
             Self::VoiceNoteRecording => "Record Voice Note",
-            Self::Magic => "Magic Tokens",
-            Self::MagicView => "Token View",
             Self::Files => "File Browser",
             Self::Dictionary => "Dictionary",
             Self::UnitConverter => "Unit Converter",
@@ -133,7 +127,6 @@ impl ScreenRoute {
             },
             Locale::Italian => match self {
                 Self::Home => "Home",
-                Self::Games => "Giochi",
                 Self::Tools => "Strumenti",
                 Self::Settings => "Impostazioni",
                 Self::ContinueReading => "Continua a leggere",
@@ -155,8 +148,6 @@ impl ScreenRoute {
                 Self::VoiceNotes => "Note vocali",
                 Self::VoiceNoteDetails => "Nota vocale",
                 Self::VoiceNoteRecording => "Registra nota vocale",
-                Self::Magic => "Token Magic",
-                Self::MagicView => "Visualizza token",
                 Self::Files => "Esplora file",
                 Self::Dictionary => "Dizionario",
                 Self::UnitConverter => "Conv",
@@ -190,7 +181,6 @@ impl ScreenRoute {
     pub const fn marker(self) -> &'static str {
         match self {
             Self::Home => "home",
-            Self::Games => "games",
             Self::Tools => "tools",
             Self::Settings => "settings",
             Self::ContinueReading => "continue-reading",
@@ -212,8 +202,6 @@ impl ScreenRoute {
             Self::VoiceNotes => "voice-notes",
             Self::VoiceNoteDetails => "voice-note-details",
             Self::VoiceNoteRecording => "voice-note-recording",
-            Self::Magic => "magic",
-            Self::MagicView => "magic-view",
             Self::Files => "file-browser",
             Self::Dictionary => "dictionary",
             Self::UnitConverter => "unit-converter",
@@ -244,7 +232,7 @@ impl ScreenRoute {
 
     #[must_use]
     pub const fn is_category(self) -> bool {
-        matches!(self, Self::Games | Self::Tools | Self::Settings)
+        matches!(self, Self::Tools | Self::Settings)
     }
 
     /// Whether this route only exists while a book session is open. Used to
@@ -268,7 +256,7 @@ impl ScreenRoute {
     pub const fn parent(self) -> Option<Self> {
         match self {
             Self::Home => None,
-            Self::Games | Self::Tools | Self::Settings => Some(Self::Home),
+            Self::Tools | Self::Settings => Some(Self::Home),
             Self::ReadingStats => Some(Self::Home),
             Self::ContinueReading | Self::Library => Some(Self::Home),
             Self::LibraryBookActions => Some(Self::Library),
@@ -284,8 +272,6 @@ impl ScreenRoute {
             Self::CalendarEventEditor => Some(Self::CalendarAgenda),
             Self::CalendarDeleteConfirmation => Some(Self::CalendarEventDetails),
             Self::VoiceNoteDetails | Self::VoiceNoteRecording => Some(Self::VoiceNotes),
-            Self::Magic => Some(Self::Games),
-            Self::MagicView => Some(Self::Magic),
             Self::Files | Self::Dictionary | Self::UnitConverter => Some(Self::Tools),
             Self::PowerKeyMenu => Some(Self::Home),
             Self::Alarms
@@ -408,8 +394,6 @@ mod tests {
         );
         assert_eq!(ScreenRoute::OtaUpdate.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::Library.parent(), Some(ScreenRoute::Home));
-        assert_eq!(ScreenRoute::Magic.parent(), Some(ScreenRoute::Games));
-        assert_eq!(ScreenRoute::MagicView.parent(), Some(ScreenRoute::Magic));
         assert_eq!(ScreenRoute::Home.parent(), None);
         assert_eq!(ScreenRoute::WifiTransfer.parent(), Some(ScreenRoute::Home));
         assert_eq!(

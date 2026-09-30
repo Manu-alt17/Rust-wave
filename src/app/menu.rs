@@ -11,9 +11,8 @@ use crate::regional::Locale;
 
 use super::router::ScreenRoute;
 
-pub const MAIN_CATEGORY_COUNT: usize = 7;
-pub const CATEGORY_COUNT: usize = 3;
-pub const CATEGORY_PAGE_SIZE: usize = 6;
+pub const MAIN_CATEGORY_COUNT: usize = 6;
+pub const CATEGORY_COUNT: usize = 2;
 pub const TOOLS_ENTRY_COUNT: usize = 7;
 pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
@@ -81,15 +80,6 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         route: ScreenRoute::ReadingStats,
     },
     MenuEntry {
-        label_en: "Games",
-        label_it: "Giochi",
-        subtitle_en: "E-paper friendly games",
-        subtitle_it: "Giochi adatti allo schermo e-paper",
-        badge_en: "SD",
-        badge_it: "SD",
-        route: ScreenRoute::Games,
-    },
-    MenuEntry {
         label_en: "Upload",
         label_it: "Carica",
         subtitle_en: "Wi-Fi transfer, or Wi-Fi setup if not connected yet",
@@ -116,11 +106,11 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         badge_it: "7",
         route: ScreenRoute::Settings,
     },
-    // Kept last rather than first so every existing `home_selected` index
-    // above (0..=5, the grid tiles) keeps its meaning unchanged; the default
-    // `home_selected` (see `AppState::default`) still lands on this entry
-    // first, since resuming the current book is the most likely first
-    // action. The Home dashboard draws this one as the full-width Continue
+    // Kept last rather than first so the grid tiles above keep the leading
+    // `home_selected` indices; the default `home_selected` (see
+    // `AppState::default`) still lands on this entry first, since resuming
+    // the current book is the most likely first action. The Home dashboard
+    // draws this one as the full-width Continue
     // Reading card instead of a grid tile (see `screens::home::render_home`)
     // and `AppState::apply_home` resumes the saved book directly on SELECT
     // instead of routing through the old intermediate summary screen.
@@ -132,18 +122,6 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::ContinueReading,
-    },
-];
-
-const GAMES_ENTRIES: [MenuEntry; 1] = [
-    MenuEntry {
-        label_en: "Magic Tokens",
-        label_it: "Token Magic",
-        subtitle_en: "MTG token art curated from your phone",
-        subtitle_it: "Illustrazioni token MTG curate dal telefono",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Magic,
     },
 ];
 
@@ -294,7 +272,6 @@ pub const fn home_entries() -> &'static [MenuEntry] {
 #[must_use]
 pub const fn category_entries(route: ScreenRoute) -> &'static [MenuEntry] {
     match route {
-        ScreenRoute::Games => &GAMES_ENTRIES,
         ScreenRoute::Tools => &TOOLS_ENTRIES,
         ScreenRoute::Settings => &SETTINGS_ENTRIES,
         _ => &[],
@@ -304,9 +281,8 @@ pub const fn category_entries(route: ScreenRoute) -> &'static [MenuEntry] {
 #[must_use]
 pub const fn category_index(route: ScreenRoute) -> Option<usize> {
     match route {
-        ScreenRoute::Games => Some(0),
-        ScreenRoute::Tools => Some(1),
-        ScreenRoute::Settings => Some(2),
+        ScreenRoute::Tools => Some(0),
+        ScreenRoute::Settings => Some(1),
         _ => None,
     }
 }
@@ -375,7 +351,7 @@ impl CategoryUsage {
 
     /// Size of `category`'s "Most used" section; `0` means the grid draws a
     /// single uncaptioned run of tiles (e.g. Tools before anything was ever
-    /// opened, or Games, which has no history at all).
+    /// opened).
     #[must_use]
     pub fn most_used_count(&self, category: ScreenRoute) -> usize {
         self.recent(category).len()
@@ -477,17 +453,12 @@ mod tests {
     #[test]
     fn exposes_requested_main_category_counts_without_synthetic_back_rows() {
         assert_eq!(home_entries().len(), MAIN_CATEGORY_COUNT);
-        assert_eq!(category_entries(ScreenRoute::Games).len(), 1);
         assert_eq!(category_entries(ScreenRoute::Tools).len(), TOOLS_ENTRY_COUNT);
         assert_eq!(
             category_entries(ScreenRoute::Settings).len(),
             SETTINGS_ENTRY_COUNT
         );
-        for route in [
-            ScreenRoute::Games,
-            ScreenRoute::Tools,
-            ScreenRoute::Settings,
-        ] {
+        for route in [ScreenRoute::Tools, ScreenRoute::Settings] {
             assert!(category_entries(route)
                 .iter()
                 .all(|entry| entry.route != ScreenRoute::Home));

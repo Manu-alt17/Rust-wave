@@ -1,4 +1,5 @@
-//! Generic category list screen with bounded paging.
+//! Category screens (Tools, Settings) drawn as icon-tile grids, plus the
+//! Continue Reading card the Home dashboard shares.
 
 use core::convert::Infallible;
 
@@ -11,14 +12,13 @@ use embedded_graphics::{
 use crate::{
     app::{
         i18n::t,
-        menu::{category_entries, MenuEntry, CATEGORY_PAGE_SIZE},
+        menu::MenuEntry,
         router::ScreenRoute,
         state::AppState,
         typography::{Text, UiTextRole, UiTextStyle},
         widgets::{
             header::draw_header,
             home_tile::{draw_home_tile_compact, COMPACT_TILE_SIZE, TILE_GAP_X, TILE_GAP_Y},
-            menu_row::draw_menu_row,
         },
     },
     cover_cache::{THUMB_HEIGHT, THUMB_WIDTH},
@@ -29,40 +29,7 @@ pub fn render_category(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
-    let route = state.active_route();
-    if matches!(route, ScreenRoute::Settings | ScreenRoute::Tools) {
-        return render_tile_grid(display, state, route);
-    }
-
-    // Games is the one category still shown as a full-width text row list
-    // (icon + title + a count badge fits a row better than a small tile);
-    // Settings and Tools both use the icon-tile grid above instead.
-    let locale = state.regional.locale;
-    let entries = category_entries(route);
-    let selected = state.category_selection(route);
-    let page_start = (selected / CATEGORY_PAGE_SIZE) * CATEGORY_PAGE_SIZE;
-    let title = route.label_i18n(locale).to_ascii_uppercase();
-
-    draw_header(display, state, &title)?;
-
-    for (visible_index, entry) in entries
-        .iter()
-        .copied()
-        .skip(page_start)
-        .take(CATEGORY_PAGE_SIZE)
-        .enumerate()
-    {
-        draw_menu_row(
-            display,
-            168 + visible_index as i32 * 86,
-            entry,
-            page_start + visible_index == selected,
-            state.display,
-            locale,
-        )?;
-    }
-
-    Ok(())
+    render_tile_grid(display, state, state.active_route())
 }
 
 /// Padding kept between the Continue Reading tile's border and its cover
@@ -140,7 +107,7 @@ pub(crate) fn draw_continue_reading_tile(
             .draw(display)?;
     }
 
-    // Home is always Portrait (every route except ReaderPage/MagicView
+    // Home is always Portrait (every route except ReaderPage
     // forces it — see `AppState::sync_orientation_for_active_route`), so
     // the fast blit path the Library grid uses can run unconditionally here.
     let cover_point = Point::new(

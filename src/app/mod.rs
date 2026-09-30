@@ -94,8 +94,17 @@ pub fn render_current_screen(frame: &mut FrameBuffer, state: &AppState) -> Resul
 mod tests {
     use embedded_graphics::prelude::Point;
 
-    use super::{render_current_screen, AppState, ScreenRoute};
+    use super::{menu::home_entries, render_current_screen, AppState, ScreenRoute};
     use crate::{buttons::ButtonEvent, framebuffer::FrameBuffer};
+
+    /// Position of `route` on the Home dashboard, so these tests keep
+    /// working as tiles are added or removed.
+    fn home_index(route: ScreenRoute) -> usize {
+        home_entries()
+            .iter()
+            .position(|entry| entry.route == route)
+            .expect("route is on the Home dashboard")
+    }
 
     #[test]
     fn home_renderer_uses_the_shared_white_header_and_footer_chrome() {
@@ -113,7 +122,7 @@ mod tests {
     fn settings_display_renderer_is_reachable_from_home() {
         let mut frame = FrameBuffer::new_white();
         let mut state = AppState::default();
-        state.home_selected = 5;
+        state.home_selected = home_index(ScreenRoute::Settings);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Settings);
         for _ in 0..4 {
@@ -130,7 +139,7 @@ mod tests {
     #[test]
     fn tools_file_browser_route_is_reachable() {
         let mut state = AppState::default();
-        state.home_selected = 4;
+        state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Files);
@@ -140,7 +149,7 @@ mod tests {
     fn tools_dictionary_route_renders_offline_without_sd_pack() {
         let mut frame = FrameBuffer::new_white();
         let mut state = AppState::default();
-        state.home_selected = 4;
+        state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
@@ -152,7 +161,7 @@ mod tests {
     fn tools_unit_converter_route_renders_offline() {
         let mut frame = FrameBuffer::new_white();
         let mut state = AppState::default();
-        state.home_selected = 4;
+        state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
@@ -325,7 +334,7 @@ mod tests {
                 // in their English fallback ("RECENT"/"NEW"/"DONE") instead
                 // of "RECENTI"/"NUOVO"/"COMPLETATO".
                 state.regional.locale = crate::regional::Locale::Italian;
-                state.home_selected = 0;
+                state.home_selected = home_index(ScreenRoute::Library);
                 state.apply(crate::buttons::ButtonEvent::Select);
                 // Seeded after navigating in: entering the Library route
                 // calls `refresh_library`, which rescans `books_root` from
@@ -334,7 +343,7 @@ mod tests {
             }),
             ("library-recent-section", |state| {
                 state.regional.locale = crate::regional::Locale::Italian;
-                state.home_selected = 0;
+                state.home_selected = home_index(ScreenRoute::Library);
                 state.apply(crate::buttons::ButtonEvent::Select);
                 // One never-opened book and one finished book, so Recent's
                 // single row shows New and Completato side by side: New
@@ -380,7 +389,7 @@ mod tests {
                 // Recent never gets a header at all when every book has a
                 // saved position.
                 state.regional.locale = crate::regional::Locale::Italian;
-                state.home_selected = 0;
+                state.home_selected = home_index(ScreenRoute::Library);
                 state.apply(crate::buttons::ButtonEvent::Select);
                 let book = |path: &str, title: &str| crate::reader::ReaderBook {
                     path: path.into(),
@@ -415,7 +424,7 @@ mod tests {
                 // Held SELECT on a Library cover opens this overlay for the
                 // selected book.
                 state.regional.locale = crate::regional::Locale::Italian;
-                state.home_selected = 0;
+                state.home_selected = home_index(ScreenRoute::Library);
                 state.apply(crate::buttons::ButtonEvent::Select);
                 // Seeded after navigating in: entering the Library route
                 // calls `refresh_library`, which rescans `books_root` from
@@ -483,7 +492,7 @@ mod tests {
             }),
             ("library-deep-scroll", |state| {
                 state.regional.locale = crate::regional::Locale::Italian;
-                state.home_selected = 0;
+                state.home_selected = home_index(ScreenRoute::Library);
                 state.apply(crate::buttons::ButtonEvent::Select);
                 seed_library_preview_books_long(state);
                 // Reading Now has 2 entries (0-1); Recent's rows are
@@ -492,11 +501,11 @@ mod tests {
                 state.reader.library_selected = 7;
             }),
             ("settings-paged", |state| {
-                state.home_selected = 5;
+                state.home_selected = home_index(ScreenRoute::Settings);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("device-info-board", |state| {
-                state.home_selected = 5;
+                state.home_selected = home_index(ScreenRoute::Settings);
                 state.apply(crate::buttons::ButtonEvent::Select);
                 for _ in 0..4 {
                     state.apply(crate::buttons::ButtonEvent::Down);
@@ -505,7 +514,7 @@ mod tests {
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("calendar", |state| {
-                state.home_selected = 4; // Tools: Files, Dictionary, Unit Converter, Calendar, Voice Notes.
+                state.home_selected = home_index(ScreenRoute::Tools);
                 state.apply(crate::buttons::ButtonEvent::Select);
                 state.apply(crate::buttons::ButtonEvent::Down);
                 state.apply(crate::buttons::ButtonEvent::Down);
@@ -513,11 +522,11 @@ mod tests {
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("tools", |state| {
-                state.home_selected = 4;
+                state.home_selected = home_index(ScreenRoute::Tools);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("statistics-empty", |state| {
-                state.home_selected = 1;
+                state.home_selected = home_index(ScreenRoute::ReadingStats);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("statistics-with-data", |state| {
@@ -613,7 +622,7 @@ mod tests {
                         entry.book_id = id;
                     }
                 }
-                state.home_selected = 1;
+                state.home_selected = home_index(ScreenRoute::ReadingStats);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("reader-preferences", |state| {

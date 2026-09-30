@@ -10,7 +10,6 @@ use crate::{
     dictionary::DictionaryUiState,
     imu::ImuReading,
     imu_events::{ImuControlOutcome, ImuDetectedEvent, ImuEventBridge},
-    magic_tokens::{MagicRowAction, MagicUiState},
     network::NetworkSnapshot,
     network_saved::NetworkSavedUiState,
     orientation::DisplayOrientation,
@@ -62,9 +61,6 @@ pub struct AppState {
     pub unit_converter: UnitConverterUiState,
     /// TXT / reflowable EPUB Reader library, staged opening, RAM cache and options.
     pub reader: ReaderUiState,
-    /// Magic: The Gathering token library, active-selection cursor and
-    /// (once the view screen is entered) the loaded 1bpp tiles.
-    pub magic: MagicUiState,
     /// Rust-owned debounced QMI8658 event bridge and diagnostics controls.
     pub imu_events: ImuEventBridge,
     pub partial_refreshes: u8,
@@ -149,7 +145,6 @@ impl Default for AppState {
             dictionary: DictionaryUiState::default(),
             unit_converter: UnitConverterUiState::default(),
             reader: ReaderUiState::default(),
-            magic: MagicUiState::default(),
             imu_events: ImuEventBridge::default(),
             partial_refreshes: 0,
             panel_awake: true,
@@ -276,8 +271,6 @@ impl AppState {
                 | ScreenRoute::VoiceNoteRecording
         ) {
             self.apply_voice_notes(event);
-        } else if route == ScreenRoute::Magic {
-            self.apply_magic(event);
         } else if matches!(
             route,
             ScreenRoute::ContinueReading
@@ -402,13 +395,7 @@ impl AppState {
                     | ScreenRoute::WifiTransfer,
                     _,
                 )
-                | (
-                    ScreenRoute::Files
-                    | ScreenRoute::Alarms
-                    | ScreenRoute::Audio
-                    | ScreenRoute::MagicView,
-                    _,
-                ) => {}
+                | (ScreenRoute::Files | ScreenRoute::Alarms | ScreenRoute::Audio, _) => {}
                 _ => {}
             }
         }
@@ -495,9 +482,6 @@ impl AppState {
                 if target == ScreenRoute::Calendar {
                     self.initialize_calendar_if_needed();
                     self.calendar.refresh_events();
-                }
-                if target == ScreenRoute::Magic {
-                    self.magic.refresh_catalog(true);
                 }
                 if target == ScreenRoute::VoiceNotes {
                     self.voice_notes.refresh_catalog();
@@ -779,23 +763,6 @@ impl AppState {
             ButtonEvent::Select => {
                 self.note_select_press();
                 self.unit_converter.select_next_field();
-            }
-        }
-    }
-
-    fn apply_magic(&mut self, event: ButtonEvent) {
-        if event == ButtonEvent::Select {
-            self.note_select_press();
-        }
-        match self.magic.apply_row_button(event) {
-            MagicRowAction::None | MagicRowAction::ToggledActive => {}
-            MagicRowAction::OpenView => {
-                self.magic.load_view_tiles();
-                self.router.navigate_to(ScreenRoute::MagicView);
-            }
-            MagicRowAction::OpenConfigure => {
-                self.request_wifi_transfer_start();
-                self.router.navigate_to(ScreenRoute::WifiTransfer);
             }
         }
     }
@@ -1255,21 +1222,13 @@ impl AppState {
         self.sync_orientation_for_active_route();
     }
 
-    /// Reader's landscape reading preference and the Magic token view (which
-    /// rotates to Landscape only once two tokens are loaded side by side —
-    /// see [`MagicUiState::load_view_tiles`]) are the only routes that ever
-    /// leave Portrait; every other route forces it back on entry.
+    /// Reader's landscape reading preference is the only route that ever
+    /// leaves Portrait; every other route forces it back on entry.
     fn sync_orientation_for_active_route(&mut self) {
         self.orientation = if self.router.current() == ScreenRoute::ReaderPage {
             match self.reader.preferences.orientation {
                 ReaderOrientation::Portrait => DisplayOrientation::Portrait,
                 ReaderOrientation::Landscape => DisplayOrientation::Landscape,
-            }
-        } else if self.router.current() == ScreenRoute::MagicView {
-            if self.magic.view_tiles.len() > 1 {
-                DisplayOrientation::Landscape
-            } else {
-                DisplayOrientation::Portrait
             }
         } else {
             DisplayOrientation::Portrait
@@ -1424,7 +1383,7 @@ fn compact_local_date(local: crate::rtc::RtcDateTime) -> String {
 mod tests {
     use super::{compact_local_date, AppState, ClockEditField};
     use crate::{
-        app::router::ScreenRoute,
+        app::{menu::home_entries, router::ScreenRoute},
         buttons::ButtonEvent,
         reader::{
             BookFormat, ReaderBook, ReaderCachedPage, ReaderDictionaryMode, ReaderPageLine,
@@ -1432,6 +1391,15 @@ mod tests {
         },
         rtc::RtcDateTime,
     };
+
+    /// Position of `route` on the Home dashboard, so these tests keep
+    /// working as tiles are added or removed.
+    fn home_index(route: ScreenRoute) -> usize {
+        home_entries()
+            .iter()
+            .position(|entry| entry.route == route)
+            .expect("route is on the Home dashboard")
+    }
 
     #[test]
     fn renders_compact_status_bar_date() {
@@ -1469,7 +1437,7 @@ mod tests {
     fn home_categories_wrap_and_open() {
         let mut state = AppState::default();
         // Continue Reading starts pre-selected (see `AppState::default`).
-        assert_eq!(state.home_selected, 6);
+        assert_eq!(state.home_selected, home_index(ScreenRoute::ContinueReading));
         state.apply(ButtonEvent::Down);
         assert_eq!(state.home_selected, 0); // wraps to the first grid tile (Library).
         state.apply(ButtonEvent::Select);
@@ -1481,7 +1449,7 @@ mod tests {
         use crate::calendar::CalendarNavigationMode;
 
         let mut state = AppState::default();
-        state.home_selected = 4; // Tools: Files, Dictionary, Unit Converter, Calendar, Voice Notes.
+        state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
         state.apply(ButtonEvent::Down);
@@ -1615,7 +1583,7 @@ mod tests {
     #[test]
     fn tools_file_browser_returns_to_tools() {
         let mut state = AppState::default();
-        state.home_selected = 4;
+        state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
@@ -1627,7 +1595,7 @@ mod tests {
     #[test]
     fn settings_display_changes_persistent_preferences_without_a_back_row() {
         let mut state = AppState::default();
-        state.home_selected = 5;
+        state.home_selected = home_index(ScreenRoute::Settings);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Settings);
         for _ in 0..4 {
@@ -1654,7 +1622,7 @@ mod tests {
     #[test]
     fn wifi_transfer_stop_and_return_goes_to_home_not_network() {
         let mut state = AppState::default();
-        state.home_selected = 3;
+        state.home_selected = home_index(ScreenRoute::WifiTransfer);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
         assert_eq!(
@@ -1829,7 +1797,7 @@ mod tests {
     #[test]
     fn home_upload_tile_starts_wifi_transfer_directly() {
         let mut state = AppState::default();
-        state.home_selected = 3;
+        state.home_selected = home_index(ScreenRoute::WifiTransfer);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
         assert_eq!(
@@ -1915,7 +1883,7 @@ mod tests {
     #[test]
     fn tools_dictionary_opens_native_screen_without_sd_pack() {
         let mut state = AppState::default();
-        state.home_selected = 4;
+        state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
         state.apply(ButtonEvent::Down);
@@ -1980,7 +1948,7 @@ mod tests {
         use crate::unit_converter::{ConverterField, UnitCategory};
 
         let mut state = AppState::default();
-        state.home_selected = 4;
+        state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
         state.apply(ButtonEvent::Down);
@@ -2004,7 +1972,7 @@ mod tests {
         // immediately instead of stopping on the old intermediate Reader
         // category / summary screen, neither of which exists any more.
         let mut state = AppState::default();
-        assert_eq!(state.home_selected, 6);
+        assert_eq!(state.home_selected, home_index(ScreenRoute::ContinueReading));
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Library);
         state.back();
@@ -2017,7 +1985,7 @@ mod tests {
         // static `parent()`), whatever screen the book was opened from.
         let mut state = AppState::default();
         state.reader.session = Some(reader_session_with_lines(&["Line"]));
-        assert_eq!(state.home_selected, 6); // Continue Reading, pre-selected.
+        assert_eq!(state.home_selected, home_index(ScreenRoute::ContinueReading));
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
         state.back();
@@ -2050,7 +2018,7 @@ mod tests {
         // reading session -- must too, or the clause lags behind the
         // title/cover/percent the card reads straight from `state.reader`.
         let mut state = AppState::default();
-        state.home_selected = 1; // Statistics.
+        state.home_selected = home_index(ScreenRoute::ReadingStats);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::ReadingStats);
         assert!(state.take_reading_stats_refresh_request());
@@ -2121,7 +2089,7 @@ mod tests {
     #[test]
     fn productivity_voice_notes_opens_recording_route_and_queues_start() {
         let mut state = AppState::default();
-        state.home_selected = 4; // Tools: Files, Dictionary, Unit Converter, Calendar, Voice Notes.
+        state.home_selected = home_index(ScreenRoute::Tools);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Tools);
         state.apply(ButtonEvent::Down);

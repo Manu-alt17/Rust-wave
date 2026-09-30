@@ -25,7 +25,6 @@ pub mod imu_events;
 pub mod imu_tap_diagnostics;
 pub mod input_events;
 pub mod keyboard_navigation;
-pub mod magic_tokens;
 pub mod mcu_deep_sleep;
 pub mod network;
 pub mod network_config;

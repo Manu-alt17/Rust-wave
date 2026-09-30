@@ -413,12 +413,6 @@ th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;
 .bg-preview{width:100%;max-width:480px;height:auto;display:block;margin:.6rem auto;border-radius:8px;image-rendering:pixelated;border:1px solid var(--border)}
 .search-row{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem}
 .search-row input[type=text]{flex:1;min-width:10rem}
-.mt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:.6rem;margin:.6rem 0}
-.mt-item{border:1px solid var(--border);border-radius:8px;padding:.4rem;text-align:center;font-size:.75rem;cursor:pointer}
-.mt-item.sel{border-color:var(--accent);background:rgba(37,99,235,.12)}
-.mt-item img{width:100%;border-radius:4px;display:block;margin-bottom:.3rem}
-.mt-lib-row{display:flex;align-items:center;gap:.5rem;font-size:.85rem;padding:.35rem 0;border-bottom:1px solid var(--border)}
-.mt-lib-row .name{flex:1}
 .lock{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:1rem;z-index:50}
 .lock-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.6rem;max-width:320px;width:100%;text-align:center}
 .lock-card h1{margin:0 0 .4rem;font-size:1.25rem}
@@ -462,7 +456,6 @@ th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;
 <nav class="tabs">
 <button class="tab" data-tab="books" onclick="showTab('books')">Libri</button>
 <button class="tab" data-tab="wallpaper" onclick="showTab('wallpaper')">Sfondi</button>
-<button class="tab" data-tab="magic" onclick="showTab('magic')">Magic Token</button>
 <button class="tab" data-tab="files" onclick="showTab('files')">File</button>
 <button class="tab" data-tab="wifi" onclick="showTab('wifi')">Wi-Fi</button>
 </nav>
@@ -507,22 +500,6 @@ th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;
 <div class="card">
 <h2 style="margin:0 0 .5rem;font-size:1.05rem">Sfondi sul dispositivo</h2>
 <div class="book-grid" id="sleepGallery"><p class="hint">Caricamento...</p></div>
-</div>
-</section>
-
-<section id="tab-magic" class="tabpanel" hidden>
-<div class="card" id="magic">
-<h2 style="margin:0 0 .5rem;font-size:1.05rem">Magic: The Gathering &middot; Token</h2>
-<p class="hint">Cerca i token su Scryfall (es. drago, zombie, umano), seleziona quelli che vuoi avere sul dispositivo e caricali: l&apos;immagine viene convertita in bianco e nero nel browser e salvata in MAGIC. Sul dispositivo puoi mostrarne uno grande, oppure due affiancati: in quel caso lo schermo ruota di 90&deg;, quindi gira anche il dispositivo per vederli dritti.</p>
-<div class="search-row">
-<input id="mtQuery" type="text" placeholder="Es. drago, zombie, umano..." onkeydown="if(event.key==='Enter')mtSearch()">
-<button class="primary" onclick="mtSearch()">Cerca</button>
-</div>
-<div class="mt-grid" id="mtResults"></div>
-<p><button class="primary" onclick="mtUploadSelected()">Carica selezionati</button> <span class="hint" id="mtSelectedCount"></span></p>
-<pre id="mtStatus" class="hint">Cerca un token per iniziare.</pre>
-<h2 style="margin:1rem 0 .5rem;font-size:1.05rem">Token sul dispositivo</h2>
-<div id="mtLibrary" class="hint">Caricamento...</div>
 </div>
 </section>
 
@@ -625,7 +602,6 @@ function showTab(name){
   activeTab=name;
   if(name==='books')refreshBooks();
   else if(name==='wallpaper')refreshSleepGallery();
-  else if(name==='magic')mtRefreshLibrary();
   else if(name==='files')loadList(current);
   else if(name==='wifi')wifiRefreshStatus().then(()=>{wifiLoadSaved();wifiLoadScan()});
 }
@@ -700,8 +676,8 @@ function wireDropZone(zoneId,inputId,uploader){
   document.getElementById(inputId).addEventListener('change',e=>{if(e.target.files.length)uploader.handleFiles(e.target.files);e.target.value=''});
 }
 // --- copertina libro generata nel browser: lo stesso principio gia usato
-// per gli sfondi e i token Magic (il decoder JPEG/PNG del browser fa il
-// lavoro pesante, non l'ESP32) applicato agli EPUB. Un tentativo lato
+// per gli sfondi (il decoder JPEG/PNG del browser fa il lavoro pesante, non
+// l'ESP32) applicato agli EPUB. Un tentativo lato
 // dispositivo di fare questo durante l'upload (parsing ZIP + decodifica
 // immagine + paginazione) ha saturato la memoria del firmware causando
 // errori "not enough space" alla lettura successiva: generare qui, e
@@ -795,7 +771,19 @@ async function buildCoverBits(imageBytes,mediaType){
   let imageData=ctx.getImageData(0,0,COVER_THUMB_W,COVER_THUMB_H);
   let lum=computeLuminance(imageData.data,COVER_THUMB_W,COVER_THUMB_H,0,0);
   let dithered=ditherFloydSteinberg(lum,COVER_THUMB_W,COVER_THUMB_H);
-  return mtPackBits(dithered,COVER_THUMB_W,COVER_THUMB_H);
+  return packInkBits(dithered,COVER_THUMB_W,COVER_THUMB_H);
+}
+function packInkBits(dithered,width,height){
+  // Ink (drawn/black) = bit 1, opposite of the sleep-wallpaper BMP's raw
+  // panel convention above, matching the 1bpp `ImageRaw<BinaryColor>`
+  // layout CoverCache reads back from a `.THB`.
+  let rowBytes=Math.ceil(width/8),out=new Uint8Array(rowBytes*height);
+  for(let y=0;y<height;y++){
+    for(let x=0;x<width;x++){
+      if(dithered[y*width+x]<128)out[y*rowBytes+(x>>3)]|=(0x80>>(x&7));
+    }
+  }
+  return out;
 }
 function buildThbFile(bits,fingerprint){
   let header=new Uint8Array(18),dv=new DataView(header.buffer);
@@ -1084,144 +1072,6 @@ async function refreshSleepGallery(){
 async function deleteSleepImage(name){
   if(!confirm('Eliminare questo sfondo?'))return;
   try{await api('/api/delete?path='+enc('/SLEEP/'+name),{method:'POST'});status('Sfondo eliminato');refreshSleepGallery();fetchSpace()}catch(e){status('Errore: '+e.message)}
-}
-// Full: one token shown big in Portrait, matching the MTG card's own
-// aspect ratio. Half: the pair tile shown two-up once the device is
-// rotated to Landscape (see magic_tokens::HALF_TILE_* and
-// AppState::sync_orientation_for_active_route) — exactly half the 800x480
-// Landscape canvas, so the pair fills the screen edge to edge.
-const MT_FULL_W=420,MT_FULL_H=588,MT_HALF_W=400,MT_HALF_H=480;
-let mtResults=[],mtSelected=new Set();
-function mtStatus(t){document.getElementById('mtStatus').textContent=t}
-function mtSanitize(s){return (s||'').replace(/[|\r\n]/g,' ').trim()}
-function mtImageUris(card){return card.image_uris||(card.card_faces&&card.card_faces[0]&&card.card_faces[0].image_uris)||null}
-function mtImageUrl(card){let u=mtImageUris(card);return u&&(u.png||u.large||u.normal||u.small)}
-function mtThumbUrl(card){let u=mtImageUris(card);return u&&u.small}
-function mtPowerToughness(card){return (card.power!=null&&card.toughness!=null)?(card.power+'/'+card.toughness):''}
-async function mtSearch(){
-  let q=document.getElementById('mtQuery').value.trim();
-  let query='type:token'+(q?(' '+q):'');
-  mtStatus('Ricerca in corso...');
-  try{
-    let r=await fetch('https://api.scryfall.com/cards/search?unique=prints&q='+encodeURIComponent(query));
-    let data=await r.json();
-    if(!r.ok)throw new Error((data&&data.details)||('HTTP '+r.status));
-    mtResults=(data.data||[]).filter(c=>mtImageUrl(c));
-    mtSelected.clear();
-    mtRenderResults();
-    mtStatus(mtResults.length+' risultati'+(data.has_more?' (prima pagina)':''));
-  }catch(e){
-    mtResults=[];
-    mtRenderResults();
-    mtStatus(q?('Nessun token trovato per "'+q+'"'):'Errore ricerca: '+e.message);
-  }
-}
-function mtRenderResults(){
-  let html='';
-  for(let i=0;i<mtResults.length;i++){
-    let c=mtResults[i];
-    let sel=mtSelected.has(i)?' sel':'';
-    html+='<div class="mt-item'+sel+'" onclick="mtToggleSelect('+i+')"><img src="'+mtThumbUrl(c)+'" alt="" loading="lazy"><div>'+escapeHtml(c.name)+'</div><div class="hint">'+escapeHtml(mtPowerToughness(c))+'</div></div>';
-  }
-  document.getElementById('mtResults').innerHTML=html||'<p class="hint">Nessun risultato</p>';
-  document.getElementById('mtSelectedCount').textContent=mtSelected.size+' selezionati';
-}
-function mtToggleSelect(i){if(mtSelected.has(i))mtSelected.delete(i);else mtSelected.add(i);mtRenderResults()}
-function mtHashId(str){let h=0x811c9dc5;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,0x01000193)}return (h>>>0).toString(16).toUpperCase().padStart(8,'0').slice(0,6)}
-function mtLoadImage(url){return new Promise((resolve,reject)=>{let img=new Image();img.crossOrigin='anonymous';img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('immagine non disponibile'));img.src=url})}
-function mtDrawToCanvas(img,width,height){
-  let canvas=document.createElement('canvas');
-  canvas.width=width;canvas.height=height;
-  let ctx=canvas.getContext('2d');
-  let scale=Math.max(width/img.naturalWidth,height/img.naturalHeight);
-  let sw=width/scale,sh=height/scale;
-  let sx=(img.naturalWidth-sw)/2,sy=(img.naturalHeight-sh)/2;
-  ctx.drawImage(img,sx,sy,sw,sh,0,0,width,height);
-  return ctx.getImageData(0,0,width,height);
-}
-function mtPackBits(dithered,width,height){
-  // Ink (drawn/black) = bit 1, opposite of the sleep-wallpaper BMP's raw
-  // panel convention above, matching the `.TOK` / `ImageRaw<BinaryColor>`
-  // format the device blits directly (see `magic_tokens::parse_token_bytes`).
-  let rowBytes=Math.ceil(width/8),out=new Uint8Array(rowBytes*height);
-  for(let y=0;y<height;y++){
-    for(let x=0;x<width;x++){
-      if(dithered[y*width+x]<128)out[y*rowBytes+(x>>3)]|=(0x80>>(x&7));
-    }
-  }
-  return out;
-}
-function mtBuildTokenFile(width,height,bits){
-  let header=9,buf=new Uint8Array(header+bits.length),dv=new DataView(buf.buffer);
-  buf[0]=0x52;buf[1]=0x57;buf[2]=0x4D;buf[3]=0x54; // "RWMT"
-  buf[4]=1;
-  dv.setUint16(5,width,true);
-  dv.setUint16(7,height,true);
-  buf.set(bits,header);
-  return buf;
-}
-function mtBuildTile(img,width,height){
-  let imageData=mtDrawToCanvas(img,width,height);
-  let lum=computeLuminance(imageData.data,width,height,0,0);
-  let dithered=ditherFloydSteinberg(lum,width,height);
-  return mtBuildTokenFile(width,height,mtPackBits(dithered,width,height));
-}
-async function mtReadIndex(){
-  try{
-    let t=await api('/api/download?path='+enc('/MAGIC/INDEX.TXT'));
-    return t.split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{let p=l.split('|');return {id:p[0]||'',name:p[1]||'',pt:p[2]||''}});
-  }catch(e){return []}
-}
-function mtWriteIndex(index){
-  let text=index.map(e=>e.id+'|'+e.name+'|'+e.pt).join('\n')+(index.length?'\n':'');
-  return api('/api/upload?path='+enc('/MAGIC/INDEX.TXT'),{method:'POST',body:new Blob([text])});
-}
-async function mtUploadSelected(){
-  if(mtSelected.size===0){mtStatus('Nessun token selezionato');return}
-  try{
-    await ensureDir('/MAGIC');
-    let index=await mtReadIndex();
-    let count=0;
-    for(const i of mtSelected){
-      let card=mtResults[i];
-      let id=mtHashId(card.id);
-      mtStatus('Elaborazione '+card.name+'...');
-      let img=await mtLoadImage(mtImageUrl(card));
-      let full=mtBuildTile(img,MT_FULL_W,MT_FULL_H);
-      let half=mtBuildTile(img,MT_HALF_W,MT_HALF_H);
-      await api('/api/upload?path='+enc('/MAGIC/'+id+'_F.TOK'),{method:'POST',body:new Blob([full])});
-      await api('/api/upload?path='+enc('/MAGIC/'+id+'_H.TOK'),{method:'POST',body:new Blob([half])});
-      let entry={id:id,name:mtSanitize(card.name),pt:mtSanitize(mtPowerToughness(card))};
-      let existing=index.findIndex(e=>e.id===id);
-      if(existing>=0)index[existing]=entry;else index.push(entry);
-      count++;
-    }
-    await mtWriteIndex(index);
-    mtSelected.clear();
-    mtRenderResults();
-    mtStatus('Caricati '+count+' token');
-    mtRefreshLibrary();
-    fetchSpace();
-  }catch(e){mtStatus('Errore: '+e.message)}
-}
-async function mtRefreshLibrary(){
-  let index=await mtReadIndex();
-  let html='';
-  for(const e of index){
-    html+='<div class="mt-lib-row"><span class="name">'+escapeHtml(e.name)+' '+escapeHtml(e.pt)+'</span><button class="danger" onclick="mtRemoveToken(\''+e.id+'\')">Rimuovi</button></div>';
-  }
-  document.getElementById('mtLibrary').innerHTML=html||'<p class="hint">Nessun token sul dispositivo</p>';
-}
-async function mtRemoveToken(id){
-  if(!confirm('Rimuovere questo token dal dispositivo?'))return;
-  try{
-    try{await api('/api/delete?path='+enc('/MAGIC/'+id+'_F.TOK'),{method:'POST'})}catch(e){}
-    try{await api('/api/delete?path='+enc('/MAGIC/'+id+'_H.TOK'),{method:'POST'})}catch(e){}
-    await mtWriteIndex((await mtReadIndex()).filter(e=>e.id!==id));
-    mtStatus('Token rimosso');
-    mtRefreshLibrary();
-    fetchSpace();
-  }catch(e){mtStatus('Errore rimozione: '+e.message)}
 }
 
 // --- Wi-Fi: sempre disponibile la lista reti salvate (dimentica funziona

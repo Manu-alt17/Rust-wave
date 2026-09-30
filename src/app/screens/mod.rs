@@ -18,7 +18,6 @@ pub mod environment;
 pub mod files;
 pub mod home;
 pub mod language;
-pub mod magic;
 pub mod motion;
 pub mod network;
 pub mod ota;
@@ -59,8 +58,6 @@ pub fn render_active_screen(
         ScreenRoute::VoiceNotes => voice_notes::render_voice_notes(display, state),
         ScreenRoute::VoiceNoteDetails => voice_notes::render_voice_note_details(display, state),
         ScreenRoute::VoiceNoteRecording => voice_notes::render_voice_note_recording(display, state),
-        ScreenRoute::Magic => magic::render_magic_library(display, state),
-        ScreenRoute::MagicView => magic::render_magic_view(display, state),
         ScreenRoute::Dictionary => dictionary::render_dictionary(display, state),
         ScreenRoute::UnitConverter => unit_converter::render_unit_converter(display, state),
         ScreenRoute::Clock => clock::render_clock(display, state),
@@ -86,7 +83,7 @@ pub fn render_active_screen(
         ScreenRoute::DeviceInfoBoard => device_info::render_device_info_board(display, state),
         ScreenRoute::DeviceInfoRuntime => device_info::render_device_info_runtime(display, state),
         ScreenRoute::OtaUpdate => ota::render_ota_update(display, state),
-        ScreenRoute::Games | ScreenRoute::Tools | ScreenRoute::Settings => {
+        ScreenRoute::Tools | ScreenRoute::Settings => {
             unreachable!("category routes handled above")
         }
     }
