@@ -153,7 +153,7 @@ impl CoverCache {
     #[must_use]
     pub fn load_cached_thumbnail(&self, book: &ReaderBook) -> Option<CachedThumbnail> {
         let _span = crate::boot_profile::span("cover-load-cached-thumbnail");
-        let bytes = fs::read(self.cache_path(book)).ok()?;
+        let bytes = crate::sd_io::read_file(self.cache_path(book)).ok()?;
         parse_cache_bytes(&bytes, book)
     }
 
@@ -236,7 +236,7 @@ impl CoverCache {
     ) -> Option<CachedThumbnail> {
         let fingerprint = fullscreen_cover_fingerprint(book, width, height);
         let cache_path = self.fullscreen_cache_path(book, width, height);
-        let cached = fs::read(&cache_path)
+        let cached = crate::sd_io::read_file(&cache_path)
             .ok()
             .and_then(|bytes| parse_inline_image_cache_bytes(&bytes, fingerprint))
             .filter(|cover| cover.width == width && cover.height == height);
@@ -330,7 +330,7 @@ impl EpubImageCache {
         max_height: u16,
     ) -> Option<CachedThumbnail> {
         let fingerprint = inline_image_fingerprint(book, href, max_width, max_height);
-        let bytes = fs::read(self.cache_path(book, href, max_width, max_height)).ok()?;
+        let bytes = crate::sd_io::read_file(self.cache_path(book, href, max_width, max_height)).ok()?;
         parse_inline_image_cache_bytes(&bytes, fingerprint)
     }
 

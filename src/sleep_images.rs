@@ -343,7 +343,8 @@ fn choose_random_index(
 
 /// Decode one strict uncompressed 1-bpp Windows BMP into native panel bytes.
 pub fn decode_sleep_bmp_file(path: &Path) -> Result<FrameBuffer> {
-    let bytes = fs::read(path).with_context(|| format!("read sleep BMP {}", path.display()))?;
+    let bytes = crate::sd_io::read_file(path)
+        .with_context(|| format!("read sleep BMP {}", path.display()))?;
     decode_sleep_bmp(&bytes)
 }
 

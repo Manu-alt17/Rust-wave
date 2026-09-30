@@ -16,11 +16,13 @@ use std::{
     borrow::Cow,
     collections::BTreeMap,
     fs::File,
-    io::{Read, Seek, SeekFrom},
+    io::{Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Mutex, PoisonError},
     time::Instant,
 };
+
+use miniz_oxide::inflate::decompress_to_vec_with_limit;
 
 /// The `.EPX` file [`EpubDocument::text_window`] read last, kept open for
 /// the next read: opening a file on FAT walks its directory, and the cache
@@ -42,20 +44,8 @@ pub fn release_kept_text_file() {
 fn read_at(file: &mut File, offset: u64, buffer: &mut [u8]) -> Result<usize, String> {
     file.seek(SeekFrom::Start(offset))
         .map_err(|error| format!("EPUB cache seek failed: {error}"))?;
-    let mut filled = 0usize;
-    while filled < buffer.len() {
-        let read = file
-            .read(&mut buffer[filled..])
-            .map_err(|error| format!("EPUB cache read failed: {error}"))?;
-        if read == 0 {
-            break;
-        }
-        filled += read;
-    }
-    Ok(filled)
+    crate::sd_io::read_full(file, buffer).map_err(|error| format!("EPUB cache read failed: {error}"))
 }
-
-use miniz_oxide::inflate::decompress_to_vec_with_limit;
 
 /// Maximum EPUB archive bytes accepted from removable storage.
 pub const EPUB_ARCHIVE_BYTES_LIMIT: usize = 16 * 1024 * 1024;
@@ -425,9 +415,10 @@ impl ZipArchive {
             ));
         }
         let storage = if file_len <= ZIP_IN_MEMORY_LIMIT {
-            let mut bytes = Vec::with_capacity(file_len as usize);
-            file.read_to_end(&mut bytes)
+            let mut bytes = vec![0_u8; file_len as usize];
+            let read = crate::sd_io::read_full(&mut file, &mut bytes)
                 .map_err(|error| format!("EPUB open failed: {error}"))?;
+            bytes.truncate(read);
             ZipStorage::InMemory(bytes)
         } else {
             ZipStorage::OnDisk {
@@ -949,8 +940,11 @@ fn read_file_range(file: &mut File, offset: usize, len: usize) -> Result<Vec<u8>
     file.seek(SeekFrom::Start(offset as u64))
         .map_err(|error| format!("EPUB seek failed: {error}"))?;
     let mut buffer = vec![0_u8; len];
-    file.read_exact(&mut buffer)
+    let read = crate::sd_io::read_full(file, &mut buffer)
         .map_err(|error| format!("EPUB read failed: {error}"))?;
+    if read < len {
+        return Err("EPUB read failed: archive ends early".into());
+    }
     Ok(buffer)
 }
 
