@@ -134,10 +134,90 @@ impl SleepScreenMode {
     }
 }
 
+/// How long without a key press before the device goes to standby on its
+/// own. The Power key sleeps it at any time regardless.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AutoSleep {
+    Minutes5,
+    #[default]
+    Minutes10,
+    Minutes15,
+    Minutes30,
+    Minutes60,
+    Never,
+}
+
+impl AutoSleep {
+    /// Idle seconds before standby, or `None` for [`Self::Never`].
+    #[must_use]
+    pub const fn idle_seconds(self) -> Option<u64> {
+        match self {
+            Self::Minutes5 => Some(5 * 60),
+            Self::Minutes10 => Some(10 * 60),
+            Self::Minutes15 => Some(15 * 60),
+            Self::Minutes30 => Some(30 * 60),
+            Self::Minutes60 => Some(60 * 60),
+            Self::Never => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn label_i18n(self, locale: Locale) -> &'static str {
+        match self {
+            Self::Minutes5 => "5 min",
+            Self::Minutes10 => "10 min",
+            Self::Minutes15 => "15 min",
+            Self::Minutes30 => "30 min",
+            Self::Minutes60 => "60 min",
+            Self::Never => match locale {
+                Locale::English => "Never",
+                Locale::Italian => "Mai",
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::Minutes5 => "5",
+            Self::Minutes10 => "10",
+            Self::Minutes15 => "15",
+            Self::Minutes30 => "30",
+            Self::Minutes60 => "60",
+            Self::Never => "never",
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Minutes5 => Self::Minutes10,
+            Self::Minutes10 => Self::Minutes15,
+            Self::Minutes15 => Self::Minutes30,
+            Self::Minutes30 => Self::Minutes60,
+            Self::Minutes60 => Self::Never,
+            Self::Never => Self::Minutes5,
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "5" => Ok(Self::Minutes5),
+            "10" => Ok(Self::Minutes10),
+            "15" => Ok(Self::Minutes15),
+            "30" => Ok(Self::Minutes30),
+            "60" => Ok(Self::Minutes60),
+            "never" | "0" => Ok(Self::Never),
+            other => bail!("unsupported auto_sleep value {other:?}"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DisplayPreferences {
     pub font_size: UiFontSize,
     pub sleep_screen: SleepScreenMode,
+    pub auto_sleep: AutoSleep,
 }
 
 impl DisplayPreferences {
@@ -147,6 +227,10 @@ impl DisplayPreferences {
 
     pub fn cycle_sleep_screen(&mut self) {
         self.sleep_screen = self.sleep_screen.next();
+    }
+
+    pub fn cycle_auto_sleep(&mut self) {
+        self.auto_sleep = self.auto_sleep.next();
     }
 
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
@@ -160,6 +244,7 @@ impl DisplayPreferences {
         let mut preferences = Self::default();
         let mut saw_size = false;
         let mut saw_sleep_screen = false;
+        let mut saw_auto_sleep = false;
         for (line_number, raw_line) in text.lines().enumerate() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -186,6 +271,13 @@ impl DisplayPreferences {
                     preferences.sleep_screen = SleepScreenMode::parse(value)?;
                     saw_sleep_screen = true;
                 }
+                "auto_sleep" => {
+                    if saw_auto_sleep {
+                        bail!("duplicate auto_sleep entry");
+                    }
+                    preferences.auto_sleep = AutoSleep::parse(value)?;
+                    saw_auto_sleep = true;
+                }
                 other => bail!("unsupported display config key {other:?}"),
             }
         }
@@ -201,9 +293,10 @@ impl DisplayPreferences {
     #[must_use]
     pub fn serialized(self) -> String {
         format!(
-            "# RustMix Wave UI typography\nfont_size={}\nsleep_screen={}\n",
+            "# RustMix Wave display and standby\nfont_size={}\nsleep_screen={}\nauto_sleep={}\n",
             self.font_size.marker(),
-            self.sleep_screen.marker()
+            self.sleep_screen.marker(),
+            self.auto_sleep.marker()
         )
     }
 
@@ -220,7 +313,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{DisplayPreferences, SleepScreenMode, UiFontSize};
+    use super::{AutoSleep, DisplayPreferences, SleepScreenMode, UiFontSize};
 
     #[test]
     fn defaults_to_standard() {
@@ -250,6 +343,7 @@ mod tests {
         let preferences = DisplayPreferences {
             font_size: UiFontSize::Compact,
             sleep_screen: SleepScreenMode::BookCover,
+            auto_sleep: AutoSleep::Never,
         };
         preferences.save_to_path(&path).unwrap();
         assert_eq!(
@@ -289,5 +383,24 @@ mod tests {
             );
         }
         assert_eq!(SleepScreenMode::BookCover.next(), SleepScreenMode::Sequential);
+    }
+
+    #[test]
+    fn auto_sleep_defaults_to_ten_minutes_and_round_trips() {
+        // Files written before the setting existed keep the old timeout.
+        let parsed = DisplayPreferences::parse("font_size=large\n").unwrap();
+        assert_eq!(parsed.auto_sleep, AutoSleep::Minutes10);
+        assert_eq!(parsed.auto_sleep.idle_seconds(), Some(600));
+        let mut preferences = DisplayPreferences::default();
+        for _ in 0..6 {
+            preferences.cycle_auto_sleep();
+            assert_eq!(
+                DisplayPreferences::parse(&preferences.serialized()).unwrap(),
+                preferences
+            );
+        }
+        assert_eq!(preferences.auto_sleep, AutoSleep::Minutes10);
+        assert_eq!(AutoSleep::Never.idle_seconds(), None);
+        assert!(DisplayPreferences::parse("auto_sleep=7\n").is_err());
     }
 }

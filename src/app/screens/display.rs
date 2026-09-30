@@ -52,6 +52,14 @@ pub fn render_display(
         state.display_action_selected == 1,
         body,
     )?;
+    draw_setting_row(
+        display,
+        336,
+        t(locale, "Auto standby", "Standby automatico"),
+        prefs.auto_sleep.label_i18n(locale),
+        state.display_action_selected == 2,
+        body,
+    )?;
 
     Text::new(
         t(locale, "Live preview", "Anteprima live"),

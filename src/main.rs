@@ -44,7 +44,7 @@ mod firmware {
             menu::{CategoryUsage, MENU_USAGE_CONFIG_PATH},
             render_current_screen,
             screens::reader::library_visible_books,
-            AppState, ScreenRoute, AUTO_DEEP_SLEEP_ENABLED, AUTO_DEEP_SLEEP_IDLE_SECONDS,
+            AppState, ScreenRoute, AUTO_DEEP_SLEEP_ENABLED,
             DEV_BENCH_BUILD, CHARGING_STATUS_POLL_SECONDS, LIBRARY_THUMBNAIL_REFRESH_SECONDS,
             NETWORK_LIVE_REFRESH_SECONDS, NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
             READER_POWER_SAVE_GRACE_SECONDS, SAMPLE_LIVE_REFRESH_SECONDS,
@@ -527,16 +527,18 @@ mod firmware {
         let display_preferences = match DisplayPreferences::load_from_path(DISPLAY_CONFIG_PATH) {
             Ok(preferences) => {
                 debug!(
-                    "rustmix-wave=display-config status=ready path={DISPLAY_CONFIG_PATH} font-size={}",
-                    preferences.font_size.marker()
+                    "rustmix-wave=display-config status=ready path={DISPLAY_CONFIG_PATH} font-size={} auto-sleep={}",
+                    preferences.font_size.marker(),
+                    preferences.auto_sleep.marker()
                 );
                 preferences
             }
             Err(error) => {
                 let preferences = DisplayPreferences::default();
                 warn!(
-                    "rustmix-wave=display-config status=default path={DISPLAY_CONFIG_PATH} font-size={} error={error:#}",
-                    preferences.font_size.marker()
+                    "rustmix-wave=display-config status=default path={DISPLAY_CONFIG_PATH} font-size={} auto-sleep={} error={error:#}",
+                    preferences.font_size.marker(),
+                    preferences.auto_sleep.marker()
                 );
                 preferences
             }
@@ -1775,13 +1777,19 @@ mod firmware {
             // is deep-slept the same way. `sleep_mode.is_sleeping()` already
             // being true (a prior sleep-image entry, whether from this timer
             // or a power-key press, that has not yet resumed) blocks a
-            // repeat call every subsequent loop tick.
-            if AUTO_DEEP_SLEEP_ENABLED
-                && !sleep_mode.is_sleeping()
-                && last_activity.elapsed() >= Duration::from_secs(AUTO_DEEP_SLEEP_IDLE_SECONDS)
-            {
+            // repeat call every subsequent loop tick. The timeout is the
+            // Settings > Display "Auto standby" choice, which can be Never.
+            let auto_sleep_idle_seconds = if AUTO_DEEP_SLEEP_ENABLED {
+                state.display.auto_sleep.idle_seconds()
+            } else {
+                None
+            };
+            if let Some(idle_seconds) = auto_sleep_idle_seconds.filter(|idle_seconds| {
+                !sleep_mode.is_sleeping()
+                    && last_activity.elapsed() >= Duration::from_secs(*idle_seconds)
+            }) {
                 info!(
-                    "rustmix-wave=sleep-mode-enter trigger=idle-timeout idle-seconds={AUTO_DEEP_SLEEP_IDLE_SECONDS}"
+                    "rustmix-wave=sleep-mode-enter trigger=idle-timeout idle-seconds={idle_seconds}"
                 );
                 enter_deep_sleep_mode(
                     &mut panel,
@@ -2403,8 +2411,10 @@ mod firmware {
                         ),
                     }
                             info!(
-                        "rustmix-wave=display-settings-updated font-size={} persistence=sd-file path={DISPLAY_CONFIG_PATH}",
-                        state.display.font_size.marker()
+                        "rustmix-wave=display-settings-updated font-size={} sleep-screen={} auto-sleep={} persistence=sd-file path={DISPLAY_CONFIG_PATH}",
+                        state.display.font_size.marker(),
+                        state.display.sleep_screen.marker(),
+                        state.display.auto_sleep.marker()
                     );
                         }
                         if state.category_usage != previous_category_usage {

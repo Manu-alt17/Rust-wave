@@ -29,7 +29,7 @@ use super::{
 /// Number of selectable rows in the playback overview screen.
 pub const AUDIO_ACTION_COUNT: usize = 6;
 /// Number of selectable rows in the Display settings screen.
-pub const DISPLAY_ACTION_COUNT: usize = 2;
+pub const DISPLAY_ACTION_COUNT: usize = 3;
 /// Set date & time or open RTC details rows on the Clock overview screen.
 pub const CLOCK_ACTION_COUNT: usize = 2;
 /// Configure via phone, saved networks and provisioning-details rows on the
@@ -819,7 +819,8 @@ impl AppState {
                 self.note_select_press();
                 match self.display_action_selected {
                     0 => self.display.cycle_font_size(),
-                    _ => self.display.cycle_sleep_screen(),
+                    1 => self.display.cycle_sleep_screen(),
+                    _ => self.display.cycle_auto_sleep(),
                 }
             }
         }
@@ -1228,6 +1229,9 @@ mod tests {
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_ne!(state.display.sleep_screen, original.sleep_screen);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert_ne!(state.display.auto_sleep, original.auto_sleep);
         state.apply(ButtonEvent::Down);
         assert_eq!(state.display_action_selected, 0);
         assert_eq!(state.active_route(), ScreenRoute::Display);

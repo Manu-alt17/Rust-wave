@@ -25,11 +25,6 @@ pub use state::AppState;
 
 /// Idle interval before the panel controller and ALDO3 rail enter sleep.
 pub const PANEL_IDLE_SLEEP_SECONDS: u64 = 60;
-/// Idle interval, uniform across every screen including Reader, before the
-/// board arms real MCU hardware deep sleep on its own, without a power-key
-/// press. Reuses the exact same sleep-image entry and deep-sleep path as a
-/// manual power-key press; only the trigger differs.
-pub const AUTO_DEEP_SLEEP_IDLE_SECONDS: u64 = 10 * 60;
 /// Development bench build, selected by setting `RUSTMIX_DEV_BENCH` in the
 /// build environment: keeps a board left on USB reachable for unattended
 /// flashing and logging. No idle-timeout standby (a PMIC power-off makes the
@@ -38,7 +33,10 @@ pub const AUTO_DEEP_SLEEP_IDLE_SECONDS: u64 = 10 * 60;
 /// console and truncate log lines. The Power key still sleeps on demand.
 /// Release builds never set it.
 pub const DEV_BENCH_BUILD: bool = option_env!("RUSTMIX_DEV_BENCH").is_some();
-/// Whether the idle timeout above arms standby at all.
+/// Whether the idle timeout arms standby at all. The timeout itself is the
+/// user's Settings > Display "Auto standby" choice
+/// ([`display::AutoSleep`]), uniform across every screen including Reader;
+/// it reuses the power-key press's sleep-image entry and deep-sleep path.
 pub const AUTO_DEEP_SLEEP_ENABLED: bool = !DEV_BENCH_BUILD;
 /// Detail-screen status cadence inherited from the sample-app clock use case.
 pub const SAMPLE_LIVE_REFRESH_SECONDS: u64 = 30;
