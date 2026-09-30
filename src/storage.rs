@@ -24,8 +24,14 @@ pub const STORAGE_PAGE_SIZE: usize = 7;
 pub const MAX_STORAGE_ENTRIES: usize = 128;
 /// Maximum number of bytes loaded for a bounded file preview.
 pub const MAX_PREVIEW_BYTES: usize = 384;
-/// Conservative SDMMC clock selected after physical timeout smoke testing.
-pub const SDMMC_STABLE_SPEED_KHZ: u32 = 10_000;
+/// SDMMC clock: the standard 20 MHz of default-speed cards. It had been
+/// halved to 10 MHz after timeouts in the field, which the RTC FAST memory
+/// fix in `sdkconfig.defaults` (SD buffers landing where DMA cannot reach)
+/// explains better: on the board, 4 MB written and read back three times,
+/// and every file under RUSTMIX hashed twice, gave no error and no
+/// difference at 20 MHz. It gains little on its own (reads 12% faster):
+/// what slowed reads down was PSRAM destinations, see `sd_io`.
+pub const SDMMC_STABLE_SPEED_KHZ: u32 = 20_000;
 /// Bounded command timeout used for SDMMC operations.
 pub const SDMMC_COMMAND_TIMEOUT_MS: u32 = 1_000;
 /// Total attempts for read-only filesystem operations after transient SDMMC errors.
