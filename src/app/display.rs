@@ -1,7 +1,7 @@
 //! Persistent global UI display preferences.
 //!
 //! Preferences are loaded from `/sdcard/RUSTMIX/DISPLAY.TXT` at boot. The UI
-//! remains usable when the SD card or file is unavailable: Inter + Standard is
+//! remains usable when the SD card or file is unavailable: Standard is
 //! always the safe default. Changes are persisted best-effort by the runtime.
 
 use std::{fs, path::Path};
@@ -12,57 +12,6 @@ use crate::regional::Locale;
 
 /// SD-backed global UI typography preference file.
 pub const DISPLAY_CONFIG_PATH: &str = "/sdcard/RUSTMIX/DISPLAY.TXT";
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum UiFontFamily {
-    #[default]
-    Inter,
-    AtkinsonHyperlegible,
-}
-
-impl UiFontFamily {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Inter => "Inter",
-            Self::AtkinsonHyperlegible => "Atkinson Hyperlegible",
-        }
-    }
-
-    #[must_use]
-    pub const fn compact_label(self) -> &'static str {
-        match self {
-            Self::Inter => "Inter",
-            Self::AtkinsonHyperlegible => "Atkinson",
-        }
-    }
-
-    #[must_use]
-    pub const fn marker(self) -> &'static str {
-        match self {
-            Self::Inter => "inter",
-            Self::AtkinsonHyperlegible => "atkinson-hyperlegible",
-        }
-    }
-
-    #[must_use]
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Inter => Self::AtkinsonHyperlegible,
-            Self::AtkinsonHyperlegible => Self::Inter,
-        }
-    }
-
-    fn parse(value: &str) -> Result<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "inter" => Ok(Self::Inter),
-            "atkinson-hyperlegible" | "atkinson_hyperlegible" | "atkinson" => {
-                Ok(Self::AtkinsonHyperlegible)
-            }
-            other => bail!("unsupported font_family value {other:?}"),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UiFontSize {
@@ -187,16 +136,11 @@ impl SleepScreenMode {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DisplayPreferences {
-    pub font_family: UiFontFamily,
     pub font_size: UiFontSize,
     pub sleep_screen: SleepScreenMode,
 }
 
 impl DisplayPreferences {
-    pub fn cycle_font_family(&mut self) {
-        self.font_family = self.font_family.next();
-    }
-
     pub fn cycle_font_size(&mut self) {
         self.font_size = self.font_size.next();
     }
@@ -214,7 +158,6 @@ impl DisplayPreferences {
 
     pub fn parse(text: &str) -> Result<Self> {
         let mut preferences = Self::default();
-        let mut saw_family = false;
         let mut saw_size = false;
         let mut saw_sleep_screen = false;
         for (line_number, raw_line) in text.lines().enumerate() {
@@ -226,13 +169,9 @@ impl DisplayPreferences {
                 .split_once('=')
                 .ok_or_else(|| anyhow::anyhow!("line {} must contain '='", line_number + 1))?;
             match key.trim() {
-                "font_family" => {
-                    if saw_family {
-                        bail!("duplicate font_family entry");
-                    }
-                    preferences.font_family = UiFontFamily::parse(value)?;
-                    saw_family = true;
-                }
+                // Written by firmware that offered a second UI font; the UI
+                // is Inter only now, so the saved choice is ignored.
+                "font_family" => {}
                 "font_size" => {
                     if saw_size {
                         bail!("duplicate font_size entry");
@@ -262,8 +201,7 @@ impl DisplayPreferences {
     #[must_use]
     pub fn serialized(self) -> String {
         format!(
-            "# RustMix Wave UI typography\nfont_family={}\nfont_size={}\nsleep_screen={}\n",
-            self.font_family.marker(),
+            "# RustMix Wave UI typography\nfont_size={}\nsleep_screen={}\n",
             self.font_size.marker(),
             self.sleep_screen.marker()
         )
@@ -282,26 +220,23 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{DisplayPreferences, SleepScreenMode, UiFontFamily, UiFontSize};
+    use super::{DisplayPreferences, SleepScreenMode, UiFontSize};
 
     #[test]
-    fn defaults_to_inter_standard() {
+    fn defaults_to_standard() {
         let preferences = DisplayPreferences::default();
-        assert_eq!(preferences.font_family, UiFontFamily::Inter);
         assert_eq!(preferences.font_size, UiFontSize::Standard);
         assert_eq!(preferences.persistence_label(), "SD FILE");
     }
 
     #[test]
     fn parses_and_serializes_supported_preferences() {
+        // `font_family` comes from firmware with a second UI font.
         let parsed =
             DisplayPreferences::parse("font_family=atkinson-hyperlegible\nfont_size=large\n")
                 .unwrap();
-        assert_eq!(parsed.font_family, UiFontFamily::AtkinsonHyperlegible);
         assert_eq!(parsed.font_size, UiFontSize::Large);
-        assert!(parsed
-            .serialized()
-            .contains("font_family=atkinson-hyperlegible"));
+        assert!(!parsed.serialized().contains("font_family"));
         assert!(parsed.serialized().contains("font_size=large"));
     }
 
@@ -313,7 +248,6 @@ mod tests {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("rustmix-display-{nanos}.txt"));
         let preferences = DisplayPreferences {
-            font_family: UiFontFamily::AtkinsonHyperlegible,
             font_size: UiFontSize::Compact,
             sleep_screen: SleepScreenMode::BookCover,
         };
@@ -327,7 +261,6 @@ mod tests {
 
     #[test]
     fn rejects_unknown_keys_and_values() {
-        assert!(DisplayPreferences::parse("font_family=comic-sans\n").is_err());
         assert!(DisplayPreferences::parse("font_size=huge\n").is_err());
         assert!(DisplayPreferences::parse("other=value\n").is_err());
         assert!(DisplayPreferences::parse("sleep_screen=slideshow\n").is_err());

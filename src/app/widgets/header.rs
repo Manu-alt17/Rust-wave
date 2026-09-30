@@ -92,7 +92,7 @@ mod tests {
     use super::{centered_title_budget, STATUS_LEFT, TIME_RIGHT};
     use crate::{
         app::{
-            display::{DisplayPreferences, UiFontFamily, UiFontSize},
+            display::{DisplayPreferences, UiFontSize},
             typography::UiTextRole,
         },
         reader::ReadingPreference,
@@ -124,25 +124,22 @@ mod tests {
             titles.push(preference.header_label_i18n(Locale::English));
             titles.push(preference.header_label_i18n(Locale::Italian));
         }
-        for font_family in [UiFontFamily::Inter, UiFontFamily::AtkinsonHyperlegible] {
-            for font_size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
-                let preferences = DisplayPreferences {
-                    font_family,
-                    font_size,
-                    ..DisplayPreferences::default()
-                };
-                let style = preferences.text_style(UiTextRole::Heading, BinaryColor::On);
-                // Wi-Fi icon + gap + charging icon + gap + "100%".
-                let status_right = STATUS_LEFT + 24 + 6 + 24 + 6 + style.text_width("100%");
-                let time_x = TIME_RIGHT - style.text_width("00:00");
-                let budget = centered_title_budget(status_right, time_x);
-                for title in &titles {
-                    assert!(
-                        style.text_width(title) <= budget,
-                        "{title:?} is {}px, budget {budget}px at {font_family:?}/{font_size:?}",
-                        style.text_width(title),
-                    );
-                }
+        for font_size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
+            let preferences = DisplayPreferences {
+                font_size,
+                ..DisplayPreferences::default()
+            };
+            let style = preferences.text_style(UiTextRole::Heading, BinaryColor::On);
+            // Wi-Fi icon + gap + charging icon + gap + "100%".
+            let status_right = STATUS_LEFT + 24 + 6 + 24 + 6 + style.text_width("100%");
+            let time_x = TIME_RIGHT - style.text_width("00:00");
+            let budget = centered_title_budget(status_right, time_x);
+            for title in &titles {
+                assert!(
+                    style.text_width(title) <= budget,
+                    "{title:?} is {}px, budget {budget}px at {font_size:?}",
+                    style.text_width(title),
+                );
             }
         }
     }

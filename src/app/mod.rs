@@ -13,7 +13,6 @@ pub mod i18n;
 pub mod menu;
 pub mod reader_atkinson_next_assets;
 pub mod reader_literata_assets;
-pub mod reader_serif_assets;
 pub mod reader_typography;
 pub mod router;
 pub mod screens;

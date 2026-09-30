@@ -39,26 +39,17 @@ pub fn render_display(
     draw_setting_row(
         display,
         156,
-        t(locale, "UI font", "Carattere UI"),
-        prefs.font_family.compact_label(),
+        t(locale, "UI size", "Dimensione UI"),
+        prefs.font_size.label_i18n(locale),
         state.display_action_selected == 0,
         body,
     )?;
     draw_setting_row(
         display,
         246,
-        t(locale, "UI size", "Dimensione UI"),
-        prefs.font_size.label_i18n(locale),
-        state.display_action_selected == 1,
-        body,
-    )?;
-
-    draw_setting_row(
-        display,
-        336,
         t(locale, "Sleep screen", "Sfondo riposo"),
         prefs.sleep_screen.label_i18n(locale),
-        state.display_action_selected == 2,
+        state.display_action_selected == 1,
         body,
     )?;
 

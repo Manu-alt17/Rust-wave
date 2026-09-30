@@ -527,8 +527,7 @@ mod firmware {
         let display_preferences = match DisplayPreferences::load_from_path(DISPLAY_CONFIG_PATH) {
             Ok(preferences) => {
                 debug!(
-                    "rustmix-wave=display-config status=ready path={DISPLAY_CONFIG_PATH} font-family={} font-size={}",
-                    preferences.font_family.marker(),
+                    "rustmix-wave=display-config status=ready path={DISPLAY_CONFIG_PATH} font-size={}",
                     preferences.font_size.marker()
                 );
                 preferences
@@ -536,8 +535,7 @@ mod firmware {
             Err(error) => {
                 let preferences = DisplayPreferences::default();
                 warn!(
-                    "rustmix-wave=display-config status=default path={DISPLAY_CONFIG_PATH} font-family={} font-size={} error={error:#}",
-                    preferences.font_family.marker(),
+                    "rustmix-wave=display-config status=default path={DISPLAY_CONFIG_PATH} font-size={} error={error:#}",
                     preferences.font_size.marker()
                 );
                 preferences
@@ -2405,8 +2403,7 @@ mod firmware {
                         ),
                     }
                             info!(
-                        "rustmix-wave=display-settings-updated font-family={} font-size={} persistence=sd-file path={DISPLAY_CONFIG_PATH}",
-                        state.display.font_family.marker(),
+                        "rustmix-wave=display-settings-updated font-size={} persistence=sd-file path={DISPLAY_CONFIG_PATH}",
                         state.display.font_size.marker()
                     );
                         }
@@ -3768,7 +3765,6 @@ mod firmware {
                     let (frame, tab) = compose_cover_sleep_frame(
                         &cover,
                         percent,
-                        state.display.font_family,
                         state.regional.locale,
                     );
                     info!(

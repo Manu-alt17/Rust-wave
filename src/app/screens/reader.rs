@@ -2270,12 +2270,7 @@ fn render_font_editor(
     candidate: ReaderPreferences,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let fonts = [
-        BookFont::Inter,
-        BookFont::AtkinsonHyperlegible,
-        BookFont::Serif,
-        BookFont::Literata,
-    ];
+    let fonts = [BookFont::Literata, BookFont::AtkinsonHyperlegible];
     for (index, font) in fonts.into_iter().enumerate() {
         let specimen_style = reader_body_style(font, candidate.font_size, candidate.theme);
         draw_specimen_row(
@@ -2506,7 +2501,7 @@ mod tests {
     #[test]
     fn definition_panel_fits_longest_definition_without_dropping_text() {
         use crate::app::{
-            display::{UiFontFamily, UiFontSize},
+            display::UiFontSize,
             typography::{style_for, UiTextRole},
         };
         use embedded_graphics::pixelcolor::BinaryColor;
@@ -2517,36 +2512,34 @@ mod tests {
         let content_top = PROGRESS_TOP + PROGRESS_HEIGHT + PROGRESS_TO_CONTENT_GAP;
         for (width, height) in [(480, 800), (800, 480)] {
             let body = ReaderBodyGeometry::new(width, content_top, height - 54);
-            for family in [UiFontFamily::Inter, UiFontFamily::AtkinsonHyperlegible] {
-                for size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
-                    let style = |role| style_for(family, size, role, BinaryColor::On);
-                    let body_text = style(UiTextRole::Body);
-                    let layout = definition_panel_layout(
-                        style(UiTextRole::Heading),
-                        [body_text, style(UiTextRole::Detail)],
-                        &body,
-                        "ACCIGLIASSERO",
-                        message,
-                    );
-                    let context = format!("{width}x{height} {family:?} {size:?}");
-                    // Every word survives the wrap, in order.
-                    assert_eq!(
-                        layout.lines.join(" "),
-                        message.split_whitespace().collect::<Vec<_>>().join(" "),
-                        "{context}"
-                    );
-                    let max_width = body.frame.width() - 2 * DEFINITION_PANEL_PADDING;
-                    for line in &layout.lines {
-                        assert!(layout.text.text_width(line) <= max_width, "{context}: {line}");
-                    }
-                    assert!(layout.height <= body.text.bottom - body.frame.top, "{context}");
-                    // The larger body strike is used, not the old detail one.
-                    assert_eq!(
-                        layout.line_step,
-                        i32::from(body_text.line_height()) + DEFINITION_PANEL_LINE_GAP,
-                        "{context}"
-                    );
+            for size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
+                let style = |role| style_for(size, role, BinaryColor::On);
+                let body_text = style(UiTextRole::Body);
+                let layout = definition_panel_layout(
+                    style(UiTextRole::Heading),
+                    [body_text, style(UiTextRole::Detail)],
+                    &body,
+                    "ACCIGLIASSERO",
+                    message,
+                );
+                let context = format!("{width}x{height} {size:?}");
+                // Every word survives the wrap, in order.
+                assert_eq!(
+                    layout.lines.join(" "),
+                    message.split_whitespace().collect::<Vec<_>>().join(" "),
+                    "{context}"
+                );
+                let max_width = body.frame.width() - 2 * DEFINITION_PANEL_PADDING;
+                for line in &layout.lines {
+                    assert!(layout.text.text_width(line) <= max_width, "{context}: {line}");
                 }
+                assert!(layout.height <= body.text.bottom - body.frame.top, "{context}");
+                // The larger body strike is used, not the old detail one.
+                assert_eq!(
+                    layout.line_step,
+                    i32::from(body_text.line_height()) + DEFINITION_PANEL_LINE_GAP,
+                    "{context}"
+                );
             }
         }
     }
@@ -2741,12 +2734,7 @@ mod tests {
             BookFontSize::XXLarge,
             BookFontSize::XXXLarge,
         ];
-        let fonts = [
-            BookFont::Inter,
-            BookFont::AtkinsonHyperlegible,
-            BookFont::Serif,
-            BookFont::Literata,
-        ];
+        let fonts = [BookFont::Literata, BookFont::AtkinsonHyperlegible];
 
         let mut failures = Vec::new();
         for full_screen in [false, true] {
@@ -2846,28 +2834,25 @@ mod tests {
     /// clear of the rounded border, at every UI font profile.
     #[test]
     fn reader_option_tile_labels_fit_their_tiles() {
-        use crate::app::display::{DisplayPreferences, UiFontFamily, UiFontSize};
+        use crate::app::display::{DisplayPreferences, UiFontSize};
         use crate::reader::ReaderOption;
         use crate::regional::Locale;
 
         let max_width = super::OPTIONS_TILE_SIZE.width as i32 - 2 * 16;
-        for font_family in [UiFontFamily::Inter, UiFontFamily::AtkinsonHyperlegible] {
-            for font_size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
-                let preferences = DisplayPreferences {
-                    font_family,
-                    font_size,
-                    ..DisplayPreferences::default()
-                };
-                let heading = preferences.heading_style();
-                for option in ReaderOption::ALL {
-                    for locale in [Locale::English, Locale::Italian] {
-                        for bookmarked in [false, true] {
-                            let label = option.tile_label_i18n(locale, bookmarked);
-                            assert!(
-                                heading.text_width(label) <= max_width,
-                                "{label:?} too wide at {font_family:?}/{font_size:?}"
-                            );
-                        }
+        for font_size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
+            let preferences = DisplayPreferences {
+                font_size,
+                ..DisplayPreferences::default()
+            };
+            let heading = preferences.heading_style();
+            for option in ReaderOption::ALL {
+                for locale in [Locale::English, Locale::Italian] {
+                    for bookmarked in [false, true] {
+                        let label = option.tile_label_i18n(locale, bookmarked);
+                        assert!(
+                            heading.text_width(label) <= max_width,
+                            "{label:?} too wide at {font_size:?}"
+                        );
                     }
                 }
             }

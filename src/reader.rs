@@ -119,8 +119,10 @@ const READER_PERSISTENCE_VERSION: &str = "1";
 /// EPUB page breaks fall. Bumped to `"5"` when a hard-broken word that
 /// fills a page started resuming on the next page right after its last
 /// shown character, instead of from the word's start (see
-/// [`WordPlacement::PageFilledMidWord`]).
-const READER_CACHE_VERSION: &str = "5";
+/// [`WordPlacement::PageFilledMidWord`]). Bumped to `"6"` when the book
+/// strikes gained Latin-1 and typographic glyphs: text that used to be
+/// folded to ASCII ("--", "...") now keeps its own, narrower characters.
+const READER_CACHE_VERSION: &str = "6";
 const READER_PREFS_VERSION: &str = "1";
 /// SD-backed flattened-EPUB-text cache format version. Independent of Reader
 /// layout: the cached reflowed text and TOC never change with font/orientation.
@@ -491,26 +493,23 @@ impl BookFontSize {
     }
 }
 
-/// Reader-specific body font family. Reader-only generated bitmap strikes are
-/// printable-ASCII subsets; raw font files are not distributed. Persisted
-/// `serif` and `atkinson-hyperlegible` keys remain stable for compatibility.
+/// Reader-specific body font family, drawn from generated bitmap strikes (see
+/// `tools/fontgen/gen_bitmap_fonts.py`); raw font files are not distributed.
+/// The persisted keys of the two families firmware used to offer as well,
+/// `serif` (DejaVu Serif) and `inter`, still load, as their nearest family.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BookFont {
-    Inter,
-    AtkinsonHyperlegible,
     #[default]
-    Serif,
     Literata,
+    AtkinsonHyperlegible,
 }
 
 impl BookFont {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Inter => "Inter",
-            Self::AtkinsonHyperlegible => "Atkinson",
-            Self::Serif => "Serif",
             Self::Literata => "Literata",
+            Self::AtkinsonHyperlegible => "Atkinson",
         }
     }
 
@@ -527,41 +526,31 @@ impl BookFont {
     #[must_use]
     pub const fn marker(self) -> &'static str {
         match self {
-            Self::Inter => "inter",
-            Self::AtkinsonHyperlegible => "atkinson-hyperlegible",
-            Self::Serif => "serif",
             Self::Literata => "literata",
+            Self::AtkinsonHyperlegible => "atkinson-hyperlegible",
         }
     }
 
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
-            Self::Inter => Self::AtkinsonHyperlegible,
-            Self::AtkinsonHyperlegible => Self::Serif,
-            Self::Serif => Self::Literata,
-            Self::Literata => Self::Inter,
+            Self::Literata => Self::AtkinsonHyperlegible,
+            Self::AtkinsonHyperlegible => Self::Literata,
         }
     }
 
     #[must_use]
     pub const fn previous(self) -> Self {
-        match self {
-            Self::Inter => Self::Literata,
-            Self::AtkinsonHyperlegible => Self::Inter,
-            Self::Serif => Self::AtkinsonHyperlegible,
-            Self::Literata => Self::Serif,
-        }
+        // Two families: stepping back is stepping forward.
+        self.next()
     }
 
     fn parse(value: &str) -> Result<Self, String> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "inter" => Ok(Self::Inter),
-            "atkinson" | "atkinson-hyperlegible" | "atkinson_hyperlegible" => {
+            "literata" | "serif" | "dejavu-serif" => Ok(Self::Literata),
+            "atkinson" | "atkinson-hyperlegible" | "atkinson_hyperlegible" | "inter" => {
                 Ok(Self::AtkinsonHyperlegible)
             }
-            "serif" | "dejavu-serif" => Ok(Self::Serif),
-            "literata" => Ok(Self::Literata),
             other => Err(format!("unsupported book_font value {other:?}")),
         }
     }
@@ -690,7 +679,7 @@ impl Default for ReaderPreferences {
             theme: ReadingTheme::Classic,
             orientation: ReaderOrientation::Portrait,
             font_size: BookFontSize::XLarge,
-            book_font: BookFont::Serif,
+            book_font: BookFont::Literata,
             paragraph_alignment: ParagraphAlignment::Justified,
             show_progress: true,
             full_screen: false,
@@ -4963,6 +4952,46 @@ fn normalize_decoded(decoded: &[(char, u64)]) -> Vec<(char, u64)> {
 /// `reader-unmapped-text` diagnostic log.
 const READER_UNMAPPED_CHARACTER_REPORT_THRESHOLD: usize = 16;
 
+/// Characters the Reader's bitmap strikes draw with a glyph of their own
+/// (see `tools/fontgen/gen_bitmap_fonts.py`) besides printable ASCII:
+/// Latin-1 and the typographic characters of Windows-1252. The no-break
+/// space and the soft hyphen are left out: normalization turns them into a
+/// plain space and nothing.
+const fn has_reader_glyph(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00A1}'..='\u{00AC}'
+            | '\u{00AE}'..='\u{00FF}'
+            | '\u{0152}'
+            | '\u{0153}'
+            | '\u{0160}'
+            | '\u{0161}'
+            | '\u{0178}'
+            | '\u{017D}'
+            | '\u{017E}'
+            | '\u{0192}'
+            | '\u{02C6}'
+            | '\u{02DC}'
+            | '\u{2013}'
+            | '\u{2014}'
+            | '\u{2018}'
+            | '\u{2019}'
+            | '\u{201A}'
+            | '\u{201C}'
+            | '\u{201D}'
+            | '\u{201E}'
+            | '\u{2020}'
+            | '\u{2021}'
+            | '\u{2022}'
+            | '\u{2026}'
+            | '\u{2030}'
+            | '\u{2039}'
+            | '\u{203A}'
+            | '\u{20AC}'
+            | '\u{2122}'
+    )
+}
+
 /// Returns `true` when `character` had no mapping and was replaced by the
 /// generic `?` fallback, so callers can report where unrenderable text
 /// came from.
@@ -4971,35 +5000,12 @@ fn push_normalized_character(
     character: char,
     next_offset: u64,
 ) -> bool {
+    if has_reader_glyph(character) {
+        output.push((character, next_offset));
+        return false;
+    }
     let replacement: &str = match character {
-        '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{00AB}' | '\u{00BB}' => "\"",
-        '\u{2018}' | '\u{2019}' | '\u{201A}' => "'",
-        '\u{2014}' => "--",
-        '\u{2013}' => "-",
-        '\u{2026}' => "...",
         '\u{00A0}' => " ",
-        // Italian accents have real glyphs in the reader-only bitmap fonts
-        // (see BitmapFont::extra), so they pass through unchanged instead of
-        // being collapsed to their unaccented ASCII base letter.
-        'à' => "à",
-        'è' => "è",
-        'é' => "é",
-        'ì' => "ì",
-        'ò' => "ò",
-        'ù' => "ù",
-        'À' => "À",
-        'È' => "È",
-        'É' => "É",
-        'Ì' => "Ì",
-        'Ò' => "Ò",
-        'Ù' => "Ù",
-        'ê' | 'ë' | 'Ê' | 'Ë' => "e",
-        'á' | 'â' | 'ä' | 'Á' | 'Â' | 'Ä' => "a",
-        'ç' | 'Ç' => "c",
-        'ï' | 'î' | 'í' | 'Ï' | 'Î' | 'Í' => "i",
-        'ô' | 'ö' | 'ó' | 'Ô' | 'Ö' | 'Ó' => "o",
-        'û' | 'ü' | 'ú' | 'Û' | 'Ü' | 'Ú' => "u",
-        'ñ' | 'Ñ' => "n",
         // Invisible formatting characters common in EPUB XHTML: soft
         // hyphens, zero-width spaces/joiners, bidi marks, word joiner and a
         // stray BOM, plus combining diacritics from NFD-normalized text.
@@ -5013,14 +5019,15 @@ fn push_normalized_character(
         | '\u{0300}'..='\u{036F}' => "",
         '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => " ",
         '\u{2028}' | '\u{2029}' => "\n",
+        // Punctuation without a glyph: its closest relative that has one.
         '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2212}' | '\u{2043}' => "-",
-        '\u{2015}' => "--",
-        '\u{201B}' | '\u{2032}' | '\u{2039}' | '\u{203A}' | '\u{00B4}' => "'",
-        '\u{201F}' | '\u{2033}' => "\"",
-        '\u{2022}' | '\u{2023}' | '\u{2219}' | '\u{25CF}' | '\u{25AA}' => "*",
-        '\u{00B7}' | '\u{2027}' => ".",
-        '\u{2020}' => "+",
-        '\u{2021}' => "++",
+        '\u{2015}' => "\u{2014}",
+        '\u{201B}' => "\u{2018}",
+        '\u{201F}' => "\u{201C}",
+        '\u{2032}' => "'",
+        '\u{2033}' => "\"",
+        '\u{2023}' | '\u{2219}' | '\u{25CF}' | '\u{25AA}' => "\u{2022}",
+        '\u{2027}' => "\u{00B7}",
         '\u{2042}' => "* * *",
         '\u{FB00}' => "ff",
         '\u{FB01}' => "fi",
@@ -5028,25 +5035,9 @@ fn push_normalized_character(
         '\u{FB03}' => "ffi",
         '\u{FB04}' => "ffl",
         '\u{FB05}' | '\u{FB06}' => "st",
-        'æ' => "ae",
-        'Æ' => "AE",
-        'œ' => "oe",
-        'Œ' => "OE",
-        'ß' => "ss",
-        '×' => "x",
-        '÷' => "/",
-        '©' => "(c)",
-        '®' => "(R)",
-        '™' => "TM",
-        '€' => "EUR",
-        '£' => "GBP",
-        '½' => "1/2",
-        '¼' => "1/4",
-        '¾' => "3/4",
-        '¿' => "?",
-        '¡' => "!",
-        'ã' | 'å' | 'ā' | 'ă' | 'ą' => "a",
-        'Ã' | 'Å' | 'Ā' | 'Ă' | 'Ą' => "A",
+        // Latin Extended-A letters outside the glyph set: the base letter.
+        'ā' | 'ă' | 'ą' => "a",
+        'Ā' | 'Ă' | 'Ą' => "A",
         'ć' | 'č' | 'ĉ' | 'ċ' => "c",
         'Ć' | 'Č' | 'Ĉ' | 'Ċ' => "C",
         'ď' | 'đ' => "d",
@@ -5061,20 +5052,18 @@ fn push_normalized_character(
         'Ł' | 'Ľ' | 'Ĺ' => "L",
         'ń' | 'ň' | 'ņ' => "n",
         'Ń' | 'Ň' | 'Ņ' => "N",
-        'õ' | 'ø' | 'ō' | 'ő' => "o",
-        'Õ' | 'Ø' | 'Ō' | 'Ő' => "O",
+        'ō' | 'ő' => "o",
+        'Ō' | 'Ő' => "O",
         'ŕ' | 'ř' => "r",
         'Ŕ' | 'Ř' => "R",
-        'ś' | 'š' | 'ş' | 'ș' => "s",
-        'Ś' | 'Š' | 'Ş' | 'Ș' => "S",
+        'ś' | 'ş' | 'ș' => "s",
+        'Ś' | 'Ş' | 'Ș' => "S",
         'ť' | 'ţ' | 'ț' => "t",
         'Ť' | 'Ţ' | 'Ț' => "T",
         'ū' | 'ů' | 'ű' | 'ų' => "u",
         'Ū' | 'Ů' | 'Ű' | 'Ų' => "U",
-        'ý' | 'ÿ' => "y",
-        'Ý' | 'Ÿ' => "Y",
-        'ź' | 'ż' | 'ž' => "z",
-        'Ź' | 'Ż' | 'Ž' => "Z",
+        'ź' | 'ż' => "z",
+        'Ź' | 'Ż' => "Z",
         // One EPUB inline image occupies this offset. It must reach
         // `paginate_decoded` unchanged -- that is what now recognizes it and
         // reserves page space for it (see `EPUB_IMAGE_SENTINEL`'s own doc
@@ -6866,8 +6855,8 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_utf8_punctuation_unsupported_accents_and_simple_emphasis() {
-        let decoded: Vec<(char, u64)> = "“En vêrité!” _I_—once…"
+    fn keeps_typography_the_fonts_draw_and_strips_simple_emphasis() {
+        let decoded: Vec<(char, u64)> = "“En vêrité!” _I_—once… ‛ā‒"
             .chars()
             .enumerate()
             .map(|(index, value)| (value, index as u64 + 1))
@@ -6876,7 +6865,7 @@ mod tests {
             .into_iter()
             .map(|(value, _)| value)
             .collect();
-        assert_eq!(normalized, "\"En verité!\" I--once...");
+        assert_eq!(normalized, "“En vêrité!” I—once… ‘a-");
     }
 
     #[test]
@@ -6937,7 +6926,7 @@ mod tests {
             lines_per_page,
             orientation: ReaderOrientation::Portrait,
             font_size: BookFontSize::Large,
-            book_font: BookFont::Serif,
+            book_font: BookFont::Literata,
             paragraph_alignment: ParagraphAlignment::Left,
             full_screen: false,
         }
@@ -7281,7 +7270,7 @@ mod tests {
             .map(|(value, _)| value)
             .collect();
         assert!(!normalized.contains('?'), "{normalized:?}");
-        assert_eq!(normalized, "parola e fine *  x-y");
+        assert_eq!(normalized, "parola e fine \u{2022}  x-y");
     }
 
     #[test]
@@ -7315,19 +7304,23 @@ mod tests {
     }
 
     #[test]
-    fn reader_font_cycle_preserves_legacy_keys_and_adds_literata() {
+    fn reader_font_cycle_keeps_keys_and_maps_removed_families() {
         assert_eq!(
             BookFont::AtkinsonHyperlegible.marker(),
             "atkinson-hyperlegible"
         );
-        assert_eq!(BookFont::Serif.marker(), "serif");
         assert_eq!(BookFont::Literata.marker(), "literata");
-        assert_eq!(BookFont::Inter.next(), BookFont::AtkinsonHyperlegible);
-        assert_eq!(BookFont::AtkinsonHyperlegible.next(), BookFont::Serif);
-        assert_eq!(BookFont::Serif.next(), BookFont::Literata);
-        assert_eq!(BookFont::Literata.next(), BookFont::Inter);
-        assert_eq!(BookFont::Inter.previous(), BookFont::Literata);
+        assert_eq!(BookFont::default(), BookFont::Literata);
+        assert_eq!(BookFont::Literata.next(), BookFont::AtkinsonHyperlegible);
+        assert_eq!(BookFont::AtkinsonHyperlegible.next(), BookFont::Literata);
+        assert_eq!(BookFont::Literata.previous(), BookFont::AtkinsonHyperlegible);
         assert_eq!(BookFont::parse("literata").unwrap(), BookFont::Literata);
+        // Families older firmware offered load as their nearest family.
+        assert_eq!(BookFont::parse("serif").unwrap(), BookFont::Literata);
+        assert_eq!(
+            BookFont::parse("inter").unwrap(),
+            BookFont::AtkinsonHyperlegible
+        );
     }
 
     #[test]
@@ -7339,11 +7332,11 @@ mod tests {
         assert_eq!(parsed.theme, ReadingTheme::HighContrast);
         assert_eq!(parsed.orientation, ReaderOrientation::Landscape);
         assert_eq!(parsed.font_size, BookFontSize::XLarge);
-        assert_eq!(parsed.book_font, BookFont::Serif);
+        assert_eq!(parsed.book_font, BookFont::Literata);
         assert_eq!(parsed.paragraph_alignment, ParagraphAlignment::Right);
         assert!(!parsed.show_progress);
         assert!(parsed.serialized().contains("font_size=xlarge"));
-        assert!(parsed.serialized().contains("book_font=serif"));
+        assert!(parsed.serialized().contains("book_font=literata"));
         assert!(parsed.serialized().contains("paragraph_alignment=right"));
         // Files written before full screen existed load with it off.
         assert!(!parsed.full_screen);
@@ -9616,7 +9609,7 @@ mod pagination_perf_tests {
             (
                 ReaderOrientation::Portrait,
                 BookFontSize::Large,
-                BookFont::Serif,
+                BookFont::Literata,
             ),
             (
                 ReaderOrientation::Portrait,
@@ -9626,7 +9619,7 @@ mod pagination_perf_tests {
             (
                 ReaderOrientation::Landscape,
                 BookFontSize::XLarge,
-                BookFont::Serif,
+                BookFont::AtkinsonHyperlegible,
             ),
         ]
         .into_iter()

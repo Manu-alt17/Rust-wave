@@ -22,7 +22,7 @@ use embedded_graphics::{
 
 use crate::{
     app::{
-        display::{UiFontFamily, UiFontSize},
+        display::UiFontSize,
         i18n::t,
         typography::{style_for, Text, UiTextRole, UiTextStyle},
     },
@@ -75,16 +75,14 @@ pub struct ResumeTabBounds {
 pub fn compose_cover_sleep_frame(
     cover: &CachedThumbnail,
     percent: u8,
-    family: UiFontFamily,
     locale: Locale,
 ) -> (FrameBuffer, ResumeTabBounds) {
-    compose_with_band(cover, percent, family, locale, RESUME_TAB_BAND)
+    compose_with_band(cover, percent, locale, RESUME_TAB_BAND)
 }
 
 fn compose_with_band(
     cover: &CachedThumbnail,
     percent: u8,
-    family: UiFontFamily,
     locale: Locale,
     band: (i32, i32),
 ) -> (FrameBuffer, ResumeTabBounds) {
@@ -93,7 +91,7 @@ fn compose_with_band(
     let raw = ImageRaw::<BinaryColor>::new(&cover.bits, u32::from(cover.width));
     let drawn = Image::new(&raw, Point::zero())
         .draw(&mut display)
-        .and_then(|()| draw_resume_tab(&mut display, percent, family, locale, band));
+        .and_then(|()| draw_resume_tab(&mut display, percent, locale, band));
     let bounds = match drawn {
         Ok(bounds) => bounds,
         Err(never) => match never {},
@@ -104,7 +102,6 @@ fn compose_with_band(
 fn draw_resume_tab(
     display: &mut OrientedFrameBuffer<'_>,
     percent: u8,
-    family: UiFontFamily,
     locale: Locale,
     band: (i32, i32),
 ) -> Result<ResumeTabBounds, Infallible> {
@@ -118,11 +115,11 @@ fn draw_resume_tab(
     // is used and the tab grows down. The label shares it.
     let percent_style = PERCENT_STYLES
         .into_iter()
-        .map(|(size, role)| style_for(family, size, role, BinaryColor::On))
+        .map(|(size, role)| style_for(size, role, BinaryColor::On))
         .find(|candidate| ink_height(*candidate, &percent_label) <= inner_height)
         .unwrap_or_else(|| {
             let (size, role) = PERCENT_STYLES[PERCENT_STYLES.len() - 1];
-            style_for(family, size, role, BinaryColor::On)
+            style_for(size, role, BinaryColor::On)
         });
     let (ink_top, ink_bottom) = percent_style.text_ink_bounds(&percent_label);
     let bottom = band_bottom.max(top + (ink_bottom - ink_top) + 2 * TAB_PAD_Y);
@@ -213,7 +210,7 @@ mod tests {
         SLEEP_COVER_HEIGHT, SLEEP_COVER_WIDTH,
     };
     use crate::{
-        app::display::UiFontFamily, cover_cache::CachedThumbnail,
+        cover_cache::CachedThumbnail,
         orientation::DisplayOrientation, regional::Locale,
     };
 
@@ -238,7 +235,7 @@ mod tests {
         for (percent, locale) in [(0, Locale::Italian), (42, Locale::English), (100, Locale::Italian)] {
             let band = RESUME_TAB_BAND;
             let (frame, tab) =
-                compose_cover_sleep_frame(&black_cover(), percent, UiFontFamily::Inter, locale);
+                compose_cover_sleep_frame(&black_cover(), percent, locale);
             assert_eq!((tab.top, tab.bottom), band);
             assert!(tab.left > SCREEN_WIDTH / 4 && tab.left < SCREEN_WIDTH - 120);
             // Cover survives outside the tab.
@@ -256,7 +253,6 @@ mod tests {
         let (_, tab) = compose_with_band(
             &black_cover(),
             100,
-            UiFontFamily::Inter,
             Locale::Italian,
             (60, 70),
         );
