@@ -12,7 +12,7 @@
 //! writing hardware.
 
 use crate::{
-    calendar,
+    date_math,
     regional::{RegionalPreferences, TimeZoneProfile},
     rtc::RtcDateTime,
 };
@@ -121,7 +121,7 @@ impl ClockTimeDraft {
             year: self.year,
             month: self.month,
             day: self.day,
-            weekday: calendar::weekday(self.year, self.month, self.day),
+            weekday: date_math::weekday(self.year, self.month, self.day),
             hour: self.hour,
             minute: self.minute,
             second: 0,
@@ -129,7 +129,7 @@ impl ClockTimeDraft {
     }
 
     fn clamp_day(&mut self) {
-        let max_day = calendar::days_in_month(self.year, self.month);
+        let max_day = date_math::days_in_month(self.year, self.month);
         if self.day > max_day {
             self.day = max_day;
         }
@@ -187,7 +187,7 @@ impl ClockTimeEditor {
                 self.draft.clamp_day();
             }
             ClockEditField::Day => {
-                let max_day = calendar::days_in_month(self.draft.year, self.draft.month);
+                let max_day = date_math::days_in_month(self.draft.year, self.draft.month);
                 self.draft.day = wrap_u8_range(self.draft.day, delta, 1, max_day);
             }
             ClockEditField::Save => {}
@@ -300,7 +300,7 @@ mod tests {
     fn as_local_rtc_derives_weekday_and_zeroes_seconds() {
         let editor = editor_at(utc(2026, 8, 18, 9, 30), TimeZoneProfile::Utc);
         let rtc = editor.draft.as_local_rtc();
-        assert_eq!(rtc.weekday, calendar::weekday(2026, 8, 18));
+        assert_eq!(rtc.weekday, date_math::weekday(2026, 8, 18));
         assert_eq!(rtc.second, 0);
         assert_eq!((rtc.hour, rtc.minute), (9, 30));
     }

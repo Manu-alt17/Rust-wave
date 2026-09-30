@@ -65,10 +65,6 @@ mod firmware {
             BootBackButton, ButtonEvent, Buttons, SelectHoldButton, SelectPressEvent,
             set_select_long_press_ms, READER_SELECT_LONG_PRESS_MS, SELECT_LONG_PRESS_MS,
         },
-        calendar::{
-            create_personal_event, delete_personal_event, update_personal_event, CalendarUiRequest,
-            CALENDAR_ROOT,
-        },
         cover_cache::CoverCache,
         epaper::{self, Epaper397},
         framebuffer::FrameBuffer,
@@ -2889,28 +2885,19 @@ mod firmware {
                             FreeRtos::delay_ms(20);
                             continue;
                         }
-                        let calendar_agenda_context = state.apply_calendar_select_long_press();
-                        let keyboard_context = if calendar_agenda_context {
-                            false
-                        } else {
-                            state.apply_keyboard_select_long_press()
-                        };
-                        let reader_dictionary_context = if calendar_agenda_context || keyboard_context
-                        {
+                        let keyboard_context = state.apply_keyboard_select_long_press();
+                        let reader_dictionary_context = if keyboard_context {
                             false
                         } else {
                             state.apply_reader_dictionary_select_long_press()
                         };
-                        let network_saved_context = if calendar_agenda_context
-                            || keyboard_context
-                            || reader_dictionary_context
+                        let network_saved_context = if keyboard_context || reader_dictionary_context
                         {
                             false
                         } else {
                             state.apply_network_saved_select_long_press()
                         };
-                        let library_book_actions_context = if calendar_agenda_context
-                            || keyboard_context
+                        let library_book_actions_context = if keyboard_context
                             || reader_dictionary_context
                             || network_saved_context
                         {
@@ -2918,15 +2905,11 @@ mod firmware {
                         } else {
                             state.apply_library_select_long_press()
                         };
-                        if calendar_agenda_context
-                            || keyboard_context
+                        if keyboard_context
                             || reader_dictionary_context
                             || network_saved_context
                             || library_book_actions_context
                         {
-                            if calendar_agenda_context {
-                                info!("rustmix-wave=calendar-agenda route=selected-day outcome=opened");
-                            }
                             if reader_dictionary_context {
                                 info!(
                                     "rustmix-wave=reader-dictionary-mode outcome=toggled active={}",
@@ -2949,14 +2932,7 @@ mod firmware {
                                 );
                             }
                             if keyboard_context {
-                                if state.active_route() == ScreenRoute::CalendarEventEditor {
-                                    if let Some(editor) = state.calendar.editor.as_ref() {
-                                        info!(
-                                        "rustmix-wave=calendar-editor-keyboard-nav axis={} outcome=toggled",
-                                        editor.navigation_mode_label()
-                                    );
-                                    }
-                                } else if state.active_route() == ScreenRoute::VoiceNoteDetails
+                                if state.active_route() == ScreenRoute::VoiceNoteDetails
                                     && state.voice_notes.title_editing
                                 {
                                     info!(
@@ -3133,7 +3109,6 @@ mod firmware {
                         // rendering the next frame.  This guarantees that the transfer
                         // route shows READY plus its LAN URL and code on the same normal
                         // partial refresh that follows the SELECT event.
-                        apply_calendar_ui_request(&mut state, _mounted_sd.is_some());
                         apply_network_saved_ui_request(
                             &mut network_config,
                             &mut state,
@@ -3341,53 +3316,6 @@ mod firmware {
             location.modified_seconds,
         );
         tracker.note_page_turn(book_id, location.byte_offset, now, STATS_DIRECTORY);
-    }
-
-    fn apply_calendar_ui_request(state: &mut AppState, mounted: bool) {
-        let Some(request) = state.take_calendar_request() else {
-            return;
-        };
-        if !mounted {
-            state.calendar.fail("SD card unavailable");
-            warn!(
-                "rustmix-wave=calendar-personal-event-write status=rejected reason=sd-unavailable"
-            );
-            return;
-        }
-        let root = std::path::Path::new(CALENDAR_ROOT);
-        let outcome = match request {
-            CalendarUiRequest::CreatePersonal { date, title, detail } => {
-                create_personal_event(root, date, &title, &detail).map(|()| {
-                    info!("rustmix-wave=calendar-personal-event-write status=completed operation=create title={title}");
-                    "Personal event created"
-                })
-            }
-            CalendarUiRequest::UpdatePersonal {
-                source_row,
-                title,
-                detail,
-            } => update_personal_event(root, source_row, &title, &detail).map(|()| {
-                info!("rustmix-wave=calendar-personal-event-write status=completed operation=edit source-row={source_row} title={title}");
-                "Personal event updated"
-            }),
-            CalendarUiRequest::DeletePersonal { source_row } => {
-                delete_personal_event(root, source_row).map(|()| {
-                    info!("rustmix-wave=calendar-personal-event-write status=completed operation=delete source-row={source_row}");
-                    "Personal event deleted"
-                })
-            }
-        };
-        match outcome {
-            Ok(message) => {
-                state.calendar.refresh_events();
-                state.calendar.mark_persistence_completed(message);
-                state.router.navigate_to(ScreenRoute::CalendarAgenda);
-            }
-            Err(error) => {
-                state.calendar.fail(format!("{error:#}"));
-                warn!("rustmix-wave=calendar-personal-event-write status=failed error={error:#}");
-            }
-        }
     }
 
     /// First saved SSID, for log lines; `"--"` when nothing is saved yet.
@@ -3604,7 +3532,6 @@ mod firmware {
         log_runtime_memory("after-wifi-transfer-stop");
         state.update_wifi_transfer_snapshot(WifiTransferSnapshot::default());
         state.reader.refresh_library();
-        state.calendar.refresh_events();
         storage_browser.refresh();
         state.update_storage_snapshot(storage_browser.snapshot());
     }

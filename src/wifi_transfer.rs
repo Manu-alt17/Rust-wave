@@ -243,8 +243,6 @@ pub fn is_protected_portal_path(relative: &str) -> bool {
             | "DISPLAY.TXT"
             | "VOICE/META.TXT"
             | "VOICE/SETTINGS.TXT"
-            | "APPS/CALENDAR/EVENTS.TMP"
-            | "APPS/CALENDAR/EVENTS.BAK"
     )
 }
 
@@ -1962,9 +1960,6 @@ mod tests {
         assert!(is_protected_portal_path("ALARMS.TXT"));
         assert!(is_protected_portal_path("/VOICE/META.TXT"));
         assert!(is_protected_portal_path("VOICE/SETTINGS.TXT"));
-        assert!(is_protected_portal_path("APPS/CALENDAR/EVENTS.TMP"));
-        assert!(is_protected_portal_path("APPS/CALENDAR/EVENTS.BAK"));
-        assert!(!is_protected_portal_path("APPS/CALENDAR/EVENTS.TXT"));
         assert!(!is_protected_portal_path("/VOICE/VOICE001.WAV"));
         assert!(!is_protected_portal_path("/BOOKS/NOTES001.TXT"));
     }

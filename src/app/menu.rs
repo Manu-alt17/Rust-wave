@@ -13,7 +13,7 @@ use super::router::ScreenRoute;
 
 pub const MAIN_CATEGORY_COUNT: usize = 6;
 pub const CATEGORY_COUNT: usize = 2;
-pub const TOOLS_ENTRY_COUNT: usize = 7;
+pub const TOOLS_ENTRY_COUNT: usize = 6;
 pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
 /// heading of the Tools and Settings grids (see
@@ -93,8 +93,8 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         label_it: "Strumenti",
         subtitle_en: "Files, dictionary and sensors",
         subtitle_it: "File, dizionario e sensori",
-        badge_en: "7",
-        badge_it: "7",
+        badge_en: "6",
+        badge_it: "6",
         route: ScreenRoute::Tools,
     },
     MenuEntry {
@@ -154,15 +154,6 @@ const TOOLS_ENTRIES: [MenuEntry; TOOLS_ENTRY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::UnitConverter,
-    },
-    MenuEntry {
-        label_en: "Calendar",
-        label_it: "Calendario",
-        subtitle_en: "US agenda and personal editor",
-        subtitle_it: "Agenda e editor personale",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Calendar,
     },
     MenuEntry {
         label_en: "Voice Notes",
@@ -470,9 +461,6 @@ mod tests {
         assert!(home_entries()
             .iter()
             .any(|entry| entry.route == ScreenRoute::ReadingStats));
-        assert!(category_entries(ScreenRoute::Tools)
-            .iter()
-            .any(|entry| entry.route == ScreenRoute::Calendar));
         assert!(category_entries(ScreenRoute::Tools)
             .iter()
             .any(|entry| entry.route == ScreenRoute::VoiceNotes));

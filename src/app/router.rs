@@ -20,11 +20,6 @@ pub enum ScreenRoute {
     ReaderPreferences,
     ReaderToc,
     ReadingStats,
-    Calendar,
-    CalendarAgenda,
-    CalendarEventDetails,
-    CalendarEventEditor,
-    CalendarDeleteConfirmation,
     VoiceNotes,
     VoiceNoteDetails,
     VoiceNoteRecording,
@@ -73,11 +68,6 @@ impl ScreenRoute {
             Self::ReaderPreferences => "Reading Preferences",
             Self::ReaderToc => "Table of Contents",
             Self::ReadingStats => "Reading Stats",
-            Self::Calendar => "Calendar",
-            Self::CalendarAgenda => "Daily Agenda",
-            Self::CalendarEventDetails => "Calendar Event",
-            Self::CalendarEventEditor => "Edit Calendar Event",
-            Self::CalendarDeleteConfirmation => "Delete Calendar Event",
             Self::VoiceNotes => "Voice Notes",
             Self::VoiceNoteDetails => "Voice Note",
             Self::VoiceNoteRecording => "Record Voice Note",
@@ -140,11 +130,6 @@ impl ScreenRoute {
                 Self::ReaderPreferences => "Preferenze di lettura",
                 Self::ReaderToc => "Indice",
                 Self::ReadingStats => "Statistiche di lettura",
-                Self::Calendar => "Calendario",
-                Self::CalendarAgenda => "Agenda giornaliera",
-                Self::CalendarEventDetails => "Evento del calendario",
-                Self::CalendarEventEditor => "Modifica evento",
-                Self::CalendarDeleteConfirmation => "Elimina evento",
                 Self::VoiceNotes => "Note vocali",
                 Self::VoiceNoteDetails => "Nota vocale",
                 Self::VoiceNoteRecording => "Registra nota vocale",
@@ -194,11 +179,6 @@ impl ScreenRoute {
             Self::ReaderPreferences => "reader-preferences",
             Self::ReaderToc => "reader-toc",
             Self::ReadingStats => "reading-stats",
-            Self::Calendar => "calendar",
-            Self::CalendarAgenda => "calendar-agenda",
-            Self::CalendarEventDetails => "calendar-event-details",
-            Self::CalendarEventEditor => "calendar-event-editor",
-            Self::CalendarDeleteConfirmation => "calendar-delete-confirmation",
             Self::VoiceNotes => "voice-notes",
             Self::VoiceNoteDetails => "voice-note-details",
             Self::VoiceNoteRecording => "voice-note-recording",
@@ -266,11 +246,7 @@ impl ScreenRoute {
             Self::ReaderOptions => Some(Self::ReaderPage),
             Self::ReaderPreferences => Some(Self::ReaderOptions),
             Self::ReaderToc => Some(Self::ReaderOptions),
-            Self::Calendar | Self::VoiceNotes => Some(Self::Tools),
-            Self::CalendarAgenda => Some(Self::Calendar),
-            Self::CalendarEventDetails => Some(Self::CalendarAgenda),
-            Self::CalendarEventEditor => Some(Self::CalendarAgenda),
-            Self::CalendarDeleteConfirmation => Some(Self::CalendarEventDetails),
+            Self::VoiceNotes => Some(Self::Tools),
             Self::VoiceNoteDetails | Self::VoiceNoteRecording => Some(Self::VoiceNotes),
             Self::Files | Self::Dictionary | Self::UnitConverter => Some(Self::Tools),
             Self::PowerKeyMenu => Some(Self::Home),
@@ -310,8 +286,6 @@ impl ScreenRoute {
                 | Self::NetworkSaved
                 | Self::WifiTransfer
                 | Self::Alarms
-                | Self::Calendar
-                | Self::CalendarAgenda
                 | Self::ReaderLoading
                 | Self::VoiceNoteRecording
         )
@@ -364,24 +338,7 @@ mod tests {
         assert_eq!(ScreenRoute::Display.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::Language.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::PowerKeyMenu.parent(), Some(ScreenRoute::Home));
-        assert_eq!(ScreenRoute::Calendar.parent(), Some(ScreenRoute::Tools));
         assert_eq!(ScreenRoute::ReadingStats.parent(), Some(ScreenRoute::Home));
-        assert_eq!(
-            ScreenRoute::CalendarAgenda.parent(),
-            Some(ScreenRoute::Calendar)
-        );
-        assert_eq!(
-            ScreenRoute::CalendarEventDetails.parent(),
-            Some(ScreenRoute::CalendarAgenda)
-        );
-        assert_eq!(
-            ScreenRoute::CalendarEventEditor.parent(),
-            Some(ScreenRoute::CalendarAgenda)
-        );
-        assert_eq!(
-            ScreenRoute::CalendarDeleteConfirmation.parent(),
-            Some(ScreenRoute::CalendarEventDetails)
-        );
         assert_eq!(
             ScreenRoute::UnitConverter.parent(),
             Some(ScreenRoute::Tools)

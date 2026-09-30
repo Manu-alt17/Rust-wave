@@ -25,7 +25,7 @@ use embedded_iconoir::{
             Alarm as CompactAlarm, Clock as CompactClock, Import as CompactImport,
             Language as CompactLanguage,
         },
-        system::{Calculator as CompactCalculator, Calendar as CompactCalendar, Settings as CompactSettingsIcon},
+        system::{Calculator as CompactCalculator, Settings as CompactSettingsIcon},
     },
     prelude::IconoirNewIcon,
 };
@@ -279,9 +279,6 @@ fn draw_route_icon_compact(
         }
         ScreenRoute::UnitConverter => {
             draw_iconoir_icon_scaled(display, top_left, &CompactCalculator::new(BinaryColor::On))
-        }
-        ScreenRoute::Calendar => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactCalendar::new(BinaryColor::On))
         }
         ScreenRoute::VoiceNotes => {
             draw_iconoir_icon_scaled(display, top_left, &CompactMic::new(BinaryColor::On))

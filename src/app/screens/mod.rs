@@ -8,7 +8,6 @@ use super::{router::ScreenRoute, state::AppState};
 
 pub mod alarms;
 pub mod audio;
-pub mod calendar;
 pub mod category;
 pub mod clock;
 pub mod device_info;
@@ -46,15 +45,6 @@ pub fn render_active_screen(
         ScreenRoute::ReaderPreferences => reader::render_preferences(display, state),
         ScreenRoute::ReaderToc => reader::render_toc(display, state),
         ScreenRoute::ReadingStats => reading_stats::render_reading_stats(display, state),
-        ScreenRoute::Calendar => calendar::render_calendar(display, state),
-        ScreenRoute::CalendarAgenda => calendar::render_calendar_agenda(display, state),
-        ScreenRoute::CalendarEventDetails => {
-            calendar::render_calendar_event_details(display, state)
-        }
-        ScreenRoute::CalendarEventEditor => calendar::render_calendar_event_editor(display, state),
-        ScreenRoute::CalendarDeleteConfirmation => {
-            calendar::render_calendar_delete_confirmation(display, state)
-        }
         ScreenRoute::VoiceNotes => voice_notes::render_voice_notes(display, state),
         ScreenRoute::VoiceNoteDetails => voice_notes::render_voice_note_details(display, state),
         ScreenRoute::VoiceNoteRecording => voice_notes::render_voice_note_recording(display, state),

@@ -5,7 +5,6 @@ use crate::{
     audio::{AudioSnapshot, AudioUiRequest},
     board_services::BoardSnapshot,
     buttons::ButtonEvent,
-    calendar::{CalendarEditorOutcome, CalendarUiRequest, CalendarUiState},
     clock_time_editor::{self, ClockEditField, ClockTimeEditor},
     dictionary::DictionaryUiState,
     imu::ImuReading,
@@ -53,8 +52,6 @@ pub struct AppState {
     pub category_usage: CategoryUsage,
     pub display_action_selected: usize,
     pub display: DisplayPreferences,
-    /// Read-only monthly Calendar Foundation cursor and navigation mode.
-    pub calendar: CalendarUiState,
     /// Offline X4-pack-compatible native Dictionary keyboard and lookup snapshot.
     pub dictionary: DictionaryUiState,
     /// Offline fixed-point Unit Converter cursor and editable field.
@@ -141,7 +138,6 @@ impl Default for AppState {
             category_usage: CategoryUsage::default(),
             display_action_selected: 0,
             display: DisplayPreferences::default(),
-            calendar: CalendarUiState::default(),
             dictionary: DictionaryUiState::default(),
             unit_converter: UnitConverterUiState::default(),
             reader: ReaderUiState::default(),
@@ -246,16 +242,6 @@ impl AppState {
             self.apply_language(event);
         } else if route == ScreenRoute::PowerKeyMenu {
             self.apply_power_key_menu(event);
-        } else if route == ScreenRoute::Calendar {
-            self.apply_calendar(event);
-        } else if route == ScreenRoute::CalendarAgenda {
-            self.apply_calendar_agenda(event);
-        } else if route == ScreenRoute::CalendarEventDetails {
-            self.apply_calendar_event_details(event);
-        } else if route == ScreenRoute::CalendarEventEditor {
-            self.apply_calendar_event_editor(event);
-        } else if route == ScreenRoute::CalendarDeleteConfirmation {
-            self.apply_calendar_delete_confirmation(event);
         } else if route == ScreenRoute::Dictionary {
             self.apply_dictionary(event);
         } else if route == ScreenRoute::UnitConverter {
@@ -479,10 +465,6 @@ impl AppState {
                 if target == ScreenRoute::Display {
                     self.display_action_selected = 0;
                 }
-                if target == ScreenRoute::Calendar {
-                    self.initialize_calendar_if_needed();
-                    self.calendar.refresh_events();
-                }
                 if target == ScreenRoute::VoiceNotes {
                     self.voice_notes.refresh_catalog();
                 }
@@ -651,111 +633,6 @@ impl AppState {
         self.reading_stats = snapshot;
     }
 
-    fn initialize_calendar_if_needed(&mut self) {
-        let local = self.board.rtc.map(|rtc| self.regional.localize_rtc(rtc));
-        self.calendar.initialize_if_needed(local);
-    }
-
-    fn apply_calendar(&mut self, event: ButtonEvent) {
-        self.initialize_calendar_if_needed();
-        match event {
-            ButtonEvent::Up => self.calendar.move_previous(),
-            ButtonEvent::Down => self.calendar.move_next(),
-            ButtonEvent::Select => {
-                self.note_select_press();
-                self.calendar.toggle_mode();
-            }
-        }
-    }
-
-    fn apply_calendar_agenda(&mut self, event: ButtonEvent) {
-        match event {
-            ButtonEvent::Up => self.calendar.agenda_previous(),
-            ButtonEvent::Down => self.calendar.agenda_next(),
-            ButtonEvent::Select => {
-                self.note_select_press();
-                if self.calendar.selected_agenda_event().is_some() {
-                    self.router.navigate_to(ScreenRoute::CalendarEventDetails);
-                }
-            }
-        }
-    }
-
-    fn apply_calendar_event_details(&mut self, event: ButtonEvent) {
-        if !self.calendar.selected_event_is_personal() {
-            return;
-        }
-        match event {
-            ButtonEvent::Up => self.calendar.select_previous_details_action(),
-            ButtonEvent::Down => self.calendar.select_next_details_action(),
-            ButtonEvent::Select => {
-                self.note_select_press();
-                match self.calendar.details_action_selected {
-                    0 => {
-                        if self.calendar.begin_edit_selected_personal() {
-                            self.router.navigate_to(ScreenRoute::CalendarEventEditor);
-                        }
-                    }
-                    1 => {
-                        if self.calendar.prepare_delete_confirmation() {
-                            self.router
-                                .navigate_to(ScreenRoute::CalendarDeleteConfirmation);
-                        }
-                    }
-                    _ => self.router.navigate_to(ScreenRoute::CalendarAgenda),
-                }
-            }
-        }
-    }
-
-    fn apply_calendar_event_editor(&mut self, event: ButtonEvent) {
-        if event == ButtonEvent::Select {
-            self.note_select_press();
-        }
-        match self.calendar.apply_editor_button(event) {
-            CalendarEditorOutcome::None => {}
-            CalendarEditorOutcome::Save(request) => self.calendar.queue_request(request),
-            CalendarEditorOutcome::Cancel => {
-                self.calendar.clear_editor();
-                self.router.navigate_to(ScreenRoute::CalendarAgenda);
-            }
-        }
-    }
-
-    fn apply_calendar_delete_confirmation(&mut self, event: ButtonEvent) {
-        match event {
-            ButtonEvent::Up => self.calendar.select_previous_delete_confirmation(),
-            ButtonEvent::Down => self.calendar.select_next_delete_confirmation(),
-            ButtonEvent::Select => {
-                self.note_select_press();
-                if self.calendar.delete_confirmation_selected == 0 {
-                    self.router.navigate_to(ScreenRoute::CalendarEventDetails);
-                } else {
-                    self.calendar.request_delete_selected_personal();
-                }
-            }
-        }
-    }
-
-    /// Calendar keeps the accepted SELECT Day / Month toggle. A held SELECT
-    /// opens the selected-day agenda, then opens a create-personal editor from
-    /// the agenda. BOOT remains hierarchical Back.
-    pub fn apply_calendar_select_long_press(&mut self) -> bool {
-        match self.router.current() {
-            ScreenRoute::Calendar => {
-                self.calendar.prepare_agenda();
-                self.router.navigate_to(ScreenRoute::CalendarAgenda);
-                true
-            }
-            ScreenRoute::CalendarAgenda => {
-                self.calendar.begin_create_personal();
-                self.router.navigate_to(ScreenRoute::CalendarEventEditor);
-                true
-            }
-            _ => false,
-        }
-    }
-
     fn apply_unit_converter(&mut self, event: ButtonEvent) {
         match event {
             ButtonEvent::Up => self.unit_converter.increase_active(),
@@ -771,9 +648,7 @@ impl AppState {
     /// contextual handlers. Future text-entry apps should compose the shared
     /// KeyboardGridNavigation helper and join this routing boundary.
     pub fn apply_keyboard_select_long_press(&mut self) -> bool {
-        if self.router.current() == ScreenRoute::CalendarEventEditor {
-            self.calendar.toggle_editor_navigation_axis()
-        } else if self.router.current() == ScreenRoute::VoiceNoteDetails
+        if self.router.current() == ScreenRoute::VoiceNoteDetails
             && self.voice_notes.title_editing
         {
             self.voice_notes.toggle_title_editor_navigation_axis()
@@ -1188,9 +1063,6 @@ impl AppState {
             self.voice_notes.request_stop_playback();
             self.voice_notes.clear_transient_details();
         }
-        if self.router.current() == ScreenRoute::CalendarEventEditor {
-            self.calendar.clear_editor();
-        }
         if self.router.current() == ScreenRoute::ClockSetTime {
             self.clock_time_editor = None;
         }
@@ -1267,11 +1139,6 @@ impl AppState {
         if !self.wifi_transfer.is_active() {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Start);
         }
-    }
-
-    #[must_use]
-    pub fn take_calendar_request(&mut self) -> Option<CalendarUiRequest> {
-        self.calendar.take_request()
     }
 
     /// Refresh the "Saved networks" screen list, as read from `WIFI.TXT` by
@@ -1442,55 +1309,6 @@ mod tests {
         assert_eq!(state.home_selected, 0); // wraps to the first grid tile (Library).
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Library);
-    }
-
-    #[test]
-    fn productivity_calendar_opens_and_toggles_navigation_mode() {
-        use crate::calendar::CalendarNavigationMode;
-
-        let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Tools);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Calendar);
-        assert_eq!(state.calendar.mode, CalendarNavigationMode::Day);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.calendar.mode, CalendarNavigationMode::Month);
-    }
-
-    #[test]
-    fn calendar_select_long_opens_daily_agenda_and_details_route_safely() {
-        use crate::calendar::{
-            CalendarCatalogSnapshot, CalendarDate, CalendarEvent, CalendarEventKind,
-        };
-
-        let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::Calendar);
-        state.calendar.cursor = CalendarDate::new(2026, 6, 19).unwrap();
-        state.calendar.catalog = CalendarCatalogSnapshot {
-            events: vec![CalendarEvent {
-                date: CalendarDate::new(2026, 6, 19).unwrap(),
-                kind: CalendarEventKind::UsHoliday,
-                title: "Juneteenth".into(),
-                detail: "Federal holiday".into(),
-                source_row: 0,
-            }],
-            personal_loaded: true,
-            us_loaded: true,
-            warning: None,
-        };
-        assert!(state.apply_calendar_select_long_press());
-        assert_eq!(state.active_route(), ScreenRoute::CalendarAgenda);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::CalendarEventDetails);
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::CalendarAgenda);
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Calendar);
     }
 
     fn reader_session_with_lines(lines: &[&str]) -> ReaderSession {
@@ -2095,7 +1913,6 @@ mod tests {
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::VoiceNotes);
         state.apply(ButtonEvent::Select);
@@ -2107,49 +1924,17 @@ mod tests {
     }
 
     #[test]
-    fn calendar_personal_details_routes_edit_delete_and_select_hold_create_safely() {
-        use crate::calendar::{
-            CalendarCatalogSnapshot, CalendarDate, CalendarEvent, CalendarEventKind,
-        };
-
-        let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::CalendarAgenda);
-        state.calendar.cursor = CalendarDate::new(2026, 7, 4).unwrap();
-        state.calendar.catalog = CalendarCatalogSnapshot {
-            events: vec![CalendarEvent {
-                date: CalendarDate::new(2026, 7, 4).unwrap(),
-                kind: CalendarEventKind::Personal,
-                title: "Picnic".into(),
-                detail: "Bring snacks".into(),
-                source_row: 0,
-            }],
-            personal_loaded: true,
-            us_loaded: true,
-            warning: None,
-        };
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::CalendarEventDetails);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::CalendarEventEditor);
-        assert!(state.apply_keyboard_select_long_press());
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::CalendarAgenda);
-        assert!(state.apply_calendar_select_long_press());
-        assert_eq!(state.active_route(), ScreenRoute::CalendarEventEditor);
-    }
-
-    #[test]
     fn power_key_menu_preserves_return_route_and_requests_manual_refresh() {
         let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::Dictionary);
+        state.router.navigate_to(ScreenRoute::Library);
         state.open_power_key_menu();
         assert_eq!(state.active_route(), ScreenRoute::PowerKeyMenu);
         assert_eq!(
             state.power_key_sleep_restore_route(),
-            ScreenRoute::Dictionary
+            ScreenRoute::Library
         );
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Dictionary);
+        assert_eq!(state.active_route(), ScreenRoute::Library);
         assert!(state.take_power_key_manual_refresh_request());
         assert!(!state.take_power_key_manual_refresh_request());
     }
@@ -2157,14 +1942,14 @@ mod tests {
     #[test]
     fn power_key_menu_cancel_and_back_return_without_refresh() {
         let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::Calendar);
+        state.router.navigate_to(ScreenRoute::Clock);
         state.open_power_key_menu();
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Calendar);
+        assert_eq!(state.active_route(), ScreenRoute::Clock);
         assert!(!state.take_power_key_manual_refresh_request());
         state.open_power_key_menu();
         state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Calendar);
+        assert_eq!(state.active_route(), ScreenRoute::Clock);
     }
 }

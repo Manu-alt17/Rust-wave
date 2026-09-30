@@ -15,7 +15,7 @@ fi
 
 SRC="$ROOT/examples/sd-card/RUSTMIX"
 DEST="$VOLUME/RUSTMIX"
-mkdir -p "$DEST/SLEEP" "$DEST/BOOKS" "$DEST/READER/CACHE" "$DEST/APPS/DICT/DATA" "$DEST/APPS/CALENDAR"
+mkdir -p "$DEST/SLEEP" "$DEST/BOOKS" "$DEST/READER/CACHE" "$DEST/APPS/DICT/DATA"
 
 copy_example() {
   local src="$1"
@@ -53,19 +53,4 @@ else
   echo "rustmix-wave-dictionary-sd-smoke-pack-ready=$DICT_DEST"
 fi
 echo "dictionary-complete-pack-helper=$ROOT/scripts/install-dictionary-x4-pack.sh"
-
-CALENDAR_DEST="$DEST/APPS/CALENDAR"
-if find "$CALENDAR_DEST" -mindepth 1 -print -quit | grep -q .; then
-  echo "preserved-existing-calendar-pack=$CALENDAR_DEST"
-  echo "calendar-smoke-pack-install=skipped-existing-use-dedicated-installer"
-else
-  copy_example "$SRC/APPS/CALENDAR/APP.TOM" "$CALENDAR_DEST/APP.TOM"
-  copy_example "$SRC/APPS/CALENDAR/MAIN.LUA" "$CALENDAR_DEST/MAIN.LUA"
-  copy_example "$SRC/APPS/CALENDAR/EVENTS.TXT" "$CALENDAR_DEST/EVENTS.TXT"
-  copy_example "$SRC/APPS/CALENDAR/US2026.TXT" "$CALENDAR_DEST/US2026.TXT"
-  copy_example "$SRC/APPS/CALENDAR/README.TXT" "$CALENDAR_DEST/README.TXT"
-  rm -f "$CALENDAR_DEST/HINDU26.TXT"
-  echo "rustmix-wave-calendar-sd-smoke-pack-ready=$CALENDAR_DEST hindu=excluded"
-fi
-echo "calendar-us-pack-helper=$ROOT/scripts/install-calendar-x4-pack.sh"
 

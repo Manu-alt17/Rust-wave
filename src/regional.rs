@@ -8,7 +8,7 @@ use std::{fs, path::Path};
 
 use anyhow::{bail, Context, Result};
 
-use crate::{calendar::days_in_month, rtc::RtcDateTime};
+use crate::{date_math::days_in_month, rtc::RtcDateTime};
 
 /// On-device timezone selection, persisted independently of Wi-Fi
 /// provisioning so choosing a timezone from the Clock screen's "Set date &

@@ -513,14 +513,6 @@ mod tests {
                 state.apply(crate::buttons::ButtonEvent::Select);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
-            ("calendar", |state| {
-                state.home_selected = home_index(ScreenRoute::Tools);
-                state.apply(crate::buttons::ButtonEvent::Select);
-                state.apply(crate::buttons::ButtonEvent::Down);
-                state.apply(crate::buttons::ButtonEvent::Down);
-                state.apply(crate::buttons::ButtonEvent::Down);
-                state.apply(crate::buttons::ButtonEvent::Select);
-            }),
             ("tools", |state| {
                 state.home_selected = home_index(ScreenRoute::Tools);
                 state.apply(crate::buttons::ButtonEvent::Select);
