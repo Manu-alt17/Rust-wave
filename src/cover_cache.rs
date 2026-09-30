@@ -916,12 +916,133 @@ mod esp_jpeg {
     }
 }
 
+/// Most memory [`decode_jpeg_scaled`] may ask `jpeg-decoder` for, as
+/// estimated by [`jpeg_decoder_peak_bytes`]. In Rust a failed allocation
+/// aborts, and a cover that aborts is never cached, so it would be retried,
+/// and abort again, every time the Library shows it. Over the budget the
+/// image is refused instead, and the placeholder that replaces it is cached
+/// like any other result.
+const JPEG_DECODER_BUDGET_BYTES: u64 = 2 * 1024 * 1024;
+
+/// The parts of a JPEG frame header that decide how much decoding costs.
+#[derive(Debug, PartialEq)]
+struct JpegFrame {
+    width: u32,
+    height: u32,
+    progressive: bool,
+    /// Horizontal and vertical sampling factors, one pair per component.
+    sampling: Vec<(u32, u32)>,
+}
+
+/// Reads the frame header (SOF) without decoding anything.
+fn jpeg_frame(bytes: &[u8]) -> Option<JpegFrame> {
+    if !is_jpeg(bytes) {
+        return None;
+    }
+    let mut cursor = 2;
+    while cursor + 4 <= bytes.len() {
+        if bytes[cursor] != 0xFF {
+            return None;
+        }
+        let marker = bytes[cursor + 1];
+        // Fill bytes and standalone markers carry no length field.
+        if marker == 0xFF {
+            cursor += 1;
+            continue;
+        }
+        if marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+            cursor += 2;
+            continue;
+        }
+        let length = usize::from(u16::from_be_bytes([bytes[cursor + 2], bytes[cursor + 3]]));
+        if length < 2 {
+            return None;
+        }
+        let is_sof = matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+        if is_sof {
+            // Precision, height, width, component count, then 3 bytes per
+            // component: id, sampling factors, quantization table.
+            let segment = bytes.get(cursor + 4..cursor + 2 + length)?;
+            let height = u32::from(u16::from_be_bytes([*segment.get(1)?, *segment.get(2)?]));
+            let width = u32::from(u16::from_be_bytes([*segment.get(3)?, *segment.get(4)?]));
+            let count = usize::from(*segment.get(5)?);
+            let sampling = (0..count)
+                .map(|index| {
+                    let factors = *segment.get(6 + index * 3 + 1)?;
+                    Some((u32::from(factors >> 4), u32::from(factors & 0x0F)))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let valid = width > 0
+                && height > 0
+                && !sampling.is_empty()
+                && sampling.iter().all(|&(h, v)| (1..=4).contains(&h) && (1..=4).contains(&v));
+            return valid.then_some(JpegFrame {
+                width,
+                height,
+                progressive: matches!(marker, 0xC2 | 0xC6 | 0xCA | 0xCE),
+                sampling,
+            });
+        }
+        cursor += 2 + length;
+    }
+    None
+}
+
+/// The IDCT size, out of 8, that `jpeg-decoder`'s `scale()` picks: the
+/// smallest that still covers the request in at least one axis.
+fn jpeg_decoder_idct_size(frame: &JpegFrame, target_width: u16, target_height: u16) -> u32 {
+    [1, 2, 4]
+        .into_iter()
+        .find(|&size| {
+            (frame.width * size).div_ceil(8) >= u32::from(target_width)
+                || (frame.height * size).div_ceil(8) >= u32::from(target_height)
+        })
+        .unwrap_or(8)
+}
+
+/// What `jpeg-decoder` holds at once to decode `frame` for the requested
+/// size: the component planes at the IDCT size it picks, the interleaved
+/// output, the grayscale copy made from it, and for a progressive image the
+/// `i16` coefficients of every component at full resolution, which
+/// `scale()` does not reduce (a 1165x1800 colour cover needs 6.3 MB of them).
+fn jpeg_decoder_peak_bytes(frame: &JpegFrame, target_width: u16, target_height: u16) -> u64 {
+    let max_h = frame.sampling.iter().map(|&(h, _)| h).max().unwrap_or(1);
+    let max_v = frame.sampling.iter().map(|&(_, v)| v).max().unwrap_or(1);
+    let mcus_x = u64::from(frame.width.div_ceil(8 * max_h));
+    let mcus_y = u64::from(frame.height.div_ceil(8 * max_v));
+    let blocks: u64 = frame
+        .sampling
+        .iter()
+        .map(|&(h, v)| mcus_x * u64::from(h) * mcus_y * u64::from(v))
+        .sum();
+    let size = jpeg_decoder_idct_size(frame, target_width, target_height);
+    let planes = blocks * u64::from(size * size);
+    let output_pixels =
+        u64::from((frame.width * size).div_ceil(8)) * u64::from((frame.height * size).div_ceil(8));
+    let components = frame.sampling.len() as u64;
+    let output = output_pixels * components;
+    let gray = if components > 1 { output_pixels } else { 0 };
+    let coefficients = if frame.progressive { blocks * 64 * 2 } else { 0 };
+    coefficients + planes + output + gray
+}
+
 /// Decode via `jpeg-decoder`'s native scaled IDCT (factors 1/8, 1/4, 1/2, 1):
 /// the decoder picks the smallest factor that still covers the requested
 /// thumbnail size in at least one axis, so a large embedded cover is decoded
 /// near the target resolution instead of at full size before being thrown
-/// away by resize.
+/// away by resize. Refused when that would take more than
+/// [`JPEG_DECODER_BUDGET_BYTES`].
 fn decode_jpeg_scaled(bytes: &[u8], target_width: u16, target_height: u16) -> Result<GrayImage, String> {
+    let frame = jpeg_frame(bytes).ok_or_else(|| "JPEG frame header not found".to_string())?;
+    let peak_bytes = jpeg_decoder_peak_bytes(&frame, target_width, target_height);
+    if peak_bytes > JPEG_DECODER_BUDGET_BYTES {
+        return Err(format!(
+            "{} JPEG {}x{} needs about {peak_bytes} bytes to decode, over the {JPEG_DECODER_BUDGET_BYTES} byte budget",
+            if frame.progressive { "progressive" } else { "baseline" },
+            frame.width,
+            frame.height
+        ));
+    }
     let mut decoder = jpeg_decoder::Decoder::new(io::Cursor::new(bytes));
     decoder
         .scale(target_width, target_height)
@@ -1294,6 +1415,77 @@ mod tests {
         MAX_PNG_DECODED_BUFFER_BYTES, THUMB_BITMAP_BYTES, THUMB_HEIGHT, THUMB_WIDTH,
     };
     use crate::reader::{BookFormat, ReaderBook};
+
+    /// SOI, an APP0 segment and a frame header: all the budget check reads.
+    fn jpeg_header(marker: u8, width: u16, height: u16, sampling: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00];
+        bytes.extend_from_slice(&[0xFF, marker]);
+        bytes.extend_from_slice(&(8 + 3 * sampling.len() as u16).to_be_bytes());
+        bytes.push(8);
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.push(sampling.len() as u8);
+        for (index, factors) in sampling.iter().enumerate() {
+            bytes.extend_from_slice(&[index as u8 + 1, *factors, 0]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn jpeg_frame_reads_size_sampling_and_mode() {
+        let frame = super::jpeg_frame(&jpeg_header(0xC2, 1165, 1800, &[0x22, 0x11, 0x11]));
+        assert_eq!(
+            frame,
+            Some(super::JpegFrame {
+                width: 1165,
+                height: 1800,
+                progressive: true,
+                sampling: vec![(2, 2), (1, 1), (1, 1)],
+            })
+        );
+        let gray = super::jpeg_frame(&jpeg_header(0xC0, 600, 900, &[0x11])).unwrap();
+        assert!(!gray.progressive);
+        assert_eq!(gray.sampling, vec![(1, 1)]);
+        assert!(super::jpeg_frame(&jpeg_header(0xC0, 0, 900, &[0x11])).is_none());
+        assert!(super::jpeg_frame(&jpeg_header(0xC0, 600, 900, &[0x10])).is_none());
+        assert!(super::jpeg_frame(&[0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08]).is_none());
+        assert!(super::jpeg_frame(b"\x89PNG\r\n\x1a\n").is_none());
+    }
+
+    #[test]
+    fn idct_size_matches_jpeg_decoder_choice() {
+        let frame = super::jpeg_frame(&jpeg_header(0xC0, 1165, 1800, &[0x11])).unwrap();
+        // 1/8 gives 146x225, short of 208x252 in both axes; 1/4 gives 292.
+        assert_eq!(super::jpeg_decoder_idct_size(&frame, THUMB_WIDTH, THUMB_HEIGHT), 2);
+        assert_eq!(super::jpeg_decoder_idct_size(&frame, 480, 800), 4);
+        assert_eq!(super::jpeg_decoder_idct_size(&frame, 140, 2000), 1);
+        assert_eq!(super::jpeg_decoder_idct_size(&frame, 2000, 2000), 8);
+    }
+
+    #[test]
+    fn large_progressive_jpegs_are_refused_before_decoding() {
+        // The review's example: 6.3 MB of coefficients alone.
+        let verity = jpeg_header(0xC2, 1165, 1800, &[0x22, 0x11, 0x11]);
+        let frame = super::jpeg_frame(&verity).unwrap();
+        let coefficients: u64 = (146 * 226 + 2 * 73 * 113) * 64 * 2;
+        assert!(super::jpeg_decoder_peak_bytes(&frame, THUMB_WIDTH, THUMB_HEIGHT) > coefficients);
+        let error = super::decode_jpeg_scaled(&verity, THUMB_WIDTH, THUMB_HEIGHT)
+            .err()
+            .expect("over budget");
+        assert!(error.contains("budget"), "{error}");
+        // The same picture as a baseline JPEG is decoded near the thumbnail
+        // size, and a small progressive one still fits.
+        let baseline = super::jpeg_frame(&jpeg_header(0xC0, 1165, 1800, &[0x22, 0x11, 0x11])).unwrap();
+        assert!(
+            super::jpeg_decoder_peak_bytes(&baseline, THUMB_WIDTH, THUMB_HEIGHT)
+                < super::JPEG_DECODER_BUDGET_BYTES
+        );
+        let small = super::jpeg_frame(&jpeg_header(0xC2, 400, 600, &[0x22, 0x11, 0x11])).unwrap();
+        assert!(
+            super::jpeg_decoder_peak_bytes(&small, THUMB_WIDTH, THUMB_HEIGHT)
+                < super::JPEG_DECODER_BUDGET_BYTES
+        );
+    }
 
     #[test]
     fn crop_to_aspect_keeps_the_centered_region() {
