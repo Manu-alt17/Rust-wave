@@ -6,8 +6,6 @@ use crate::{
     buttons::ButtonEvent,
     clock_time_editor::{self, ClockEditField, ClockTimeEditor},
     dictionary::DictionaryUiState,
-    imu::ImuReading,
-    imu_events::{ImuControlOutcome, ImuDetectedEvent, ImuEventBridge},
     network::NetworkSnapshot,
     network_saved::NetworkSavedUiState,
     orientation::DisplayOrientation,
@@ -57,8 +55,6 @@ pub struct AppState {
     pub unit_converter: UnitConverterUiState,
     /// TXT / reflowable EPUB Reader library, staged opening, RAM cache and options.
     pub reader: ReaderUiState,
-    /// Rust-owned debounced QMI8658 event bridge and diagnostics controls.
-    pub imu_events: ImuEventBridge,
     pub partial_refreshes: u8,
     pub panel_awake: bool,
     pub select_presses: u32,
@@ -138,7 +134,6 @@ impl Default for AppState {
             dictionary: DictionaryUiState::default(),
             unit_converter: UnitConverterUiState::default(),
             reader: ReaderUiState::default(),
-            imu_events: ImuEventBridge::default(),
             partial_refreshes: 0,
             panel_awake: true,
             select_presses: 0,
@@ -242,8 +237,6 @@ impl AppState {
             self.apply_dictionary(event);
         } else if route == ScreenRoute::UnitConverter {
             self.apply_unit_converter(event);
-        } else if route == ScreenRoute::MotionEvents {
-            self.apply_motion_events(event);
         } else if route == ScreenRoute::ClockSetTime {
             self.apply_clock_set_time(event);
         } else if matches!(
@@ -287,14 +280,6 @@ impl AppState {
                     } else {
                         self.router.navigate_to(ScreenRoute::ClockDetails);
                     }
-                }
-                (ScreenRoute::Environment, ButtonEvent::Select) => {
-                    self.note_select_press();
-                    self.router.navigate_to(ScreenRoute::EnvironmentDetails);
-                }
-                (ScreenRoute::Motion, ButtonEvent::Select) => {
-                    self.note_select_press();
-                    self.router.navigate_to(ScreenRoute::MotionEvents);
                 }
                 (ScreenRoute::Network, ButtonEvent::Up) => {
                     self.network_action_selected = self
@@ -361,18 +346,13 @@ impl AppState {
                     self.router.navigate_to(ScreenRoute::DeviceInfoRuntime);
                 }
                 (
-                    ScreenRoute::Environment
-                    | ScreenRoute::Motion
-                    | ScreenRoute::DeviceInfo
-                    | ScreenRoute::DeviceInfoBoard,
+                    ScreenRoute::DeviceInfo | ScreenRoute::DeviceInfoBoard,
                     ButtonEvent::Up | ButtonEvent::Down,
                 )
                 | (
                     ScreenRoute::AudioDetails
                     | ScreenRoute::ClockDetails
                     | ScreenRoute::DeviceInfoRuntime
-                    | ScreenRoute::EnvironmentDetails
-                    | ScreenRoute::MotionDetails
                     | ScreenRoute::NetworkDetails
                     | ScreenRoute::WifiTransfer,
                     _,
@@ -523,19 +503,6 @@ impl AppState {
         }
     }
 
-    fn apply_motion_events(&mut self, event: ButtonEvent) {
-        match event {
-            ButtonEvent::Up => self.imu_events.select_previous_control(),
-            ButtonEvent::Down => self.imu_events.select_next_control(),
-            ButtonEvent::Select => {
-                self.note_select_press();
-                if self.imu_events.apply_selected_control() == ImuControlOutcome::OpenDetails {
-                    self.router.navigate_to(ScreenRoute::MotionDetails);
-                }
-            }
-        }
-    }
-
     /// Seed the runtime "Set date & time" editor from the current UTC
     /// instant (derived from the RTC reading, or a sane fallback while the
     /// RTC is unavailable) and the currently active regional timezone.
@@ -581,17 +548,6 @@ impl AppState {
                 }
             }
         }
-    }
-
-    /// Feed one native QMI8658 reading into the debounced event bridge while
-    /// preserving the latest raw sample for diagnostics screens.
-    pub fn update_imu_event_sample(
-        &mut self,
-        reading: ImuReading,
-        now_ms: u64,
-    ) -> Option<ImuDetectedEvent> {
-        self.board.imu = Some(reading);
-        self.imu_events.process(reading, now_ms)
     }
 
     /// Record a Reader page turn that actually moved the current position,
@@ -1274,22 +1230,6 @@ mod tests {
             }),
             "Thu, Jun 4"
         );
-    }
-
-    #[test]
-    fn motion_event_screen_cycles_thresholds_and_opens_sensor_details() {
-        let mut state = AppState::default();
-        state.router.navigate_to(ScreenRoute::Motion);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::MotionEvents);
-        let original = state.imu_events.thresholds.tilt_enter_mg;
-        state.apply(ButtonEvent::Select);
-        assert_ne!(state.imu_events.thresholds.tilt_enter_mg, original);
-        for _ in 0..6 {
-            state.apply(ButtonEvent::Down);
-        }
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::MotionDetails);
     }
 
     #[test]

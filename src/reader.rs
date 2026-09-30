@@ -679,12 +679,6 @@ pub struct ReaderPreferences {
     pub book_font: BookFont,
     pub paragraph_alignment: ParagraphAlignment,
     pub show_progress: bool,
-    /// Single tap = next page, double tap = previous page, via the QMI8658
-    /// hardware tap engine. Off restores the Reader's normal battery-save
-    /// behavior on the page route: `main.rs` only keeps the IMU at its full
-    /// 1000 Hz profile (tap timing needs that; see `imu_tap_diagnostics`)
-    /// and only polls the tap engine while this is on.
-    pub tap_page_turn_enabled: bool,
     /// Hide every piece of page chrome and give the whole panel to the text
     /// (see [`ReaderLayout::full_screen`]).
     pub full_screen: bool,
@@ -699,7 +693,6 @@ impl Default for ReaderPreferences {
             book_font: BookFont::Serif,
             paragraph_alignment: ParagraphAlignment::Justified,
             show_progress: true,
-            tap_page_turn_enabled: true,
             full_screen: false,
         }
     }
@@ -775,14 +768,9 @@ impl ReaderPreferences {
     #[must_use]
     pub fn serialized(self) -> String {
         let show_progress = if self.show_progress { "true" } else { "false" };
-        let tap_page_turn_enabled = if self.tap_page_turn_enabled {
-            "true"
-        } else {
-            "false"
-        };
         let full_screen = if self.full_screen { "true" } else { "false" };
         format!(
-            "version={}\ntheme={}\norientation={}\nfont_size={}\nbook_font={}\nparagraph_alignment={}\nshow_progress={}\ntap_page_turn_enabled={}\nfull_screen={}\n",
+            "version={}\ntheme={}\norientation={}\nfont_size={}\nbook_font={}\nparagraph_alignment={}\nshow_progress={}\nfull_screen={}\n",
             READER_PREFS_VERSION,
             self.theme.marker(),
             self.orientation.marker(),
@@ -790,7 +778,6 @@ impl ReaderPreferences {
             self.book_font.marker(),
             self.paragraph_alignment.marker(),
             show_progress,
-            tap_page_turn_enabled,
             full_screen,
         )
     }
@@ -822,13 +809,9 @@ impl ReaderPreferences {
                         _ => return Err("show_progress must be true or false".into()),
                     }
                 }
-                "tap_page_turn_enabled" => {
-                    prefs.tap_page_turn_enabled = match value.trim() {
-                        "true" => true,
-                        "false" => false,
-                        _ => return Err("tap_page_turn_enabled must be true or false".into()),
-                    }
-                }
+                // Written by firmware that still had tap page-turn; accepted
+                // and ignored so those PREFS.TXT files keep loading.
+                "tap_page_turn_enabled" => {}
                 "full_screen" => {
                     prefs.full_screen = match value.trim() {
                         "true" => true,
@@ -1833,18 +1816,16 @@ pub enum ReadingPreference {
     BookFont,
     ParagraphAlignment,
     ShowProgress,
-    TapPageTurn,
     FullScreen,
 }
 
 impl ReadingPreference {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 6] = [
         Self::ReadingTheme,
         Self::Orientation,
         Self::BookFontSize,
         Self::BookFont,
         Self::ParagraphAlignment,
-        Self::TapPageTurn,
         Self::FullScreen,
     ];
 
@@ -1857,7 +1838,6 @@ impl ReadingPreference {
             Self::BookFont => "Book Font",
             Self::ParagraphAlignment => "Paragraph Alignment",
             Self::ShowProgress => "Show Progress",
-            Self::TapPageTurn => "Tap Page-Turn",
             Self::FullScreen => "Full Screen",
         }
     }
@@ -1875,7 +1855,6 @@ impl ReadingPreference {
                 Self::BookFont => "Carattere libro",
                 Self::ParagraphAlignment => "Allineamento paragrafo",
                 Self::ShowProgress => "Mostra progresso",
-                Self::TapPageTurn => "Cambio pagina a tocco",
                 Self::FullScreen => "Schermo intero",
             },
         }
@@ -1894,7 +1873,6 @@ impl ReadingPreference {
                 Self::BookFont => "FONT",
                 Self::ParagraphAlignment => "ALIGNMENT",
                 Self::ShowProgress => "PROGRESS",
-                Self::TapPageTurn => "PAGE TURN",
                 Self::FullScreen => "FULL SCREEN",
             },
             Locale::Italian => match self {
@@ -1904,7 +1882,6 @@ impl ReadingPreference {
                 Self::BookFont => "CARATTERE",
                 Self::ParagraphAlignment => "ALLINEAMENTO",
                 Self::ShowProgress => "PROGRESSO",
-                Self::TapPageTurn => "GIRA PAGINA",
                 Self::FullScreen => "SCHERMO",
             },
         }
@@ -3691,9 +3668,6 @@ impl ReaderUiState {
                 candidate.paragraph_alignment = candidate.paragraph_alignment.previous();
             }
             ReadingPreference::ShowProgress => candidate.show_progress = !candidate.show_progress,
-            ReadingPreference::TapPageTurn => {
-                candidate.tap_page_turn_enabled = !candidate.tap_page_turn_enabled;
-            }
             ReadingPreference::FullScreen => candidate.full_screen = !candidate.full_screen,
         }
     }
@@ -3713,9 +3687,6 @@ impl ReaderUiState {
                 candidate.paragraph_alignment = candidate.paragraph_alignment.next();
             }
             ReadingPreference::ShowProgress => candidate.show_progress = !candidate.show_progress,
-            ReadingPreference::TapPageTurn => {
-                candidate.tap_page_turn_enabled = !candidate.tap_page_turn_enabled;
-            }
             ReadingPreference::FullScreen => candidate.full_screen = !candidate.full_screen,
         }
     }
@@ -3783,18 +3754,6 @@ impl ReaderUiState {
                 self.last_message = Some(format!(
                     "Show progress: {}",
                     if self.preferences.show_progress {
-                        "On"
-                    } else {
-                        "Off"
-                    }
-                ));
-                self.persist_preferences_best_effort();
-                false
-            }
-            ReadingPreference::TapPageTurn => {
-                self.last_message = Some(format!(
-                    "Tap page-turn: {}",
-                    if self.preferences.tap_page_turn_enabled {
                         "On"
                     } else {
                         "Off"

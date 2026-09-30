@@ -13,7 +13,7 @@ use super::router::ScreenRoute;
 
 pub const MAIN_CATEGORY_COUNT: usize = 6;
 pub const CATEGORY_COUNT: usize = 2;
-pub const TOOLS_ENTRY_COUNT: usize = 6;
+pub const TOOLS_ENTRY_COUNT: usize = 4;
 pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
 /// heading of the Tools and Settings grids (see
@@ -91,10 +91,10 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
     MenuEntry {
         label_en: "Tools",
         label_it: "Strumenti",
-        subtitle_en: "Files, dictionary and sensors",
-        subtitle_it: "File, dizionario e sensori",
-        badge_en: "6",
-        badge_it: "6",
+        subtitle_en: "Files, dictionary and notes",
+        subtitle_it: "File, dizionario e note",
+        badge_en: "4",
+        badge_it: "4",
         route: ScreenRoute::Tools,
     },
     MenuEntry {
@@ -163,24 +163,6 @@ const TOOLS_ENTRIES: [MenuEntry; TOOLS_ENTRY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::VoiceNotes,
-    },
-    MenuEntry {
-        label_en: "Environment",
-        label_it: "Ambiente",
-        subtitle_en: "SHTC3 temperature and humidity",
-        subtitle_it: "Temperatura e umidità SHTC3",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Environment,
-    },
-    MenuEntry {
-        label_en: "Motion",
-        label_it: "Movimento",
-        subtitle_en: "QMI8658 accelerometer and gyroscope",
-        subtitle_it: "Accelerometro e giroscopio QMI8658",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Motion,
     },
 ];
 
@@ -464,23 +446,6 @@ mod tests {
         assert!(category_entries(ScreenRoute::Tools)
             .iter()
             .any(|entry| entry.route == ScreenRoute::VoiceNotes));
-    }
-
-    #[test]
-    fn sensors_live_in_tools_not_settings() {
-        let settings = category_entries(ScreenRoute::Settings);
-        let tools = category_entries(ScreenRoute::Tools);
-        assert!(settings
-            .iter()
-            .any(|entry| entry.route == ScreenRoute::Display));
-        assert!(settings
-            .iter()
-            .any(|entry| entry.route == ScreenRoute::Language));
-        for route in [ScreenRoute::Environment, ScreenRoute::Motion] {
-            assert!(tools.iter().any(|entry| entry.route == route));
-            assert!(settings.iter().all(|entry| entry.route != route));
-            assert_eq!(route.parent(), Some(ScreenRoute::Tools));
-        }
     }
 
     #[test]

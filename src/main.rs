@@ -46,11 +46,8 @@ mod firmware {
             render_current_screen,
             screens::reader::library_visible_books,
             AppState, ScreenRoute, AUTO_DEEP_SLEEP_ENABLED, AUTO_DEEP_SLEEP_IDLE_SECONDS,
-            DEV_BENCH_BUILD,
-            CHARGING_STATUS_POLL_SECONDS, IMU_EVENT_SCREEN_REFRESH_SECONDS,
-            LIBRARY_THUMBNAIL_REFRESH_SECONDS,
-            MOTION_LIVE_REFRESH_SECONDS, NETWORK_LIVE_REFRESH_SECONDS,
-            NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
+            DEV_BENCH_BUILD, CHARGING_STATUS_POLL_SECONDS, LIBRARY_THUMBNAIL_REFRESH_SECONDS,
+            NETWORK_LIVE_REFRESH_SECONDS, NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
             READER_POWER_SAVE_GRACE_SECONDS, SAMPLE_LIVE_REFRESH_SECONDS,
             VOICE_RECORD_SCREEN_REFRESH_SECONDS,
         },
@@ -67,12 +64,6 @@ mod firmware {
         cover_cache::CoverCache,
         epaper::{self, Epaper397},
         framebuffer::FrameBuffer,
-        imu::TapKind,
-        imu_events::IMU_EVENT_SAMPLE_INTERVAL_MS,
-        imu_tap_diagnostics::{
-            compact_samples_label, RawSample, TapDiagnosticEvent, TapDiagnosticsSession,
-            TAP_DIAGNOSTICS_ENABLED, TAP_DIAGNOSTICS_POLL_INTERVAL_MS,
-        },
         input_events::{InputEvent, InputEventQueue},
         mcu_deep_sleep,
         network::{
@@ -359,7 +350,7 @@ mod firmware {
         // panel is deferred to right before the first real paint, same as
         // any other boot -- see the merged paint block further down.
         //
-        // PMIC (power key), RTC and IMU all share this bus and are
+        // PMIC (power key) and RTC share this bus and are
         // polled continuously by the main loop regardless of which screen is
         // active. Without an explicit hardware timeout, esp-idf-hal's
         // embedded_hal::i2c::I2c impl blocks each transaction for BLOCK
@@ -779,11 +770,10 @@ mod firmware {
         state.update_storage_snapshot(storage_browser.snapshot());
         log_storage_snapshot(&state.storage);
         debug!(
-            "rustmix-wave=regional-profile timezone={} display-offset={} rtc-storage-offset={} temperature-unit={}",
+            "rustmix-wave=regional-profile timezone={} display-offset={} rtc-storage-offset={}",
             state.regional.timezone_name(),
             state.regional.timezone_label_for_rtc(state.board.rtc),
-            state.regional.rtc_storage_label(),
-            state.regional.temperature_unit.marker()
+            state.regional.rtc_storage_label()
         );
 
         appstate_span.end();
@@ -798,11 +788,9 @@ mod firmware {
         }
         board_init_span.end();
         debug!(
-            "rustmix-wave=sample-board-services-init rtc={} environment={} power={} imu={} rtc-integrity-lost={} shtc3-id={} qmi8658-address={} qmi8658-revision={}",
+            "rustmix-wave=board-services-init rtc={} power={} rtc-integrity-lost={} shtc3=sleep:{} qmi8658=off:{} qmi8658-revision={}",
             init.rtc_available,
-            init.environment_available,
             init.power_monitoring_available,
-            init.imu_available,
             init.rtc_clock_integrity_was_lost,
             init.environment_sensor_id
                 .map_or_else(|| "unavailable".into(), |id| format!("0x{id:04X}")),
@@ -825,9 +813,6 @@ mod firmware {
             }
         };
         power_key_span.end();
-        // Light snapshot (RTC and PMIC only): the SHTC3 temperature/humidity
-        // measurement costs ~20 ms and is only shown on the environment
-        // screens, which take their own sample when opened.
         let snapshot_span = boot_profile::span("board-snapshot-read");
         state.update_board_snapshot(board_services.read_light_snapshot());
         snapshot_span.end();
@@ -1238,11 +1223,6 @@ mod firmware {
         let mut last_ota_check_attempt: Option<Instant> = None;
         let mut ota_self_test_confirmed = false;
         let mut last_reader_tick = Instant::now();
-        let imu_event_started_at = Instant::now();
-        let mut last_imu_event_sample = Instant::now();
-        let mut last_imu_event_screen_refresh = Instant::now();
-        let mut tap_diagnostics = TapDiagnosticsSession::default();
-        let mut last_tap_diagnostics_poll = Instant::now();
         // Reading-stats session tracker: owns the currently-open reading
         // session (if any) and the append-only SD log, fed one page turn or
         // inactivity check at a time. Kept outside `AppState` like the other
@@ -1279,16 +1259,14 @@ mod firmware {
         let mut reader_route_active_since: Option<Instant> = None;
         let mut wifi_suspended_for_reading = false;
         let mut audio_suspended_for_reading = false;
-        let mut imu_low_power_for_reading = false;
         // Main-loop pacing. Every iteration ends in
         // `input_queue.wait_timeout`, which returns the moment a key event is
         // queued, so input latency does not depend on these values. While
         // something needs frequent service (audio streaming, voice capture,
-        // the transfer portal, a Reader open in progress, IMU-driven screens
-        // and the tap page-turn engine) the loop keeps the historical 20 ms
-        // cadence; otherwise it waits 100 ms, long enough for automatic
-        // light sleep (>= 30 ms of idle) and still well inside the 100 ms
-        // power-key poll and the 250 ms Reader tick it paces.
+        // the transfer portal, a Reader open in progress) the loop keeps the
+        // historical 20 ms cadence; otherwise it waits 100 ms, long enough
+        // for automatic light sleep (>= 30 ms of idle) and still well inside
+        // the 100 ms power-key poll and the 250 ms Reader tick it paces.
         const MAIN_LOOP_ACTIVE_TICK_MS: u64 = 20;
         const MAIN_LOOP_IDLE_WAIT_MS: u64 = 100;
         let mut light_sleep_guard = LightSleepGuard::new();
@@ -1851,44 +1829,6 @@ mod firmware {
                 audio_suspended_for_reading = false;
             }
 
-            // Keeps the accelerometer alive at a reduced rate (unlike
-            // sleep_imu/wake_imu's full stop, used only ahead of real deep
-            // sleep) so a future tilt-based auto-rotate feature still has
-            // live orientation data while reading; the gyroscope, needed
-            // only by Motion Events, is powered
-            // down entirely until one of those becomes the active screen.
-            //
-            // ReaderPage is excluded: its tap-to-turn-page trigger needs the
-            // QMI8658 hardware tap engine's peak/tap/double-tap windows --
-            // configured in accelerometer *samples*, not milliseconds -- to
-            // stay meaningful, and they're only calibrated for the full
-            // 1000 Hz profile. At the low-power profile's 21 Hz they'd
-            // stretch out roughly 47x (e.g. a ~300 ms double-tap window
-            // becomes ~14 s), making tap detection unusable within seconds
-            // of opening a book. Other reader routes (TOC, bookmarks,
-            // options) don't drive tap navigation, so they still get the
-            // power saving.
-            let imu_low_power_eligible = reader_power_save_ready
-                && (!state.reader.preferences.tap_page_turn_enabled
-                    || state.active_route() != ScreenRoute::ReaderPage);
-            if imu_low_power_eligible && !imu_low_power_for_reading {
-                match board_services.imu_enter_low_power_orientation_mode() {
-                    Ok(()) => info!("rustmix-wave=reader-power-save status=imu-low-power"),
-                    Err(error) => warn!(
-                        "rustmix-wave=reader-power-save status=imu-low-power-failed error={error:#}"
-                    ),
-                }
-                imu_low_power_for_reading = true;
-            } else if imu_low_power_for_reading && !imu_low_power_eligible {
-                match board_services.imu_wake_full_rate() {
-                    Ok(()) => info!("rustmix-wave=reader-power-save status=imu-full-rate"),
-                    Err(error) => warn!(
-                        "rustmix-wave=reader-power-save status=imu-full-rate-failed error={error:#}"
-                    ),
-                }
-                imu_low_power_for_reading = false;
-            }
-
             if sleep_mode.is_sleeping() {
                 if let Some(started_at) = sleep_wake_guard_started_at.as_ref() {
                     let elapsed_ms = started_at.elapsed().as_millis() as u64;
@@ -1941,11 +1881,6 @@ mod firmware {
                             let restore_route = sleep_mode.exit(SleepWakeCause::PowerKey);
                             panel.initialize()?;
                             state.panel_awake = true;
-                            if let Err(error) = board_services.wake_imu() {
-                                warn!(
-                                    "rustmix-wave=imu-suspend status=resume-failed error={error:#}"
-                                );
-                            }
                             state.router.navigate_to(restore_route);
                             if restore_route == ScreenRoute::Home {
                                 // Same Continue Reading card as the deep-sleep
@@ -1977,7 +1912,6 @@ mod firmware {
                                 );
                             }
                             wifi_suspended_for_reading = false;
-                            imu_low_power_for_reading = false;
                             reader_route_active_since = None;
                             last_activity = Instant::now();
                             last_status_refresh = Instant::now();
@@ -2021,7 +1955,6 @@ mod firmware {
                                 &mut wifi_suspended_for_reading,
                                 &mut reader_route_active_since,
                                 &mut board_services,
-                                &mut imu_low_power_for_reading,
                                 &mut misc_power,
                                 &mut audio_suspended_for_reading,
                                 &mut reading_stats_tracker,
@@ -2077,7 +2010,6 @@ mod firmware {
                     &mut wifi_suspended_for_reading,
                     &mut reader_route_active_since,
                     &mut board_services,
-                    &mut imu_low_power_for_reading,
                     &mut misc_power,
                     &mut audio_suspended_for_reading,
                     &mut reading_stats_tracker,
@@ -2344,164 +2276,7 @@ mod firmware {
                 }
             }
 
-            if !sleep_mode.is_sleeping()
-                && state.panel_awake
-                && state.active_route() == ScreenRoute::MotionEvents
-                && last_imu_event_sample.elapsed()
-                    >= Duration::from_millis(IMU_EVENT_SAMPLE_INTERVAL_MS)
-            {
-                match board_services.read_imu_motion() {
-                    Ok(reading) => {
-                        let now_ms = imu_event_started_at.elapsed().as_millis() as u64;
-                        let event = state.update_imu_event_sample(reading, now_ms);
-                        if let Some(event) = event {
-                            info!("rustmix-wave=imu-event type={} detail={} at-ms={} samples={} counts=tilt:{},shake:{},rotate:{},level:{} thresholds=tilt:{}mg,shake:{}mg,rotate:{}dps,level:{}mg,debounce:{}ms", event.kind.marker(), event.kind.detail_marker(), event.at_ms, state.imu_events.samples, state.imu_events.counters.tilt, state.imu_events.counters.shake, state.imu_events.counters.rotate, state.imu_events.counters.level, state.imu_events.thresholds.tilt_enter_mg, state.imu_events.thresholds.shake_delta_mg, state.imu_events.thresholds.rotate_dps, state.imu_events.thresholds.level_tolerance_mg, state.imu_events.thresholds.debounce_ms);
-                        }
-                        let diagnostic_refresh = event.is_some()
-                            || last_imu_event_screen_refresh.elapsed()
-                                >= Duration::from_secs(IMU_EVENT_SCREEN_REFRESH_SECONDS);
-                        if diagnostic_refresh {
-                            refresh_screen(
-                                &mut panel,
-                                &mut frame,
-                                &mut state,
-                                &mut panel_refresh,
-                                RefreshRequest::Normal,
-                            )?;
-                            last_imu_event_screen_refresh = Instant::now();
-                        }
-                    }
-                    Err(error) => {
-                        warn!("rustmix-wave=imu-event-sample status=unavailable error={error:#}")
-                    }
-                }
-                last_imu_event_sample = Instant::now();
-            }
-
-            // Polls the QMI8658 hardware tap engine. Two independent
-            // consumers hang off this same poll: the diagnostic burst-sample
-            // logger below (gated separately on `TAP_DIAGNOSTICS_ENABLED`,
-            // since it's still tuning-phase data collection -- see
-            // `imu_tap_diagnostics`), and the Reader single/double-tap page
-            // turn just below that, which is a real navigation action and so
-            // does *not* depend on that flag. Gated on the Reader Preferences
-            // "Tap Page-Turn" toggle rather than the active screen, so
-            // turning it off stops this I2C polling entirely -- on top of
-            // `imu_low_power_eligible` above no longer exempting ReaderPage
-            // from the accelerometer low-power drop, this restores the
-            // pre-tap-feature battery behavior when the user opts out. Stops
-            // while sleeping since the QMI8658 isn't sampled then either.
-            if init.tap_diagnostics_available
-                && state.reader.preferences.tap_page_turn_enabled
-                && !sleep_mode.is_sleeping()
-                && last_tap_diagnostics_poll.elapsed()
-                    >= Duration::from_millis(TAP_DIAGNOSTICS_POLL_INTERVAL_MS)
-            {
-                let now_ms = imu_event_started_at.elapsed().as_millis() as u64;
-                if TAP_DIAGNOSTICS_ENABLED {
-                    match board_services.read_imu_motion() {
-                        Ok(reading) => {
-                            let sample = RawSample {
-                                at_ms: now_ms,
-                                accel_mg_tenths: reading.acceleration_mg_tenths,
-                                gyro_dps_tenths: reading.gyroscope_dps_tenths,
-                            };
-                            if let Some(event) = tap_diagnostics.record_sample(sample) {
-                                log_tap_diagnostic_event(&event);
-                            }
-                        }
-                        Err(error) => warn!(
-                            "rustmix-wave=tap-diagnostics-sample status=unavailable error={error:#}"
-                        ),
-                    }
-                }
-                match board_services.poll_tap_event() {
-                    Ok(Some(status)) => {
-                        if TAP_DIAGNOSTICS_ENABLED {
-                            tap_diagnostics.observe_tap_status(status, now_ms);
-                        }
-                        if let Some(kind) = status.kind {
-                            if state.active_route() == ScreenRoute::ReaderPage {
-                                let button = match kind {
-                                    TapKind::Single => ButtonEvent::Down,
-                                    TapKind::Double => ButtonEvent::Up,
-                                };
-                                info!(
-                                    "rustmix-wave=reader-tap-page-turn kind={} axis={}{} raw=0x{:02X} action={}",
-                                    kind.marker(),
-                                    status.polarity.marker(),
-                                    status.axis.marker(),
-                                    status.raw,
-                                    if matches!(kind, TapKind::Single) {
-                                        "next-page"
-                                    } else {
-                                        "previous-page"
-                                    }
-                                );
-                                let woke_from_sleep = !state.panel_awake;
-                                if woke_from_sleep {
-                                    panel.initialize()?;
-                                    state.panel_awake = true;
-                                    panel_refresh
-                                        .reset_after_external_global(PanelGlobalReason::AfterWake);
-                                    sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
-                                }
-                                let page_before = state
-                                    .reader
-                                    .session
-                                    .as_ref()
-                                    .map_or_else(|| "none".into(), |session| session.page_label());
-                                state.apply(button);
-                                record_reader_page_turn(&mut state, &mut reading_stats_tracker);
-                                log_reader_persistence_event(&mut state);
-                                // Pinpoints where a "tap not working" report
-                                // actually breaks: the line above already
-                                // proves the hardware fired, so if
-                                // `changed=false` shows up repeatedly the
-                                // engine is fine and `Reader` itself is
-                                // refusing the turn (book boundary, an
-                                // internal error in `last-message`, etc.) --
-                                // not a tap-detection issue.
-                                let page_after = state
-                                    .reader
-                                    .session
-                                    .as_ref()
-                                    .map_or_else(|| "none".into(), |session| session.page_label());
-                                info!(
-                                    "rustmix-wave=reader-tap-page-turn-result page-before={page_before} page-after={page_after} changed={} last-message={}",
-                                    page_before != page_after,
-                                    state.reader.last_message.as_deref().unwrap_or("none")
-                                );
-                                let reader_clear_ghost = state.take_reader_clear_ghost_request();
-                                let request = if woke_from_sleep {
-                                    RefreshRequest::ForceGlobalAfterWake
-                                } else if reader_clear_ghost {
-                                    RefreshRequest::ForceGlobalManual
-                                } else {
-                                    RefreshRequest::Normal
-                                };
-                                refresh_screen(
-                                    &mut panel,
-                                    &mut frame,
-                                    &mut state,
-                                    &mut panel_refresh,
-                                    request,
-                                )?;
-                                last_activity = Instant::now();
-                                last_status_refresh = Instant::now();
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        warn!("rustmix-wave=tap-diagnostics-status status=unavailable error={error:#}")
-                    }
-                }
-                last_tap_diagnostics_poll = Instant::now();
-            }
-
             let live_refresh_seconds = match state.active_route() {
-                ScreenRoute::Motion | ScreenRoute::MotionDetails => MOTION_LIVE_REFRESH_SECONDS,
                 ScreenRoute::Network | ScreenRoute::NetworkDetails => NETWORK_LIVE_REFRESH_SECONDS,
                 _ => SAMPLE_LIVE_REFRESH_SECONDS,
             };
@@ -2509,7 +2284,7 @@ mod firmware {
                 && state.active_route().uses_live_status()
                 && last_status_refresh.elapsed() >= Duration::from_secs(live_refresh_seconds)
             {
-                state.update_board_snapshot(board_services.read_snapshot(&mut service_delay));
+                state.update_board_snapshot(board_services.read_light_snapshot());
                 log_board_snapshot(state.board, state.regional);
                 refresh_screen(
                     &mut panel,
@@ -2673,10 +2448,6 @@ mod firmware {
                                 // repaint once the main loop loaded it.
                                 sync_continue_reading_thumbnail(&mut state, &cover_cache);
                             }
-                            if state.active_route().uses_environment_sample() {
-                                board_services
-                                    .refresh_environment_into(&mut service_delay, &mut state.board);
-                            }
                             log_board_snapshot(state.board, state.regional);
                             let request = if woke_from_sleep {
                                 RefreshRequest::ForceGlobalAfterWake
@@ -2773,10 +2544,6 @@ mod firmware {
                                 sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
                             }
                             state.update_board_snapshot(board_services.read_light_snapshot());
-                            if state.active_route().uses_environment_sample() {
-                                board_services
-                                    .refresh_environment_into(&mut service_delay, &mut state.board);
-                            }
                             log_board_snapshot(state.board, state.regional);
                             let request = if woke_from_sleep {
                                 RefreshRequest::ForceGlobalAfterWake
@@ -2909,7 +2676,6 @@ mod firmware {
                         );
                         apply_clock_set_time_ui_request(
                             &mut board_services,
-                            &mut service_delay,
                             &mut state,
                         );
                         apply_clock_set_timezone_ui_request(&mut network_config, &mut state);
@@ -2989,10 +2755,6 @@ mod firmware {
                         }
                         let reader_clear_ghost = state.take_reader_clear_ghost_request();
                         let power_key_clear_ghost = state.take_power_key_manual_refresh_request();
-                        if state.active_route().uses_environment_sample() {
-                            board_services
-                                .refresh_environment_into(&mut service_delay, &mut state.board);
-                        }
                         log_board_snapshot(state.board, state.regional);
                         let request = if woke_from_sleep {
                             RefreshRequest::ForceGlobalAfterWake
@@ -3027,14 +2789,10 @@ mod firmware {
                     != waveshare_epd397_rust_app::wifi_transfer::WifiTransferState::Off
                 || state.reader.loading.is_some()
                 || state.active_route() == ScreenRoute::ReaderLoading
-                || state.active_route() == ScreenRoute::MotionEvents
-                || portal_via_hotspot
-                || (init.tap_diagnostics_available
-                    && state.reader.preferences.tap_page_turn_enabled
-                    && !sleep_mode.is_sleeping());
+                || portal_via_hotspot;
             // Whatever needs the fast tick also must not be interrupted by
-            // automatic light sleep: audio/I2S streaming, IMU sampling and
-            // above all the transfer portal, whose SoftAP hotspot ESP-IDF
+            // automatic light sleep: audio/I2S streaming and above all the
+            // transfer portal, whose SoftAP hotspot ESP-IDF
             // does not support across light sleep (opening Upload with no
             // Wi-Fi configured hung the device in the field).
             light_sleep_guard.set(needs_fast_tick);
@@ -3624,7 +3382,7 @@ mod firmware {
 
     /// Enter real MCU hardware deep sleep: show a sleep-confirmation image,
     /// tear down Wi-Fi transfer/voice/audio/network, cut the panel and audio
-    /// PMIC rails, put the IMU in low power, disarm the RTC alarm, and arm
+    /// PMIC rails, disarm the RTC alarm, and arm
     /// GPIO5 as the wakeup source. Shared by both triggers into this path --
     /// an explicit power-key press and the idle-timeout auto-sleep check --
     /// so the two can never drift into two different sleep-entry sequences.
@@ -3653,7 +3411,6 @@ mod firmware {
         wifi_suspended_for_reading: &mut bool,
         reader_route_active_since: &mut Option<Instant>,
         board_services: &mut BoardServices<BoardI2c>,
-        imu_low_power_for_reading: &mut bool,
         misc_power: &mut Axp2101<PmicI2c>,
         audio_suspended_for_reading: &mut bool,
         reading_stats_tracker: &mut ReadingStatsTracker,
@@ -3762,7 +3519,7 @@ mod firmware {
             state.update_audio_snapshot(runtime.snapshot());
             log_audio_snapshot(&state.audio);
         }
-        // Best-effort like the IMU/audio-rail/RTC-alarm teardown below: the
+        // Best-effort like the audio-rail/RTC-alarm teardown below: the
         // sleep image is already shown and committed to, so a failed
         // network suspend no longer aborts entering deep sleep, it only
         // skips the Wi-Fi/SNTP pause.
@@ -3780,16 +3537,6 @@ mod firmware {
         *reader_route_active_since = None;
         panel.sleep()?;
         state.panel_awake = false;
-        // QMI8658 sits on the always-on VCC3V3 rail, so it cannot be
-        // power-gated by the AXP2101 the way the e-paper panel's ALDO3 rail
-        // is. Disabling its accelerometer/gyroscope over I2C is the only
-        // available lever to cut its current draw while the board is
-        // otherwise asleep.
-        match board_services.sleep_imu() {
-            Ok(()) => info!("rustmix-wave=imu-suspend status=low-power"),
-            Err(error) => warn!("rustmix-wave=imu-suspend status=failed error={error:#}"),
-        }
-        *imu_low_power_for_reading = false;
         // ALDO2 (Audio_VCC) feeds the codec AVDD pin and the onboard
         // digital microphone; cut it the same way ALDO3 is cut for the
         // e-paper panel. PVDD/DVDD stay powered from the always-on VCC3V3
@@ -3802,7 +3549,7 @@ mod firmware {
         }
         *audio_suspended_for_reading = false;
         info!(
-            "rustmix-wave=sleep-mode-enter image={} restore-route={} display=global-refresh panel=deep-sleep aldo3=off aldo2=off imu=low-power wifi=off network-services=paused shutdown=pmic fallback=deep-sleep",
+            "rustmix-wave=sleep-mode-enter image={} restore-route={} display=global-refresh panel=deep-sleep aldo3=off aldo2=off wifi=off network-services=paused shutdown=pmic fallback=deep-sleep",
             sleep_label,
             restore_route.marker()
         );
@@ -4020,14 +3767,12 @@ mod firmware {
 
     /// Persist a manually edited local wall-clock value committed from the
     /// Clock screen's Set Date & Time editor and refresh the board snapshot.
-    fn apply_clock_set_time_ui_request<I2C, D>(
+    fn apply_clock_set_time_ui_request<I2C>(
         board_services: &mut BoardServices<I2C>,
-        service_delay: &mut D,
         state: &mut AppState,
     ) where
         I2C: embedded_hal::i2c::I2c,
         I2C::Error: core::fmt::Debug,
-        D: embedded_hal::delay::DelayNs,
     {
         let Some(stored) = state.take_clock_set_time_request() else {
             return;
@@ -4039,7 +3784,7 @@ mod firmware {
             ),
             Err(error) => warn!("rustmix-wave=rtc-manual-set status=failed error={error:#}"),
         }
-        state.update_board_snapshot(board_services.read_snapshot(service_delay));
+        state.update_board_snapshot(board_services.read_light_snapshot());
         log_board_snapshot(state.board, state.regional);
     }
 
@@ -4730,53 +4475,11 @@ mod firmware {
     }
 
     fn log_board_snapshot(snapshot: BoardSnapshot, regional: RegionalPreferences) {
-        let imu = snapshot.imu.map_or_else(
-            || "unavailable".into(),
-            |reading| {
-                format!(
-                    "motion={}mg axis={} acc=[{}] gyro=[{}]",
-                    reading.motion_magnitude_mg,
-                    reading.dominant_axis.label(),
-                    reading.acceleration_mg_tenths.compact_label(),
-                    reading.gyroscope_dps_tenths.compact_label()
-                )
-            },
-        );
         info!(
-            "rustmix-wave=sample-board-snapshot time={} timezone={} battery={} temperature={} humidity={} imu={}",
+            "rustmix-wave=board-snapshot time={} timezone={} battery={}",
             snapshot.time_label(regional),
             regional.timezone_label_for_rtc(snapshot.rtc),
-            snapshot.battery_label(),
-            snapshot.temperature_label(regional.temperature_unit),
-            snapshot.humidity_label(),
-            imu
-        );
-    }
-
-    /// Diagnostic-phase tap-engine record: `TAP_STATUS` fields plus the raw
-    /// accelerometer/gyroscope burst captured around the event. Split across
-    /// three lines so the burst dumps don't crowd out the header fields in a
-    /// terminal, but all three share `at-ms` for correlation.
-    fn log_tap_diagnostic_event(event: &TapDiagnosticEvent) {
-        info!(
-            "rustmix-wave=tap-diagnostics-event kind={} axis={}{} raw=0x{:02X} at-ms={} pre-samples={} post-samples={}",
-            event.kind.marker(),
-            event.polarity.marker(),
-            event.axis.marker(),
-            event.raw_status,
-            event.at_ms,
-            event.pre_samples.len(),
-            event.post_samples.len()
-        );
-        info!(
-            "rustmix-wave=tap-diagnostics-burst-pre at-ms={} samples={}",
-            event.at_ms,
-            compact_samples_label(&event.pre_samples, event.at_ms)
-        );
-        info!(
-            "rustmix-wave=tap-diagnostics-burst-post at-ms={} samples={}",
-            event.at_ms,
-            compact_samples_label(&event.post_samples, event.at_ms)
+            snapshot.battery_label()
         );
     }
 

@@ -1965,10 +1965,6 @@ fn render_preference_list(
                 t(locale, "On", "Attivo")
             }
             ReadingPreference::ShowProgress => t(locale, "Off", "Non attivo"),
-            ReadingPreference::TapPageTurn if state.reader.preferences.tap_page_turn_enabled => {
-                t(locale, "On", "Attivo")
-            }
-            ReadingPreference::TapPageTurn => t(locale, "Off", "Non attivo"),
             ReadingPreference::FullScreen if state.reader.preferences.full_screen => {
                 t(locale, "On", "Attivo")
             }
@@ -2022,9 +2018,6 @@ fn render_preference_editor(
         ReadingPreference::ReadingTheme => render_theme_editor(display, state, candidate)?,
         ReadingPreference::ShowProgress => {
             render_toggle_editor(display, state, candidate.show_progress)?
-        }
-        ReadingPreference::TapPageTurn => {
-            render_toggle_editor(display, state, candidate.tap_page_turn_enabled)?
         }
         ReadingPreference::FullScreen => {
             render_toggle_editor(display, state, candidate.full_screen)?
@@ -2117,7 +2110,7 @@ fn render_orientation_editor(
     Ok(())
 }
 
-/// Two-row On/Off editor shared by Show Progress and Tap Page-Turn: neither
+/// Two-row On/Off editor shared by Show Progress and Full Screen: neither
 /// preference has a multi-value list worth an icon, so this just highlights
 /// whichever row matches `enabled` the way the icon editors highlight the
 /// row matching `candidate`.
@@ -2767,7 +2760,6 @@ mod tests {
                         book_font,
                         paragraph_alignment: ParagraphAlignment::Left,
                         show_progress: true,
-                        tap_page_turn_enabled: true,
                         full_screen,
                     };
                     let layout = preferences.layout();

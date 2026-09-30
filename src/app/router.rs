@@ -38,11 +38,6 @@ pub enum ScreenRoute {
     DeviceInfoBoard,
     DeviceInfoRuntime,
     OtaUpdate,
-    Environment,
-    EnvironmentDetails,
-    Motion,
-    MotionEvents,
-    MotionDetails,
     Network,
     NetworkDetails,
     NetworkSaved,
@@ -85,11 +80,6 @@ impl ScreenRoute {
             Self::DeviceInfoBoard => "Board services",
             Self::DeviceInfoRuntime => "Runtime services",
             Self::OtaUpdate => "Software Update",
-            Self::Environment => "Environment",
-            Self::EnvironmentDetails => "Sensor details",
-            Self::Motion => "Motion",
-            Self::MotionEvents => "Motion events",
-            Self::MotionDetails => "Motion details",
             Self::Network => "Network",
             Self::NetworkDetails => "Provisioning details",
             Self::NetworkSaved => "Saved Networks",
@@ -146,11 +136,6 @@ impl ScreenRoute {
                 Self::DeviceInfoBoard => "Servizi scheda",
                 Self::DeviceInfoRuntime => "Servizi runtime",
                 Self::OtaUpdate => "Update",
-                Self::Environment => "Ambiente",
-                Self::EnvironmentDetails => "Dettagli sensore",
-                Self::Motion => "Movimento",
-                Self::MotionEvents => "Eventi di movimento",
-                Self::MotionDetails => "Dettagli movimento",
                 Self::Network => "Rete",
                 Self::NetworkDetails => "Dettagli configurazione",
                 Self::NetworkSaved => "Reti salvate",
@@ -194,11 +179,6 @@ impl ScreenRoute {
             Self::DeviceInfoBoard => "device-info-board",
             Self::DeviceInfoRuntime => "device-info-runtime",
             Self::OtaUpdate => "ota-update",
-            Self::Environment => "environment",
-            Self::EnvironmentDetails => "environment-details",
-            Self::Motion => "motion",
-            Self::MotionEvents => "motion-events",
-            Self::MotionDetails => "motion-details",
             Self::Network => "network",
             Self::NetworkDetails => "network-details",
             Self::NetworkSaved => "network-saved",
@@ -253,14 +233,10 @@ impl ScreenRoute {
             | Self::DeviceInfo
             | Self::OtaUpdate
             | Self::Network => Some(Self::Settings),
-            Self::Environment | Self::Motion => Some(Self::Tools),
             Self::AudioDetails => Some(Self::Audio),
             Self::ClockSetTime | Self::ClockDetails => Some(Self::Clock),
             Self::DeviceInfoBoard => Some(Self::DeviceInfo),
             Self::DeviceInfoRuntime => Some(Self::DeviceInfoBoard),
-            Self::EnvironmentDetails => Some(Self::Environment),
-            Self::MotionEvents => Some(Self::Motion),
-            Self::MotionDetails => Some(Self::MotionEvents),
             Self::NetworkDetails | Self::NetworkSaved => Some(Self::Network),
             Self::WifiTransfer => Some(Self::Home),
         }
@@ -272,10 +248,6 @@ impl ScreenRoute {
             self,
             Self::Clock
                 | Self::ClockDetails
-                | Self::Environment
-                | Self::EnvironmentDetails
-                | Self::Motion
-                | Self::MotionDetails
                 | Self::Network
                 | Self::NetworkDetails
                 | Self::NetworkSaved
@@ -283,17 +255,6 @@ impl ScreenRoute {
                 | Self::ReaderLoading
                 | Self::VoiceNoteRecording
         )
-    }
-
-    /// Routes that render the SHTC3 temperature/humidity reading. A strict
-    /// subset of [`Self::uses_live_status`]: used to decide whether a fresh
-    /// environment sample (a mandatory ~20ms blocking read) is worth taking
-    /// after an interaction that navigates here, versus skipping it and
-    /// relying on the periodic live-status refresh for routes that don't
-    /// display it at all.
-    #[must_use]
-    pub const fn uses_environment_sample(self) -> bool {
-        matches!(self, Self::Clock | Self::Environment)
     }
 }
 

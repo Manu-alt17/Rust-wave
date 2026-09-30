@@ -25,32 +25,6 @@ pub const DEFAULT_TIMEZONE_NAME: &str = "America/New_York";
 /// Daylight abbreviation retained as the fallback when a date is unavailable.
 pub const DEFAULT_TIMEZONE_ABBREVIATION: &str = "EDT";
 
-/// Temperature unit used by product-facing screens.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum TemperatureUnit {
-    Celsius,
-    #[default]
-    Fahrenheit,
-}
-
-impl TemperatureUnit {
-    #[must_use]
-    pub const fn suffix(self) -> &'static str {
-        match self {
-            Self::Celsius => " C",
-            Self::Fahrenheit => " F",
-        }
-    }
-
-    #[must_use]
-    pub const fn marker(self) -> &'static str {
-        match self {
-            Self::Celsius => "celsius",
-            Self::Fahrenheit => "fahrenheit",
-        }
-    }
-}
-
 /// Supported timezone profiles for the first Wi-Fi/NTP milestone.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TimeZoneProfile {
@@ -197,7 +171,6 @@ impl Locale {
 pub struct RegionalPreferences {
     pub rtc_storage_utc_offset_minutes: i16,
     pub timezone: TimeZoneProfile,
-    pub temperature_unit: TemperatureUnit,
     pub locale: Locale,
 }
 
@@ -206,7 +179,6 @@ impl Default for RegionalPreferences {
         Self {
             rtc_storage_utc_offset_minutes: SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES,
             timezone: TimeZoneProfile::default(),
-            temperature_unit: TemperatureUnit::default(),
             locale: Locale::default(),
         }
     }
@@ -420,7 +392,7 @@ fn date_time_key(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8
 #[cfg(test)]
 mod tests {
     use super::{
-        format_utc_offset, Locale, RegionalPreferences, TemperatureUnit, TimeZoneProfile,
+        format_utc_offset, Locale, RegionalPreferences, TimeZoneProfile,
         DEFAULT_DISPLAY_UTC_OFFSET_MINUTES, SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES,
     };
     use crate::rtc::RtcDateTime;
@@ -438,10 +410,9 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_new_york_and_fahrenheit() {
+    fn defaults_to_new_york() {
         let preferences = RegionalPreferences::default();
         assert_eq!(preferences.timezone_name(), "America/New_York");
-        assert_eq!(preferences.temperature_unit, TemperatureUnit::Fahrenheit);
         assert_eq!(preferences.timezone_label(), "EDT UTC-04:00");
     }
 

@@ -20,7 +20,6 @@ use embedded_iconoir::{
         connectivity::Wifi as CompactWifi,
         docs::{Folder as CompactFolder, MultiplePages as CompactMultiplePages},
         editor::TextSize as CompactTextSize,
-        navigation::Compass as CompactCompass,
         other::{Clock as CompactClock, Import as CompactImport, Language as CompactLanguage},
         system::{Calculator as CompactCalculator, Settings as CompactSettingsIcon},
     },
@@ -215,9 +214,7 @@ fn draw_tile_frame(
 /// instead of a glyph — see
 /// `screens::category::draw_continue_reading_tile`; Bookmarks has no tile of
 /// its own, reached instead by holding SELECT on a cover in the Library
-/// grid), and one glyph per entry on the Settings grid (Motion has no direct
-/// icon in the library, so it borrows Compass — the closest match for an
-/// orientation/tilt sensor).
+/// grid), and one glyph per entry on the Tools and Settings grids.
 fn draw_route_icon_compact(
     display: &mut OrientedFrameBuffer<'_>,
     route: ScreenRoute,
@@ -253,11 +250,8 @@ fn draw_route_icon_compact(
         ScreenRoute::Language => {
             draw_iconoir_icon_scaled(display, top_left, &CompactLanguage::new(BinaryColor::On))
         }
-        ScreenRoute::DeviceInfo | ScreenRoute::Environment => {
+        ScreenRoute::DeviceInfo => {
             draw_iconoir_icon_scaled(display, top_left, &CompactInfoEmpty::new(BinaryColor::On))
-        }
-        ScreenRoute::Motion => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactCompass::new(BinaryColor::On))
         }
         ScreenRoute::Network => {
             draw_iconoir_icon_scaled(display, top_left, &CompactWifi::new(BinaryColor::On))

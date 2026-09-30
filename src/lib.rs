@@ -20,8 +20,6 @@ pub mod epaper;
 pub mod epub;
 pub mod framebuffer;
 pub mod imu;
-pub mod imu_events;
-pub mod imu_tap_diagnostics;
 pub mod input_events;
 pub mod keyboard_navigation;
 pub mod mcu_deep_sleep;

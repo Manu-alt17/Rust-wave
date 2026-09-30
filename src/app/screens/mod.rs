@@ -12,11 +12,9 @@ pub mod clock;
 pub mod device_info;
 pub mod dictionary;
 pub mod display;
-pub mod environment;
 pub mod files;
 pub mod home;
 pub mod language;
-pub mod motion;
 pub mod network;
 pub mod ota;
 pub mod power_key;
@@ -52,11 +50,6 @@ pub fn render_active_screen(
         ScreenRoute::Clock => clock::render_clock(display, state),
         ScreenRoute::ClockSetTime => clock::render_clock_set_time(display, state),
         ScreenRoute::ClockDetails => clock::render_clock_details(display, state),
-        ScreenRoute::Environment => environment::render_environment(display, state),
-        ScreenRoute::EnvironmentDetails => environment::render_environment_details(display, state),
-        ScreenRoute::Motion => motion::render_motion(display, state),
-        ScreenRoute::MotionEvents => motion::render_motion_events(display, state),
-        ScreenRoute::MotionDetails => motion::render_motion_details(display, state),
         ScreenRoute::Network => network::render_network(display, state),
         ScreenRoute::NetworkDetails => network::render_network_details(display, state),
         ScreenRoute::NetworkSaved => network::render_network_saved(display, state),

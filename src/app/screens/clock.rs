@@ -32,10 +32,6 @@ pub fn render_clock(
     let time = state.board.time_label(state.regional);
     let date_time = state.board.date_time_label(state.regional);
     let battery = state.board.battery_label();
-    let temperature = state
-        .board
-        .temperature_label(state.regional.temperature_unit);
-    let humidity = state.board.humidity_label();
 
     draw_header(display, state, t(locale, "CLOCK", "OROLOGIO"))?;
 
@@ -60,20 +56,6 @@ pub fn render_clock(
     line(
         display,
         358,
-        t(locale, "Temperature", "Temperatura"),
-        &temperature,
-        body,
-    )?;
-    line(
-        display,
-        396,
-        t(locale, "Humidity", "Umidità"),
-        &humidity,
-        body,
-    )?;
-    line(
-        display,
-        434,
         t(locale, "Battery", "Batteria"),
         &battery,
         body,
@@ -90,10 +72,10 @@ pub fn render_clock(
         } else {
             t(locale, "Not charging", "Non in carica")
         };
-        line(display, 472, t(locale, "USB", "USB"), usb, body)?;
+        line(display, 396, t(locale, "USB", "USB"), usb, body)?;
         line(
             display,
-            510,
+            434,
             t(locale, "Charge state", "Stato di carica"),
             charge,
             body,

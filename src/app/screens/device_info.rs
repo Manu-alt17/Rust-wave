@@ -198,13 +198,6 @@ pub fn render_device_info_runtime(
         &timezone,
         body,
     )?;
-    line(
-        display,
-        246,
-        t(locale, "Temperature", "Temperatura"),
-        state.regional.temperature_unit.marker(),
-        body,
-    )?;
 
     Text::new(
         t(locale, "Stable ownership", "Risorse hardware stabili"),

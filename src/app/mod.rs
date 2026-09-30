@@ -47,21 +47,16 @@ pub const SAMPLE_LIVE_REFRESH_SECONDS: u64 = 30;
 /// indicator. Home (the usual screen right after boot, and where a user
 /// plugging in USB is most likely to be sitting) is deliberately excluded
 /// from `ScreenRoute::uses_live_status`'s periodic refresh, since that also
-/// forces a full status sample (SHTC3 included) and an e-paper repaint on a
+/// forces a status sample and an e-paper repaint on a
 /// screen meant to stay otherwise idle. This poll is cheaper and does not
-/// repaint on its own: every tick it takes a power-only reading (RTC + PMIC,
-/// no SHTC3 wake) and only triggers a screen refresh when the charging flag
+/// repaint on its own: every tick it takes a light reading (RTC + PMIC)
+/// and only triggers a screen refresh when the charging flag
 /// actually flips, so a device that is neither plugged nor unplugged causes
 /// no extra panel wear. This is what catches both a charger plugged in while
 /// idling on Home, and the AXP2101's charger-status classification still
 /// settling in the instant right after a cold power-on with VBUS already
 /// present.
 pub const CHARGING_STATUS_POLL_SECONDS: u64 = 5;
-/// Motion diagnostics refresh at a slower e-paper-safe cadence.
-pub const MOTION_LIVE_REFRESH_SECONDS: u64 = 10;
-/// Motion-event diagnostics refresh slowly unless an event arrives sooner.
-pub const IMU_EVENT_SCREEN_REFRESH_SECONDS: u64 =
-    crate::imu_events::IMU_EVENT_SCREEN_REFRESH_SECONDS;
 /// Network diagnostics refresh while visible.
 pub const NETWORK_LIVE_REFRESH_SECONDS: u64 = 10;
 /// Concise network serial heartbeat; UI refresh remains independent.
