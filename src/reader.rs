@@ -4428,7 +4428,10 @@ pub fn scan_txt_library(
     let mut freshly_parsed: Vec<TitleCacheEntry> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        // Hidden files, notably the "._name.epub" AppleDouble companions
+        // macOS leaves next to everything it copies to FAT: with long names
+        // on they would otherwise list as books that fail to open.
+        if entry.file_name().to_string_lossy().starts_with('.') || !path.is_file() {
             continue;
         }
         let Some(format) = book_format_from_path(&path) else {

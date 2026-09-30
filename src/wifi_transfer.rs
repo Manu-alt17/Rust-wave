@@ -203,11 +203,11 @@ impl WifiTransferSnapshot {
 
 /// Resolve one portal path, as it arrives from [`query_value`] (already
 /// percent-decoded, and decoded only once), beneath `/sdcard/RUSTMIX`.
-/// Rejects traversal, absolute and overlong paths, names that are not FAT
-/// 8.3-safe, and the protected configuration files -- judged on the path
-/// actually resolved, so no other spelling of one (`./WIFI.TXT`,
-/// `wifi.txt`, `WIFI.TXT/`) gets past the check, and a twice-encoded name
-/// is not decoded a second time here.
+/// Rejects traversal, absolute and overlong paths, names the SD card cannot
+/// store as typed, and the protected configuration files -- judged on the
+/// path actually resolved, so no other spelling of one (`./WIFI.TXT`,
+/// `wifi.txt`, `WIFI.TXT/`, `WIFI.TXT.`) gets past the check, and a
+/// twice-encoded name is not decoded a second time here.
 pub fn resolve_portal_path(relative: &str) -> Result<PathBuf, &'static str> {
     if relative.len() > WIFI_TRANSFER_MAX_PATH_BYTES {
         return Err("path exceeds portal limit");
@@ -218,8 +218,8 @@ pub fn resolve_portal_path(relative: &str) -> Result<PathBuf, &'static str> {
         match component {
             Component::Normal(name) => {
                 let name = name.to_str().ok_or("path is not UTF-8")?;
-                if !is_fat83_component(name) {
-                    return Err("use FAT 8.3-safe names");
+                if !is_sd_safe_name(name) {
+                    return Err("name not allowed on the SD card");
                 }
                 resolved.push(name);
                 safe.push(name);
@@ -251,24 +251,18 @@ pub fn is_protected_portal_path(relative: &str) -> bool {
     matches!(canonical.as_str(), "WIFI.TXT" | "CLOCK.TXT" | "DISPLAY.TXT")
 }
 
-/// Folder names are at most eight uppercase-safe characters.  Files are 8.3.
+/// One file or folder name the SD card's FAT filesystem (long names on)
+/// stores exactly as typed: up to 255 characters, none of the ones FAT
+/// forbids, and no trailing dot or space -- FAT silently drops those, so
+/// `WIFI.TXT.` would open `WIFI.TXT`.
 #[must_use]
-pub fn is_fat83_component(component: &str) -> bool {
-    if component.is_empty() || component == "." || component == ".." {
-        return false;
-    }
-    let mut parts = component.split('.');
-    let stem = parts.next().unwrap_or_default();
-    let extension = parts.next();
-    if parts.next().is_some() || stem.is_empty() || stem.len() > 8 {
-        return false;
-    }
-    if extension.is_some_and(|value| value.is_empty() || value.len() > 3) {
-        return false;
-    }
-    component
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'~'))
+pub fn is_sd_safe_name(component: &str) -> bool {
+    !component.is_empty()
+        && component.chars().count() <= 255
+        && !component.ends_with(['.', ' '])
+        && !component
+            .chars()
+            .any(|character| character.is_control() || "\\/:*?\"<>|".contains(character))
 }
 
 /// Tiny query parser used by the portal API.  The firmware intentionally avoids
@@ -466,7 +460,7 @@ th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;
 
 <section id="tab-books" class="tabpanel" hidden>
 <div class="card">
-<div class="drop" id="dropBooks" onclick="document.getElementById('fileBooks').click()">Trascina qui i tuoi eBook (EPUB o TXT) oppure tocca per selezionarli<div class="hint">I nomi vengono adattati al formato FAT 8.3 (es. LIBRO0001.EPU)</div></div>
+<div class="drop" id="dropBooks" onclick="document.getElementById('fileBooks').click()">Trascina qui i tuoi eBook (EPUB o TXT) oppure tocca per selezionarli<div class="hint">I file mantengono il loro nome</div></div>
 <input id="fileBooks" type="file" multiple accept=".epub,.txt" style="display:none">
 <div class="queue" id="queueBooks"></div>
 </div>
@@ -517,7 +511,7 @@ th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;
 <table><thead><tr><th style="width:2rem"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th><th>Nome</th><th>Tipo</th><th>Dimensione</th><th>Azioni</th></tr></thead><tbody id="rows"></tbody></table>
 </div>
 <div class="card">
-<div class="drop" id="drop" onclick="document.getElementById('file').click()">Trascina i file qui oppure tocca per selezionarli<div class="hint">I nomi vengono adattati al formato FAT 8.3 (es. LIBRO0001.TXT)</div></div>
+<div class="drop" id="drop" onclick="document.getElementById('file').click()">Trascina i file qui oppure tocca per selezionarli<div class="hint">I file mantengono il loro nome</div></div>
 <input id="file" type="file" multiple style="display:none">
 <div class="queue" id="queue"></div>
 </div>
@@ -554,7 +548,7 @@ function status(t){document.getElementById('status').textContent=t}
 function enc(s){return encodeURIComponent(s)}
 function join(n){return (current==='/'?'/':current+'/')+n}
 function getCode(){return localStorage.rustmixCode||''}
-function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function formatBytes(n){if(n===undefined||n===null)return '--';const u=['B','KB','MB','GB'];let i=0,v=n;while(v>=1024&&i<u.length-1){v/=1024;i++}return (i===0?v:v.toFixed(1))+' '+u[i]}
 async function api(url,opt){let sep=url.includes('?')?'&':'?';let r=await fetch(url+sep+'code='+enc(getCode()),opt);let t=await r.text();if(!r.ok)throw new Error(t||('HTTP '+r.status));return t}
 async function fetchSpace(){try{let s=JSON.parse(await api('/api/status'));document.getElementById('space').textContent='Spazio libero: '+formatBytes(s.free_bytes)+' / '+formatBytes(s.total_bytes)}catch(e){}}
@@ -617,7 +611,9 @@ function initApp(){
 
 // --- caricamento file: una fabbrica condivisa tra la scheda Libri e la
 // Gestione file, ciascuna con la propria coda e cartella di destinazione.
-function fatSafeName(name,isFolder){let dot=name.lastIndexOf('.');let stem=(isFolder||dot<0)?name:name.slice(0,dot);let ext=(!isFolder&&dot>=0)?name.slice(dot+1):'';stem=stem.toUpperCase().replace(/[^A-Z0-9_\-~]/g,'').slice(0,8)||'FILE';ext=ext.toUpperCase().replace(/[^A-Z0-9_\-~]/g,'').slice(0,3);return ext?stem+'.'+ext:stem}
+// Long file names are kept: only the characters FAT cannot store are
+// replaced, and the trailing dots and spaces it would silently drop.
+function safeName(name){let s=String(name).replace(/[\\\/:*?"<>|\u0000-\u001f]/g,'_').replace(/[. ]+$/,'').trim();return s.slice(0,200)||'file'}
 function createUploader(opts){
   let queue=[],busy=false;
   function render(){
@@ -630,15 +626,15 @@ function createUploader(opts){
   function handleFiles(fileList){
     let used=opts.getExisting();
     for(const file of Array.from(fileList)){
-      let name=fatSafeName(file.name,false),base=name,i=1;
-      while(used.has(name)){let dot=base.lastIndexOf('.');let stem=dot<0?base:base.slice(0,dot);let ext=dot<0?'':base.slice(dot);stem=stem.slice(0,8-String(i).length)+i;name=stem+ext;i++}
-      used.add(name);
+      let name=safeName(file.name),base=name,i=1;
+      while(used.has(name.toLowerCase())){let dot=base.lastIndexOf('.');let stem=dot<=0?base:base.slice(0,dot);let ext=dot<=0?'':base.slice(dot);name=stem+' ('+i+')'+ext;i++}
+      used.add(name.toLowerCase());
       queue.push({file:file,name:name,status:'queued',progress:0,error:'',id:Math.random().toString(36).slice(2)});
     }
     render();
     process();
   }
-  function rename(id,value){let item=queue.find(q=>q.id===id);if(item)item.name=fatSafeName(value,false)}
+  function rename(id,value){let item=queue.find(q=>q.id===id);if(item)item.name=safeName(value)}
   function remove(id){queue=queue.filter(q=>!(q.id===id&&q.status==='queued'));render()}
   function uploadOne(item){
     return new Promise((resolve,reject)=>{
@@ -823,8 +819,8 @@ async function pregenerateBookCoverClientSide(item){
   await ensureDir(COVER_CACHE_DIR);
   await api('/api/upload?path='+enc(COVER_CACHE_DIR+'/'+fingerprintHex+'.THB'),{method:'POST',body:new Blob([thb])});
 }
-const queueUploader=createUploader({containerId:'queue',varName:'queueUploader',getDir:()=>current,getExisting:()=>new Set(entries.map(e=>e.name)),onDone:()=>{status('Caricamento completato');loadList(current)}});
-const booksUploader=createUploader({containerId:'queueBooks',varName:'booksUploader',getDir:()=>'/BOOKS',getExisting:()=>new Set(books.map(b=>b.path.split('/').pop())),onItemDone:pregenerateBookCoverClientSide,onDone:()=>{status('Libri caricati');refreshBooks();fetchSpace()}});
+const queueUploader=createUploader({containerId:'queue',varName:'queueUploader',getDir:()=>current,getExisting:()=>new Set(entries.map(e=>e.name.toLowerCase())),onDone:()=>{status('Caricamento completato');loadList(current)}});
+const booksUploader=createUploader({containerId:'queueBooks',varName:'booksUploader',getDir:()=>'/BOOKS',getExisting:()=>new Set(books.map(b=>b.path.split('/').pop().toLowerCase())),onItemDone:pregenerateBookCoverClientSide,onDone:()=>{status('Libri caricati');refreshBooks();fetchSpace()}});
 wireDropZone('drop','file',queueUploader);
 wireDropZone('dropBooks','fileBooks',booksUploader);
 
@@ -845,7 +841,7 @@ function renderBooks(){
   let html='';
   for(const b of visible){
     let coverUrl='/api/cover?path='+enc(b.path)+'&code='+enc(getCode());
-    html+='<div class="book-card"><div class="book-cover"><img src="'+coverUrl+'" alt="" loading="lazy" onerror="this.parentElement.classList.add(\'empty\')"></div><div class="book-title">'+escapeHtml(b.title)+'</div><div class="hint">'+b.format+' &middot; '+formatBytes(b.size)+'</div><div class="actions"><a href="/api/download?code='+enc(getCode())+'&path='+enc(b.path)+'">Scarica</a><button class="danger" onclick="deleteBook(\''+b.path.replace(/'/g,"\\'")+'\')">Elimina</button></div></div>';
+    html+='<div class="book-card"><div class="book-cover"><img src="'+coverUrl+'" alt="" loading="lazy" onerror="this.parentElement.classList.add(\'empty\')"></div><div class="book-title">'+escapeHtml(b.title)+'</div><div class="hint">'+b.format+' &middot; '+formatBytes(b.size)+'</div><div class="actions"><a href="/api/download?code='+enc(getCode())+'&path='+enc(b.path)+'">Scarica</a><button class="danger" data-p="'+escapeHtml(b.path)+'" onclick="deleteBook(this.dataset.p)">Elimina</button></div></div>';
   }
   document.getElementById('bookGrid').innerHTML=html||'<p class="hint">Nessun libro caricato. Trascina un file EPUB o TXT qui sopra per iniziare.</p>';
 }
@@ -855,18 +851,20 @@ async function deleteBook(path){
 }
 
 // --- gestione file (avanzata) ---
-function crumbsHtml(path){let parts=path.split('/').filter(Boolean);let html='<a onclick="loadList(\'/\')">RUSTMIX</a>';let acc='';for(const p of parts){acc+='/'+p;html+='<span>/</span><a onclick="loadList(\''+acc+'\')">'+p+'</a>'}return html}
+// Paths ride in data- attributes, escaped, instead of inside the onclick
+// source: long names can hold quotes and apostrophes (L'amica geniale).
+function crumbsHtml(path){let parts=path.split('/').filter(Boolean);let html='<a onclick="loadList(\'/\')">RUSTMIX</a>';let acc='';for(const p of parts){acc+='/'+p;html+='<span>/</span><a data-p="'+escapeHtml(acc)+'" onclick="loadList(this.dataset.p)">'+escapeHtml(p)+'</a>'}return html}
 async function loadList(path){try{current=path;let t=await api('/api/list?path='+enc(path));entries=JSON.parse(t);selected.clear();document.getElementById('crumbs').innerHTML=crumbsHtml(path);renderTable();status('Pronto - '+entries.length+' elementi');fetchSpace()}catch(e){status('Errore: '+e.message)}}
 function matchesSearch(name){let q=document.getElementById('search').value.trim().toLowerCase();return !q||name.toLowerCase().includes(q)}
-function renderTable(){let rows='';if(current!=='/')rows+='<tr><td></td><td colspan="3"><button onclick="up()">.. Su</button></td></tr>';let visible=entries.filter(e=>matchesSearch(e.name));for(const e of visible){let p=join(e.name);let checked=selected.has(e.name)?'checked':'';let kindLabel=e.kind==='folder'?'<span class="kind-folder">cartella</span>':'file';let openOrDownload=e.kind==='folder'?'<button onclick="loadList(\''+p+'\')">Apri</button>':'<a href="/api/download?code='+enc(getCode())+'&path='+enc(p)+'">Scarica</a>';rows+='<tr><td><input type="checkbox" '+checked+' onchange="toggleSelect(\''+e.name+'\',this.checked)"></td><td>'+escapeHtml(e.name)+'</td><td>'+kindLabel+'</td><td>'+(e.kind==='folder'?'':formatBytes(e.size))+'</td><td class="actions">'+openOrDownload+' <button onclick="renamePath(\''+p+'\')">Rinomina</button> <button class="danger" onclick="deletePath(\''+p+'\')">Elimina</button></td></tr>'}document.getElementById('rows').innerHTML=rows||'<tr><td colspan="5" class="hint">Nessun elemento</td></tr>';document.getElementById('selectAll').checked=visible.length>0&&visible.every(e=>selected.has(e.name));updateBulkBar()}
+function renderTable(){let rows='';if(current!=='/')rows+='<tr><td></td><td colspan="3"><button onclick="up()">.. Su</button></td></tr>';let visible=entries.filter(e=>matchesSearch(e.name));for(const e of visible){let p=join(e.name);let checked=selected.has(e.name)?'checked':'';let kindLabel=e.kind==='folder'?'<span class="kind-folder">cartella</span>':'file';let ep=escapeHtml(p);let openOrDownload=e.kind==='folder'?'<button data-p="'+ep+'" onclick="loadList(this.dataset.p)">Apri</button>':'<a href="/api/download?code='+enc(getCode())+'&path='+enc(p)+'">Scarica</a>';rows+='<tr><td><input type="checkbox" '+checked+' data-n="'+escapeHtml(e.name)+'" onchange="toggleSelect(this.dataset.n,this.checked)"></td><td>'+escapeHtml(e.name)+'</td><td>'+kindLabel+'</td><td>'+(e.kind==='folder'?'':formatBytes(e.size))+'</td><td class="actions">'+openOrDownload+' <button data-p="'+ep+'" onclick="renamePath(this.dataset.p)">Rinomina</button> <button class="danger" data-p="'+ep+'" onclick="deletePath(this.dataset.p)">Elimina</button></td></tr>'}document.getElementById('rows').innerHTML=rows||'<tr><td colspan="5" class="hint">Nessun elemento</td></tr>';document.getElementById('selectAll').checked=visible.length>0&&visible.every(e=>selected.has(e.name));updateBulkBar()}
 function up(){let p=current.split('/').filter(Boolean);p.pop();loadList('/'+p.join('/'))}
 function toggleSelect(name,checked){if(checked)selected.add(name);else selected.delete(name);renderTable()}
 function toggleSelectAll(checked){let visible=entries.filter(e=>matchesSearch(e.name));for(const e of visible){if(checked)selected.add(e.name);else selected.delete(e.name)}renderTable()}
 function clearSelection(){selected.clear();renderTable()}
 function updateBulkBar(){let bar=document.getElementById('bulk');if(selected.size>0){bar.classList.add('show');document.getElementById('bulkCount').textContent=selected.size+' selezionati'}else{bar.classList.remove('show')}}
 async function bulkDelete(){if(selected.size===0)return;if(!confirm('Eliminare '+selected.size+' elementi selezionati?'))return;let names=Array.from(selected);for(const name of names){try{await api('/api/delete?path='+enc(join(name)),{method:'POST'})}catch(e){status('Errore eliminando '+name+': '+e.message)}}status('Eliminati '+names.length+' elementi');loadList(current)}
-async function newFolder(){let name=prompt('Nome cartella (FAT 8.3, es. LIBRI)');if(!name)return;let safe=fatSafeName(name,true);try{await api('/api/mkdir?path='+enc(join(safe)),{method:'POST'});status('Cartella creata: '+safe);loadList(current)}catch(e){status('Errore: '+e.message)}}
-async function renamePath(p){let name=prompt('Nuovo nome (FAT 8.3-safe)');if(!name)return;let parent=p.substring(0,p.lastIndexOf('/'))||'/';let safe=fatSafeName(name,false);let to=(parent==='/'?'/':parent+'/')+safe;try{await api('/api/rename?from='+enc(p)+'&to='+enc(to),{method:'POST'});status('Rinominato in '+safe);loadList(current)}catch(e){status('Errore: '+e.message)}}
+async function newFolder(){let name=prompt('Nome cartella');if(!name)return;let safe=safeName(name);try{await api('/api/mkdir?path='+enc(join(safe)),{method:'POST'});status('Cartella creata: '+safe);loadList(current)}catch(e){status('Errore: '+e.message)}}
+async function renamePath(p){let name=prompt('Nuovo nome',p.substring(p.lastIndexOf('/')+1));if(!name)return;let parent=p.substring(0,p.lastIndexOf('/'))||'/';let safe=safeName(name);let to=(parent==='/'?'/':parent+'/')+safe;try{await api('/api/rename?from='+enc(p)+'&to='+enc(to),{method:'POST'});status('Rinominato in '+safe);loadList(current)}catch(e){status('Errore: '+e.message)}}
 async function deletePath(p){if(!confirm('Eliminare '+p+'?'))return;try{await api('/api/delete?path='+enc(p),{method:'POST'});status('Eliminato');loadList(current)}catch(e){status('Errore: '+e.message)}}
 
 // --- sfondi ---
@@ -1747,7 +1745,7 @@ tryAutoUnlock();
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
             let child_relative = format!("{}/{}", relative.trim_end_matches('/'), name);
-            if is_protected_portal_path(&child_relative) || !super::is_fat83_component(&name) {
+            if is_protected_portal_path(&child_relative) || !super::is_sd_safe_name(&name) {
                 continue;
             }
             let metadata = entry.metadata()?;
@@ -1924,7 +1922,7 @@ tryAutoUnlock();
 #[cfg(test)]
 mod tests {
     use super::{
-        is_fat83_component, is_protected_portal_path, query_value, resolve_portal_path,
+        is_protected_portal_path, is_sd_safe_name, query_value, resolve_portal_path,
         WifiTransferSnapshot, WifiTransferState,
     };
 
@@ -1936,13 +1934,18 @@ mod tests {
     }
 
     #[test]
-    fn portal_paths_are_confined_and_fat83_safe() {
+    fn portal_paths_are_confined_and_sd_safe() {
         assert!(resolve_portal_path("/BOOKS/POIROT01.EPU").is_ok());
+        assert!(resolve_portal_path("/BOOKS/L'amica geniale - Elena Ferrante.epub").is_ok());
         assert!(resolve_portal_path("../WIFI.TXT").is_err());
-        assert!(resolve_portal_path("/BOOKS/long-file-name.txt").is_err());
-        assert!(is_fat83_component("MAIN.LUA"));
-        assert!(is_fat83_component("SUDOKU"));
-        assert!(!is_fat83_component("NOT FAT SAFE.TXT"));
+        assert!(resolve_portal_path("/BOOKS/what?.txt").is_err());
+        assert!(is_sd_safe_name("MAIN.LUA"));
+        assert!(is_sd_safe_name("Perché «così» (2021).epub"));
+        assert!(!is_sd_safe_name("a:b.txt"));
+        assert!(!is_sd_safe_name("trailing dot."));
+        assert!(!is_sd_safe_name("trailing space "));
+        assert!(!is_sd_safe_name(""));
+        assert!(!is_sd_safe_name(&"x".repeat(256)));
     }
 
     #[test]
@@ -1968,13 +1971,19 @@ mod tests {
             "WiFi.Txt",
             "%2E%2FWIFI.TXT",
             "%57IFI.TXT",
-            "%2557IFI.TXT",
+            "WIFI.TXT.",
+            "WIFI.TXT%20",
+            "WIFI.TXT+",
             "BOOKS/../WIFI.TXT",
             "display.txt",
         ] {
             let decoded = from_query(raw).unwrap();
             assert!(resolve_portal_path(&decoded).is_err(), "{raw} -> {decoded}");
         }
+        // Encoded twice, the name is decoded once: a literal "%57IFI.TXT",
+        // which is some other file, never WIFI.TXT.
+        let literal = resolve_portal_path(&from_query("%2557IFI.TXT").unwrap()).unwrap();
+        assert_eq!(literal.file_name().unwrap(), "%57IFI.TXT");
         // Ordinary files next to them still resolve.
         assert!(resolve_portal_path("./BOOKS/WIFI.TXT").is_ok());
         assert!(resolve_portal_path("MENU.TXT").is_ok());

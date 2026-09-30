@@ -122,10 +122,10 @@ mod firmware {
     /// attached) rather than failing boot if the card isn't mounted or the
     /// write fails. Pull the SD card and open BOOTTIME.LOG in a text editor
     /// to read it back.
-    // "BOOTTIME" is exactly 8 characters: this filesystem is FAT 8.3-only
-    // (see BOARD_CONTRACT.md), so anything longer than 8+3 fails to create
-    // silently -- which is exactly what happened with the first name tried
-    // here ("BOOT_TIMING.LOG", 11 characters before the extension).
+    // "BOOTTIME" is exactly 8 characters. The firmware's own files keep
+    // 8.3 names, valid with or without FAT long names; before long names
+    // were enabled, the first name tried here ("BOOT_TIMING.LOG") failed to
+    // create silently.
     const BOOT_TIMING_LOG_PATH: &str = "/sdcard/RUSTMIX/BOOTTIME.LOG";
 
     /// UTC unix time of the last sleep entry, read back on wake to decide

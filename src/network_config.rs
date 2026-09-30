@@ -210,11 +210,11 @@ impl NetworkConfig {
             .file_stem()
             .and_then(|name| name.to_str())
             .context("configuration path has no file name")?;
-        // The SD card's FAT filesystem has no long-filename support here, so
-        // names must fit the legacy 8.3 short-name format: at most one dot,
-        // at most 8 characters before it. Appending `.tmp` after the real
-        // `.TXT` extension (a second dot) fails `File::create` outright with
-        // `EINVAL`, so the extension is replaced instead.
+        // Replacing the extension, rather than appending `.tmp` after the
+        // real `.TXT` (a second dot), keeps the temporary name a plain 8.3
+        // name, valid on FAT with or without long names. Without them, as
+        // this firmware first ran, `WIFI.TXT.tmp` failed `File::create`
+        // with `EINVAL`.
         let temp_path = parent.join(format!("{stem}.TMP"));
         // ELM FatFs's `f_rename` (what `fs::rename` reaches through ESP-IDF's
         // FAT VFS) refuses to replace an existing destination, unlike POSIX
@@ -562,10 +562,9 @@ mod tests {
     #[test]
     fn save_to_path_uses_a_fat_8_3_safe_temp_file_name() {
         // A second dot (e.g. `WIFI.TXT.tmp`) is not a valid legacy 8.3 short
-        // name and fails `File::create` with `EINVAL` on the SD card's FAT
-        // filesystem (no long-filename support configured), so the
-        // temporary file must replace the extension instead of appending to
-        // it.
+        // name and fails `File::create` with `EINVAL` on FAT without long
+        // names, so the temporary file replaces the extension instead of
+        // appending to it: a plain 8.3 name works either way.
         let dir = std::env::temp_dir().join(format!(
             "rustmix-wave-network-config-fat-test-{}",
             std::process::id()
