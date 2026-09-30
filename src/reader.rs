@@ -2154,6 +2154,7 @@ impl ReaderUiState {
     }
 
     pub fn refresh_library(&mut self) {
+        crate::epub::release_kept_text_file();
         match scan_txt_library(&self.books_root, &self.books) {
             Ok(books) => {
                 self.books = books;
@@ -3991,6 +3992,7 @@ impl ReaderUiState {
                 return None;
             }
         };
+        crate::epub::release_kept_text_file();
         match atomic_replace_cache_text(&path, &content) {
             Ok(()) => {
                 log::info!("rustmix-wave=epub-document-cache status=saved");

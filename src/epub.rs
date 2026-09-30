@@ -18,8 +18,42 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
     time::Instant,
 };
+
+/// The `.EPX` file [`EpubDocument::text_window`] read last, kept open for
+/// the next read: opening a file on FAT walks its directory, and the cache
+/// directory holds several files per book. A single slot for the whole
+/// firmware, so however many documents the Reader keeps parked, at most one
+/// file stays open (the card is mounted with five descriptors).
+static KEPT_TEXT_FILE: Mutex<Option<(PathBuf, File)>> = Mutex::new(None);
+
+/// Close the kept `.EPX` handle. Called before an `.EPX` is written and
+/// whenever the library is scanned again (the Wi-Fi portal may have deleted
+/// or replaced files since), so a read never goes through a handle on a file
+/// that has been replaced.
+pub fn release_kept_text_file() {
+    *KEPT_TEXT_FILE.lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
+
+/// Fill `buffer` from `offset`, stopping early only at the end of the file.
+/// Returns the number of bytes read.
+fn read_at(file: &mut File, offset: u64, buffer: &mut [u8]) -> Result<usize, String> {
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("EPUB cache seek failed: {error}"))?;
+    let mut filled = 0usize;
+    while filled < buffer.len() {
+        let read = file
+            .read(&mut buffer[filled..])
+            .map_err(|error| format!("EPUB cache read failed: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    Ok(filled)
+}
 
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 
@@ -211,21 +245,22 @@ impl EpubDocument {
         match &self.text {
             EpubTextStore::Resident(text) => Ok(Cow::Borrowed(&text.as_bytes()[start..end])),
             EpubTextStore::OnDisk { path, body_offset } => {
-                let mut file =
-                    File::open(path).map_err(|error| format!("EPUB cache read failed: {error}"))?;
-                file.seek(SeekFrom::Start(body_offset + start as u64))
-                    .map_err(|error| format!("EPUB cache seek failed: {error}"))?;
-                let mut buffer = vec![0_u8; end - start];
-                let mut filled = 0usize;
-                while filled < buffer.len() {
-                    let read = file
-                        .read(&mut buffer[filled..])
+                let mut kept = KEPT_TEXT_FILE.lock().unwrap_or_else(PoisonError::into_inner);
+                if !matches!(kept.as_ref(), Some((kept_path, _)) if kept_path == path) {
+                    let file = File::open(path)
                         .map_err(|error| format!("EPUB cache read failed: {error}"))?;
-                    if read == 0 {
-                        break;
-                    }
-                    filled += read;
+                    *kept = Some((path.clone(), file));
                 }
+                let Some((_, file)) = kept.as_mut() else {
+                    return Err("EPUB cache handle missing".into());
+                };
+                let mut buffer = vec![0_u8; end - start];
+                let result = read_at(file, body_offset + start as u64, &mut buffer);
+                if result.is_err() {
+                    // Open the file afresh next time.
+                    *kept = None;
+                }
+                let filled = result?;
                 if filled < buffer.len() {
                     log::warn!(
                         "rustmix-wave=epub-cache-short-read path={} start={start} wanted={} got={filled}",
@@ -1862,6 +1897,32 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("rustmix-{name}-{nonce}.epu"))
+    }
+
+    #[test]
+    fn on_disk_text_is_read_through_the_kept_handle_until_released() {
+        let path = temp_epub("kept-handle").with_extension("EPX");
+        fs::write(&path, b"HEADERfirst text").unwrap();
+        let document = super::EpubDocument::from_cache_body(
+            "Title".into(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1,
+            path.clone(),
+            6,
+            10,
+        );
+        assert_eq!(&*document.text_window(0, 5).unwrap(), b"first");
+        assert_eq!(&*document.text_window(6, 99).unwrap(), b"text");
+        // Rewritten the way the Reader does it: release, then replace.
+        super::release_kept_text_file();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"HEADERother text").unwrap();
+        assert_eq!(&*document.text_window(0, 5).unwrap(), b"other");
+        super::release_kept_text_file();
+        fs::remove_file(&path).unwrap();
+        assert!(document.text_window(0, 5).is_err());
     }
 
     fn push_u16(output: &mut Vec<u8>, value: u16) {
