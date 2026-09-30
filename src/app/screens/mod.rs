@@ -19,7 +19,6 @@ pub mod ota;
 pub mod power_key;
 pub mod reader;
 pub mod reading_stats;
-pub mod unit_converter;
 
 /// Draw the active screen selected by the router.
 pub fn render_active_screen(
@@ -40,7 +39,6 @@ pub fn render_active_screen(
         ScreenRoute::ReaderPreferences => reader::render_preferences(display, state),
         ScreenRoute::ReaderToc => reader::render_toc(display, state),
         ScreenRoute::ReadingStats => reading_stats::render_reading_stats(display, state),
-        ScreenRoute::UnitConverter => unit_converter::render_unit_converter(display, state),
         ScreenRoute::Clock => clock::render_clock(display, state),
         ScreenRoute::ClockSetTime => clock::render_clock_set_time(display, state),
         ScreenRoute::ClockDetails => clock::render_clock_details(display, state),

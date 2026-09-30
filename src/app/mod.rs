@@ -135,18 +135,6 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::Files);
     }
 
-    #[test]
-    fn tools_unit_converter_route_renders_offline() {
-        let mut frame = FrameBuffer::new_white();
-        let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Tools);
-        state.apply(ButtonEvent::Select);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::UnitConverter);
-        render_current_screen(&mut frame, &state).unwrap();
-    }
-
     /// Sample Library books for the `library` preview shot: two
     /// in-progress, one finished, two never opened — enough to exercise all
     /// three status-bar styles the Library grid draws. Must run *after*

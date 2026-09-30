@@ -19,7 +19,7 @@ use embedded_iconoir::{
         docs::{Folder as CompactFolder, MultiplePages as CompactMultiplePages},
         editor::TextSize as CompactTextSize,
         other::{Clock as CompactClock, Import as CompactImport, Language as CompactLanguage},
-        system::{Calculator as CompactCalculator, Settings as CompactSettingsIcon},
+        system::Settings as CompactSettingsIcon,
     },
     prelude::IconoirNewIcon,
 };
@@ -259,9 +259,6 @@ fn draw_route_icon_compact(
         }
         ScreenRoute::Files => {
             draw_iconoir_icon_scaled(display, top_left, &CompactMultiplePages::new(BinaryColor::On))
-        }
-        ScreenRoute::UnitConverter => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactCalculator::new(BinaryColor::On))
         }
         _ => Ok(()),
     }

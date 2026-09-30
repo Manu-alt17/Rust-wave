@@ -21,7 +21,6 @@ pub enum ScreenRoute {
     ReaderToc,
     ReadingStats,
     Files,
-    UnitConverter,
     Audio,
     AudioDetails,
     Clock,
@@ -59,7 +58,6 @@ impl ScreenRoute {
             Self::ReaderToc => "Table of Contents",
             Self::ReadingStats => "Reading Stats",
             Self::Files => "File Browser",
-            Self::UnitConverter => "Unit Converter",
             Self::Audio => "Audio",
             Self::AudioDetails => "Audio details",
             Self::Clock => "Clock",
@@ -85,14 +83,13 @@ impl ScreenRoute {
     #[must_use]
     pub const fn label_i18n(self, locale: Locale) -> &'static str {
         match locale {
-            // `OtaUpdate`/`DeviceInfo`/`UnitConverter` diverge from
-            // `label()`'s stable diagnostic strings: their on-screen names
-            // are the shorter "Update"/"Info"/"Conv" (see the matching tiles
-            // in `menu.rs`), in both locales.
+            // `OtaUpdate`/`DeviceInfo` diverge from `label()`'s stable
+            // diagnostic strings: their on-screen names are the shorter
+            // "Update"/"Info" (see the matching tiles in `menu.rs`), in both
+            // locales.
             Locale::English => match self {
                 Self::OtaUpdate => "Update",
                 Self::DeviceInfo => "Info",
-                Self::UnitConverter => "Conv",
                 other => other.label(),
             },
             Locale::Italian => match self {
@@ -111,7 +108,6 @@ impl ScreenRoute {
                 Self::ReaderToc => "Indice",
                 Self::ReadingStats => "Statistiche di lettura",
                 Self::Files => "Esplora file",
-                Self::UnitConverter => "Conv",
                 Self::Audio => "Audio",
                 Self::AudioDetails => "Dettagli audio",
                 Self::Clock => "Orologio",
@@ -150,7 +146,6 @@ impl ScreenRoute {
             Self::ReaderToc => "reader-toc",
             Self::ReadingStats => "reading-stats",
             Self::Files => "file-browser",
-            Self::UnitConverter => "unit-converter",
             Self::Audio => "audio",
             Self::AudioDetails => "audio-details",
             Self::Clock => "clock",
@@ -206,7 +201,7 @@ impl ScreenRoute {
             Self::ReaderOptions => Some(Self::ReaderPage),
             Self::ReaderPreferences => Some(Self::ReaderOptions),
             Self::ReaderToc => Some(Self::ReaderOptions),
-            Self::Files | Self::UnitConverter => Some(Self::Tools),
+            Self::Files => Some(Self::Tools),
             Self::PowerKeyMenu => Some(Self::Home),
             Self::Audio
             | Self::Clock
@@ -275,10 +270,6 @@ mod tests {
         assert_eq!(ScreenRoute::Language.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::PowerKeyMenu.parent(), Some(ScreenRoute::Home));
         assert_eq!(ScreenRoute::ReadingStats.parent(), Some(ScreenRoute::Home));
-        assert_eq!(
-            ScreenRoute::UnitConverter.parent(),
-            Some(ScreenRoute::Tools)
-        );
         assert_eq!(ScreenRoute::AudioDetails.parent(), Some(ScreenRoute::Audio));
         assert_eq!(ScreenRoute::ClockSetTime.parent(), Some(ScreenRoute::Clock));
         assert_eq!(

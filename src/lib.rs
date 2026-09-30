@@ -47,5 +47,4 @@ pub mod sleep_mode;
 pub mod sleep_network;
 
 pub mod storage;
-pub mod unit_converter;
 pub mod wifi_transfer;

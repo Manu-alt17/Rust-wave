@@ -17,7 +17,6 @@ use crate::{
     reading_stats::ReadingStatsSnapshot,
     regional::RegionalPreferences,
     storage::StorageSnapshot,
-    unit_converter::UnitConverterUiState,
     wifi_transfer::{WifiTransferSnapshot, WifiTransferState, WifiTransferUiRequest},
 };
 
@@ -47,8 +46,6 @@ pub struct AppState {
     pub category_usage: CategoryUsage,
     pub display_action_selected: usize,
     pub display: DisplayPreferences,
-    /// Offline fixed-point Unit Converter cursor and editable field.
-    pub unit_converter: UnitConverterUiState,
     /// TXT / reflowable EPUB Reader library, staged opening, RAM cache and options.
     pub reader: ReaderUiState,
     pub partial_refreshes: u8,
@@ -125,7 +122,6 @@ impl Default for AppState {
             category_usage: CategoryUsage::default(),
             display_action_selected: 0,
             display: DisplayPreferences::default(),
-            unit_converter: UnitConverterUiState::default(),
             reader: ReaderUiState::default(),
             partial_refreshes: 0,
             panel_awake: true,
@@ -225,8 +221,6 @@ impl AppState {
             self.apply_language(event);
         } else if route == ScreenRoute::PowerKeyMenu {
             self.apply_power_key_menu(event);
-        } else if route == ScreenRoute::UnitConverter {
-            self.apply_unit_converter(event);
         } else if route == ScreenRoute::ClockSetTime {
             self.apply_clock_set_time(event);
         } else if matches!(
@@ -512,17 +506,6 @@ impl AppState {
 
     pub fn update_reading_stats_snapshot(&mut self, snapshot: ReadingStatsSnapshot) {
         self.reading_stats = snapshot;
-    }
-
-    fn apply_unit_converter(&mut self, event: ButtonEvent) {
-        match event {
-            ButtonEvent::Up => self.unit_converter.increase_active(),
-            ButtonEvent::Down => self.unit_converter.decrease_active(),
-            ButtonEvent::Select => {
-                self.note_select_press();
-                self.unit_converter.select_next_field();
-            }
-        }
     }
 
     /// A held SELECT on the reader page opens Reader Options from normal
@@ -1517,26 +1500,6 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::Clock);
         assert!(state.clock_time_editor.is_none());
         assert!(state.take_clock_set_time_request().is_none());
-    }
-
-    #[test]
-    fn tools_unit_converter_opens_and_edits_without_hardware() {
-        use crate::unit_converter::{ConverterField, UnitCategory};
-
-        let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Tools);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
-        state.apply(ButtonEvent::Down);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::UnitConverter);
-        assert_eq!(state.unit_converter.active_field, ConverterField::Category);
-        state.apply(ButtonEvent::Up);
-        assert_eq!(state.unit_converter.category, UnitCategory::Mass);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.unit_converter.active_field, ConverterField::FromUnit);
-        state.back();
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
     }
 
     #[test]

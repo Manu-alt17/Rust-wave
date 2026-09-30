@@ -13,7 +13,7 @@ use super::router::ScreenRoute;
 
 pub const MAIN_CATEGORY_COUNT: usize = 6;
 pub const CATEGORY_COUNT: usize = 2;
-pub const TOOLS_ENTRY_COUNT: usize = 2;
+pub const TOOLS_ENTRY_COUNT: usize = 1;
 pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
 /// heading of the Tools and Settings grids (see
@@ -91,10 +91,10 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
     MenuEntry {
         label_en: "Tools",
         label_it: "Strumenti",
-        subtitle_en: "Files and converter",
-        subtitle_it: "File e convertitore",
-        badge_en: "2",
-        badge_it: "2",
+        subtitle_en: "SD card file browser",
+        subtitle_it: "Esplora i file della scheda SD",
+        badge_en: "1",
+        badge_it: "1",
         route: ScreenRoute::Tools,
     },
     MenuEntry {
@@ -134,17 +134,6 @@ const TOOLS_ENTRIES: [MenuEntry; TOOLS_ENTRY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::Files,
-    },
-    MenuEntry {
-        // Short tile caption in both locales, matching "Update"/"Info"
-        // above.
-        label_en: "Conv",
-        label_it: "Conv",
-        subtitle_en: "Offline fixed-point conversions",
-        subtitle_it: "Conversioni offline a virgola fissa",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::UnitConverter,
     },
 ];
 
