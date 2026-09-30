@@ -1,7 +1,6 @@
 #[cfg(target_os = "espidf")]
 mod firmware {
     use std::{
-        io::Write,
         time::{Duration, Instant},
     };
 
@@ -32,6 +31,7 @@ mod firmware {
     use log::{debug, info, warn};
     use waveshare_epd397_rust_app::{
         boot_profile,
+        sd_log,
         app::{
             display::{DisplayPreferences, SleepScreenMode, DISPLAY_CONFIG_PATH},
             menu::{CategoryUsage, MENU_USAGE_CONFIG_PATH},
@@ -141,13 +141,7 @@ mod firmware {
 
     /// Best-effort append of one line to [`RESET_LOG_PATH`].
     pub(crate) fn append_reset_log(line: &str) {
-        use std::io::Write;
-        let result = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(RESET_LOG_PATH)
-            .and_then(|mut file| writeln!(file, "{line}"));
-        if let Err(error) = result {
+        if let Err(error) = sd_log::append(RESET_LOG_PATH, &format!("{line}\n")) {
             warn!("rustmix-wave=reset-log status=write-failed path={RESET_LOG_PATH} error={error}");
         }
     }
@@ -206,23 +200,11 @@ mod firmware {
     }
 
     fn append_boot_timing_log(line: &str) {
-        if let Some(parent) = std::path::Path::new(BOOT_TIMING_LOG_PATH).parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Err(error) = sd_log::append(BOOT_TIMING_LOG_PATH, &format!("{line}\n")) {
+            warn!(
+                "rustmix-wave=boot-timing-log status=write-failed path={BOOT_TIMING_LOG_PATH} error={error:#}"
+            );
         }
-        let mut file = match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(BOOT_TIMING_LOG_PATH)
-        {
-            Ok(file) => file,
-            Err(error) => {
-                warn!(
-                    "rustmix-wave=boot-timing-log status=open-failed path={BOOT_TIMING_LOG_PATH} error={error:#}"
-                );
-                return;
-            }
-        };
-        let _ = writeln!(file, "{line}");
     }
 
     pub fn run() -> Result<()> {
@@ -241,6 +223,15 @@ mod firmware {
         // the serial port nor the disk works until power is removed.
         usb_disk::espidf::release_phy();
         EspLogger::initialize_default();
+        // sdkconfig.defaults starts every log at WARN: each line also goes
+        // out on UART0 at 115200 baud, about 87 us of busy wait per
+        // character, and there were info lines for every key press. Bench
+        // builds put ESP-IDF's and the firmware's info lines back.
+        if DEV_BENCH_BUILD {
+            unsafe { sys::esp_log_level_set(c"*".as_ptr(), sys::esp_log_level_t_ESP_LOG_INFO) };
+        } else {
+            log::set_max_level(log::LevelFilter::Warn);
+        }
         info!("rustmix-wave=epd397-rust-app-start");
         if DEV_BENCH_BUILD {
             warn!("rustmix-wave=dev-bench-build auto-sleep=off dfs=off light-sleep=off");
@@ -3369,9 +3360,13 @@ mod firmware {
         let pmic_shutdown_attempted = match misc_power.write_shutdown_marker() {
             Ok(()) => {
                 let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::PowerOffIssued);
-                if let Err(error) = misc_power.arm_wake_watchdog() {
-                    warn!("rustmix-wave=pmic-wake-watchdog status=arm-failed error={error:#}");
-                }
+                let watchdog_armed = match misc_power.arm_wake_watchdog() {
+                    Ok(()) => true,
+                    Err(error) => {
+                        warn!("rustmix-wave=pmic-wake-watchdog status=arm-failed error={error:#}");
+                        false
+                    }
+                };
                 // `power_off()` does not return on real hardware: the rails
                 // collapse before this call site can observe anything.
                 // Should it somehow return `Ok(())` (the I2C ACK landing a
@@ -3388,8 +3383,17 @@ mod firmware {
                         "returned-unexpectedly".to_string()
                     }
                 };
+                // With the watchdog armed the PMIC still cuts power 16 s
+                // into the fallback, and from then on the Power key wakes
+                // the board (the shutdown marker is already written);
+                // before that, and without the watchdog, only SELECT does.
+                let wake = if watchdog_armed {
+                    "select-then-power-key-after-16s"
+                } else {
+                    "select-only"
+                };
                 append_boot_timing_log(&format!(
-                    "rustmix-wave=pmic-power-off status={outcome} fallback=mcu-deep-sleep wake=select-only"
+                    "rustmix-wave=pmic-power-off status={outcome} fallback=mcu-deep-sleep wake={wake}"
                 ));
                 true
             }

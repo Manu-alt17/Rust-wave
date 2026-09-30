@@ -78,9 +78,21 @@ CONFIG_TINYUSB_MSC_ENABLED=y
 # heap bytes or zero-filled sectors.
 CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n
 
-# Embed a semantic product milestone version in the ESP-IDF app descriptor.
+# The firmware version in the ESP-IDF app descriptor, the same as Cargo.toml's
+# (a unit test in src/build_info.rs keeps the two equal). The OTA check reads
+# the Cargo one; this one is what ESP-IDF prints at boot.
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="1.0.0"
+CONFIG_APP_PROJECT_VER="1.4.8"
+
+# Logs: warnings and errors only, from the bootloader on. Every line also goes
+# out on UART0 at 115200 baud, about 87 us of busy wait per character, and at
+# INFO the bootloader and ESP-IDF startup printed some 2800 characters, a
+# quarter of a second, on every boot and every wake from standby. The maximum
+# stays at INFO so bench builds can raise the level again at run time (see
+# `firmware::run` in src/main.rs).
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
 
 # Wi-Fi/SNTP milestone defaults.
 CONFIG_LWIP_SNTP_MAX_SERVERS=1

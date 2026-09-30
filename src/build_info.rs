@@ -35,4 +35,14 @@ mod tests {
         assert_eq!(PRODUCT_SLUG, "rustmix-wave-epd397");
         assert_eq!(FIRMWARE_VERSION, env!("CARGO_PKG_VERSION"));
     }
+
+    #[test]
+    fn app_descriptor_version_matches_cargo() {
+        let sdkconfig = include_str!("../sdkconfig.defaults");
+        let expected = format!("CONFIG_APP_PROJECT_VER=\"{FIRMWARE_VERSION}\"");
+        assert!(
+            sdkconfig.lines().any(|line| line.trim_end() == expected),
+            "sdkconfig.defaults must carry {expected}"
+        );
+    }
 }

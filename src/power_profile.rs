@@ -213,19 +213,13 @@ pub const POWER_PROFILE_SD_LOG_PATH: &str = "/sdcard/RUSTMIX/PMPROF.TXT";
 /// uptime so windows from different boots can be told apart. Best effort:
 /// a missing card only costs the SD copy, never the serial log.
 fn append_to_sd_log(lines: &[String]) {
-    use std::io::Write;
+    use std::fmt::Write;
     let uptime_ms = uptime_ms();
-    let result = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(POWER_PROFILE_SD_LOG_PATH)
-        .and_then(|mut file| {
-            for line in lines {
-                writeln!(file, "uptime-ms={uptime_ms} {line}")?;
-            }
-            Ok(())
-        });
-    if let Err(error) = result {
+    let mut text = String::new();
+    for line in lines {
+        let _ = writeln!(text, "uptime-ms={uptime_ms} {line}");
+    }
+    if let Err(error) = crate::sd_log::append(POWER_PROFILE_SD_LOG_PATH, &text) {
         log::warn!(
             "rustmix-wave=pm-profile status=sd-log-failed path={POWER_PROFILE_SD_LOG_PATH} error={error}"
         );

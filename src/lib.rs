@@ -41,6 +41,7 @@ pub mod regional;
 pub mod rtc;
 pub mod runtime_memory;
 pub mod runtime_worker;
+pub mod sd_log;
 pub mod shared_i2c;
 pub mod sleep_cover;
 pub mod sleep_images;

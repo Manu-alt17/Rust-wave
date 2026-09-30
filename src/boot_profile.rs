@@ -16,7 +16,6 @@
 use std::{
     cell::Cell,
     fmt::Write as _,
-    io::Write as _,
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -208,8 +207,9 @@ fn sorted_lines(entries: &[Entry]) -> Vec<String> {
         .collect()
 }
 
-/// Append every entry not yet written to `path`, under `header`. Best-effort:
-/// returns the error instead of panicking or retrying.
+/// Append every entry not yet written to `path`, under `header`, rotating
+/// the file the way [`crate::sd_log`] does. Best-effort: returns the error
+/// instead of panicking or retrying.
 pub fn flush_to_file(path: &str, header: &str) -> std::io::Result<()> {
     let _span = span("boot-profile-flush");
     let lines = {
@@ -224,9 +224,6 @@ pub fn flush_to_file(path: &str, header: &str) -> std::io::Result<()> {
         }
         lines
     };
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let mut body = String::with_capacity(lines.len() * 80 + header.len() + 1);
     body.push_str(header);
     body.push('\n');
@@ -234,11 +231,7 @@ pub fn flush_to_file(path: &str, header: &str) -> std::io::Result<()> {
         body.push_str(line);
         body.push('\n');
     }
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?
-        .write_all(body.as_bytes())
+    crate::sd_log::append(path, &body)
 }
 
 /// Stop recording and return every entry recorded since boot, sorted, for
