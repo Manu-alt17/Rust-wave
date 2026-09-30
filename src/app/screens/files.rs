@@ -86,8 +86,14 @@ pub fn render_files(
             heading,
         )
         .draw(display)?;
+        // The synthetic rows carry an English name; show them localized.
+        let name = match entry.kind {
+            StorageEntryKind::BackToHome => t(locale, "Back to Home", "Torna alla Home"),
+            StorageEntryKind::RetryScan => t(locale, "Retry SD scan", "Rileggi la scheda SD"),
+            _ => entry.name.as_str(),
+        };
         Text::new(
-            &truncate_label(&entry.name, 29),
+            &truncate_label(name, 29),
             Point::new(62, top + 23),
             heading,
         )

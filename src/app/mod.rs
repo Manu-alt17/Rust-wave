@@ -127,12 +127,13 @@ mod tests {
     }
 
     #[test]
-    fn tools_file_browser_route_is_reachable() {
+    fn home_file_browser_route_renders() {
+        let mut frame = FrameBuffer::new_white();
         let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Tools);
-        state.apply(ButtonEvent::Select);
+        state.home_selected = home_index(ScreenRoute::Files);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Files);
+        render_current_screen(&mut frame, &state).unwrap();
     }
 
     /// Sample Library books for the `library` preview shot: two
@@ -478,8 +479,8 @@ mod tests {
                 state.apply(crate::buttons::ButtonEvent::Select);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
-            ("tools", |state| {
-                state.home_selected = home_index(ScreenRoute::Tools);
+            ("files", |state| {
+                state.home_selected = home_index(ScreenRoute::Files);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("statistics-empty", |state| {

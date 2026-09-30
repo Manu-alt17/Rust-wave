@@ -41,7 +41,7 @@ pub const NETWORK_ACTION_COUNT: usize = 3;
 pub struct AppState {
     pub home_selected: usize,
     category_selected: [usize; CATEGORY_COUNT],
-    /// Recently-opened Tools/Settings entries shown under "Most used";
+    /// Recently-opened Settings entries shown under "Most used";
     /// persisted by the runtime owner in main.rs whenever it changes.
     pub category_usage: CategoryUsage,
     pub display_action_selected: usize,
@@ -1203,15 +1203,13 @@ mod tests {
     }
 
     #[test]
-    fn tools_file_browser_returns_to_tools() {
+    fn home_file_browser_returns_home() {
         let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Tools);
-        state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
+        state.home_selected = home_index(ScreenRoute::Files);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Files);
         state.router.back();
-        assert_eq!(state.active_route(), ScreenRoute::Tools);
+        assert_eq!(state.active_route(), ScreenRoute::Home);
     }
 
     #[test]

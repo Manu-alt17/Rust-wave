@@ -4,7 +4,7 @@
 //! (see `screens::category::draw_continue_reading_tile` — the one place a
 //! book's "what's in progress" state shows at a glance), an Oggi/Streak
 //! summary row, then a 3-column grid of compact icon + title tiles
-//! (Library/Statistics/Upload in the first row, Tools/Settings in the
+//! (Library/Statistics/Upload in the first row, Files/Settings in the
 //! second). The grid uses [`home_tile::draw_home_tile_compact`] here instead
 //! of the full-size tile the Settings grid still uses, since the Continue
 //! Reading card and summary row above it already claim most of the screen's

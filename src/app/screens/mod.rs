@@ -56,7 +56,7 @@ pub fn render_active_screen(
         ScreenRoute::DeviceInfoBoard => device_info::render_device_info_board(display, state),
         ScreenRoute::DeviceInfoRuntime => device_info::render_device_info_runtime(display, state),
         ScreenRoute::OtaUpdate => ota::render_ota_update(display, state),
-        ScreenRoute::Tools | ScreenRoute::Settings => {
+        ScreenRoute::Settings => {
             unreachable!("category routes handled above")
         }
     }

@@ -16,7 +16,7 @@ use embedded_iconoir::{
         activities::{BookStack as CompactBookStack, StatsReport as CompactStatsReport},
         audio::SoundLow as CompactSoundLow,
         connectivity::Wifi as CompactWifi,
-        docs::{Folder as CompactFolder, MultiplePages as CompactMultiplePages},
+        docs::Folder as CompactFolder,
         editor::TextSize as CompactTextSize,
         other::{Clock as CompactClock, Import as CompactImport, Language as CompactLanguage},
         system::Settings as CompactSettingsIcon,
@@ -82,7 +82,7 @@ const COMPACT_ICON_DRAW_SIZE: i32 = COMPACT_ICON_SIZE * COMPACT_ICON_SCALE_NUM /
 
 /// Compact icon + title tile shared by the Home dashboard's grid (which also
 /// carries a Continue Reading card and an Oggi/Streak row above it, hence the
-/// smaller footprint), the Settings grid, and the Tools grid
+/// smaller footprint) and the Settings grid
 /// (`screens::category::render_tile_grid`).
 pub fn draw_home_tile_compact(
     display: &mut OrientedFrameBuffer<'_>,
@@ -212,7 +212,7 @@ fn draw_tile_frame(
 /// instead of a glyph — see
 /// `screens::category::draw_continue_reading_tile`; Bookmarks has no tile of
 /// its own, reached instead by holding SELECT on a cover in the Library
-/// grid), and one glyph per entry on the Tools and Settings grids.
+/// grid), and one glyph per entry on the Settings grid.
 fn draw_route_icon_compact(
     display: &mut OrientedFrameBuffer<'_>,
     route: ScreenRoute,
@@ -227,9 +227,6 @@ fn draw_route_icon_compact(
         }
         ScreenRoute::WifiTransfer => {
             draw_iconoir_icon_scaled(display, top_left, &CompactImport::new(BinaryColor::On))
-        }
-        ScreenRoute::Tools => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactFolder::new(BinaryColor::On))
         }
         ScreenRoute::Settings => draw_iconoir_icon_scaled(
             display,
@@ -258,7 +255,7 @@ fn draw_route_icon_compact(
             draw_iconoir_icon_scaled(display, top_left, &CompactRefreshDouble::new(BinaryColor::On))
         }
         ScreenRoute::Files => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactMultiplePages::new(BinaryColor::On))
+            draw_iconoir_icon_scaled(display, top_left, &CompactFolder::new(BinaryColor::On))
         }
         _ => Ok(()),
     }

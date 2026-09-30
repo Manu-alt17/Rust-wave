@@ -7,7 +7,6 @@ use crate::regional::Locale;
 pub enum ScreenRoute {
     #[default]
     Home,
-    Tools,
     Settings,
     ContinueReading,
     Library,
@@ -44,7 +43,6 @@ impl ScreenRoute {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Home => "Home",
-            Self::Tools => "Tools",
             Self::Settings => "Settings",
             Self::ContinueReading => "Continue Reading",
             Self::Library => "Library",
@@ -94,7 +92,6 @@ impl ScreenRoute {
             },
             Locale::Italian => match self {
                 Self::Home => "Home",
-                Self::Tools => "Strumenti",
                 Self::Settings => "Impostazioni",
                 Self::ContinueReading => "Continua a leggere",
                 Self::Library => "Libreria",
@@ -132,7 +129,6 @@ impl ScreenRoute {
     pub const fn marker(self) -> &'static str {
         match self {
             Self::Home => "home",
-            Self::Tools => "tools",
             Self::Settings => "settings",
             Self::ContinueReading => "continue-reading",
             Self::Library => "library",
@@ -167,7 +163,7 @@ impl ScreenRoute {
 
     #[must_use]
     pub const fn is_category(self) -> bool {
-        matches!(self, Self::Tools | Self::Settings)
+        matches!(self, Self::Settings)
     }
 
     /// Whether this route only exists while a book session is open. Used to
@@ -191,7 +187,7 @@ impl ScreenRoute {
     pub const fn parent(self) -> Option<Self> {
         match self {
             Self::Home => None,
-            Self::Tools | Self::Settings => Some(Self::Home),
+            Self::Settings => Some(Self::Home),
             Self::ReadingStats => Some(Self::Home),
             Self::ContinueReading | Self::Library => Some(Self::Home),
             Self::LibraryBookActions => Some(Self::Library),
@@ -201,7 +197,7 @@ impl ScreenRoute {
             Self::ReaderOptions => Some(Self::ReaderPage),
             Self::ReaderPreferences => Some(Self::ReaderOptions),
             Self::ReaderToc => Some(Self::ReaderOptions),
-            Self::Files => Some(Self::Tools),
+            Self::Files => Some(Self::Home),
             Self::PowerKeyMenu => Some(Self::Home),
             Self::Audio
             | Self::Clock
@@ -265,7 +261,7 @@ mod tests {
 
     #[test]
     fn router_exposes_static_parent_hierarchy() {
-        assert_eq!(ScreenRoute::Files.parent(), Some(ScreenRoute::Tools));
+        assert_eq!(ScreenRoute::Files.parent(), Some(ScreenRoute::Home));
         assert_eq!(ScreenRoute::Display.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::Language.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::PowerKeyMenu.parent(), Some(ScreenRoute::Home));

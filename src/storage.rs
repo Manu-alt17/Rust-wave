@@ -36,7 +36,7 @@ pub const STORAGE_IO_RETRY_DELAY_MS: u64 = 120;
 /// Read-only browser-entry category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageEntryKind {
-    /// Synthetic root row that returns to the Tools category.
+    /// Synthetic root row that returns to Home.
     BackToHome,
     /// Synthetic row that navigates to the parent directory.
     ParentDirectory,
@@ -90,7 +90,7 @@ pub struct StorageEntry {
 impl StorageEntry {
     fn back_to_home() -> Self {
         Self {
-            name: "Back to Tools".into(),
+            name: "Back to Home".into(),
             kind: StorageEntryKind::BackToHome,
             size_bytes: None,
         }

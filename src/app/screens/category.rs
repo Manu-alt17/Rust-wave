@@ -1,4 +1,4 @@
-//! Category screens (Tools, Settings) drawn as icon-tile grids, plus the
+//! The Settings category screen drawn as an icon-tile grid, plus the
 //! Continue Reading card the Home dashboard shares.
 
 use core::convert::Infallible;
@@ -408,7 +408,7 @@ fn tile_grid_block_height(block: &TileGridBlock, metrics: &TileGridMetrics) -> i
 /// "Most used" header + rows and an "Other" header + rows the way the
 /// Settings grid uses it (mirroring `screens::reader::library_blocks`'s
 /// Reading Now / Recent split). `primary_count == 0` means the category has
-/// no such split (Tools before anything was opened, say) — just one plain run of rows with
+/// no such split (nothing opened yet, say) — just one plain run of rows with
 /// no section captions at all.
 fn tile_grid_blocks(entry_count: usize, primary_count: usize) -> Vec<TileGridBlock> {
     let mut blocks = Vec::new();
@@ -493,7 +493,7 @@ fn tile_grid_page_for_selection(pages: &[Vec<TileGridBlock>], selected: usize) -
 }
 
 /// Compact icon + title tile grid, matching the Home dashboard's grid —
-/// used for both Settings and Tools, grouped under "Most used" / "Other"
+/// used for Settings, grouped under "Most used" / "Other"
 /// section headers. "Most used" holds up to
 /// [`crate::app::menu::MOST_USED_MAX`] entries opened most recently (see
 /// [`crate::app::menu::CategoryUsage`]), so the ones actually reached for

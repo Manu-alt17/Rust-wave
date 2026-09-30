@@ -12,15 +12,14 @@ use crate::regional::Locale;
 use super::router::ScreenRoute;
 
 pub const MAIN_CATEGORY_COUNT: usize = 6;
-pub const CATEGORY_COUNT: usize = 2;
-pub const TOOLS_ENTRY_COUNT: usize = 1;
+pub const CATEGORY_COUNT: usize = 1;
 pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
-/// heading of the Tools and Settings grids (see
+/// heading of the Settings grid (see
 /// `screens::category::render_tile_grid`). The section holds the entries
 /// opened most recently, newest first — see [`CategoryUsage`].
 pub const MOST_USED_MAX: usize = 3;
-/// Persisted "Most used" history for the Tools and Settings grids.
+/// Persisted "Most used" history for the Settings grid.
 pub const MENU_USAGE_CONFIG_PATH: &str = "/sdcard/RUSTMIX/MENU.TXT";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,13 +88,13 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         route: ScreenRoute::WifiTransfer,
     },
     MenuEntry {
-        label_en: "Tools",
-        label_it: "Strumenti",
-        subtitle_en: "SD card file browser",
-        subtitle_it: "Esplora i file della scheda SD",
-        badge_en: "1",
-        badge_it: "1",
-        route: ScreenRoute::Tools,
+        label_en: "Files",
+        label_it: "File",
+        subtitle_en: "Read-only SD card browser",
+        subtitle_it: "Esplora la scheda SD in sola lettura",
+        badge_en: "",
+        badge_it: "",
+        route: ScreenRoute::Files,
     },
     MenuEntry {
         label_en: "Settings",
@@ -122,18 +121,6 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::ContinueReading,
-    },
-];
-
-const TOOLS_ENTRIES: [MenuEntry; TOOLS_ENTRY_COUNT] = [
-    MenuEntry {
-        label_en: "File Browser",
-        label_it: "Esplora file",
-        subtitle_en: "Read-only SDMMC browser",
-        subtitle_it: "Esplora SDMMC in sola lettura",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::Files,
     },
 ];
 
@@ -216,7 +203,6 @@ pub const fn home_entries() -> &'static [MenuEntry] {
 #[must_use]
 pub const fn category_entries(route: ScreenRoute) -> &'static [MenuEntry] {
     match route {
-        ScreenRoute::Tools => &TOOLS_ENTRIES,
         ScreenRoute::Settings => &SETTINGS_ENTRIES,
         _ => &[],
     }
@@ -225,28 +211,25 @@ pub const fn category_entries(route: ScreenRoute) -> &'static [MenuEntry] {
 #[must_use]
 pub const fn category_index(route: ScreenRoute) -> Option<usize> {
     match route {
-        ScreenRoute::Tools => Some(0),
-        ScreenRoute::Settings => Some(1),
+        ScreenRoute::Settings => Some(0),
         _ => None,
     }
 }
 
 /// Recently-opened history behind the "Most used" / "Più usate" section of
-/// the Tools and Settings grids: up to [`MOST_USED_MAX`] routes per category,
-/// newest first. Every other entry keeps its static order below the
-/// "Other" / "Altro" heading. Persisted to [`MENU_USAGE_CONFIG_PATH`] by
-/// entry `label_en`, so reordering or adding entries in the static tables
-/// above never remaps a saved history onto the wrong tile.
+/// the Settings grid: up to [`MOST_USED_MAX`] routes, newest first. Every
+/// other entry keeps its static order below the "Other" / "Altro" heading.
+/// Persisted to [`MENU_USAGE_CONFIG_PATH`] by entry `label_en`, so
+/// reordering or adding entries in the static tables above never remaps a
+/// saved history onto the wrong tile.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CategoryUsage {
-    tools: Vec<ScreenRoute>,
     settings: Vec<ScreenRoute>,
 }
 
 impl Default for CategoryUsage {
     fn default() -> Self {
         Self {
-            tools: Vec::new(),
             // Seeded with what Settings used to pin permanently (Wi-Fi status
             // and Software Update) until the user's own history replaces it.
             settings: vec![ScreenRoute::Network, ScreenRoute::OtaUpdate],
@@ -257,7 +240,6 @@ impl Default for CategoryUsage {
 impl CategoryUsage {
     fn recent(&self, category: ScreenRoute) -> &[ScreenRoute] {
         match category {
-            ScreenRoute::Tools => &self.tools,
             ScreenRoute::Settings => &self.settings,
             _ => &[],
         }
@@ -265,7 +247,6 @@ impl CategoryUsage {
 
     fn recent_mut(&mut self, category: ScreenRoute) -> Option<&mut Vec<ScreenRoute>> {
         match category {
-            ScreenRoute::Tools => Some(&mut self.tools),
             ScreenRoute::Settings => Some(&mut self.settings),
             _ => None,
         }
@@ -294,8 +275,7 @@ impl CategoryUsage {
     }
 
     /// Size of `category`'s "Most used" section; `0` means the grid draws a
-    /// single uncaptioned run of tiles (e.g. Tools before anything was ever
-    /// opened).
+    /// single uncaptioned run of tiles.
     #[must_use]
     pub fn most_used_count(&self, category: ScreenRoute) -> usize {
         self.recent(category).len()
@@ -303,7 +283,7 @@ impl CategoryUsage {
 
     /// `category`'s entries in display order: the "Most used" history
     /// first, then every remaining entry in its static order. Selection
-    /// indices on the Tools and Settings grids index into this list.
+    /// indices on the Settings grid index into this list.
     #[must_use]
     pub fn ordered_entries(&self, category: ScreenRoute) -> Vec<MenuEntry> {
         let entries = category_entries(category);
@@ -329,8 +309,9 @@ impl CategoryUsage {
     }
 
     /// Lenient on purpose: this is a convenience history, so unknown keys or
-    /// labels (say, an entry renamed by a firmware update) are skipped
-    /// rather than failing the whole file.
+    /// labels (say, an entry renamed by a firmware update, or the `tools=`
+    /// line older firmware wrote for its Tools grid) are skipped rather
+    /// than failing the whole file.
     #[must_use]
     pub fn parse(text: &str) -> Self {
         let mut usage = Self::default();
@@ -342,7 +323,6 @@ impl CategoryUsage {
                 continue;
             };
             let category = match key.trim() {
-                "tools" => ScreenRoute::Tools,
                 "settings" => ScreenRoute::Settings,
                 _ => continue,
             };
@@ -379,8 +359,7 @@ impl CategoryUsage {
                 .join(",")
         };
         format!(
-            "# RustMix Wave most-used menu entries, newest first\ntools={}\nsettings={}\n",
-            labels(ScreenRoute::Tools),
+            "# RustMix Wave most-used menu entries, newest first\nsettings={}\n",
             labels(ScreenRoute::Settings)
         )
     }
@@ -390,33 +369,27 @@ impl CategoryUsage {
 mod tests {
     use super::{
         category_entries, home_entries, CategoryUsage, MAIN_CATEGORY_COUNT, MOST_USED_MAX,
-        SETTINGS_ENTRY_COUNT, TOOLS_ENTRY_COUNT,
+        SETTINGS_ENTRY_COUNT,
     };
     use crate::{app::router::ScreenRoute, regional::Locale};
 
     #[test]
     fn exposes_requested_main_category_counts_without_synthetic_back_rows() {
         assert_eq!(home_entries().len(), MAIN_CATEGORY_COUNT);
-        assert_eq!(category_entries(ScreenRoute::Tools).len(), TOOLS_ENTRY_COUNT);
         assert_eq!(
             category_entries(ScreenRoute::Settings).len(),
             SETTINGS_ENTRY_COUNT
         );
-        for route in [ScreenRoute::Tools, ScreenRoute::Settings] {
-            assert!(category_entries(route)
-                .iter()
-                .all(|entry| entry.route != ScreenRoute::Home));
-        }
+        assert!(category_entries(ScreenRoute::Settings)
+            .iter()
+            .all(|entry| entry.route != ScreenRoute::Home));
     }
 
     #[test]
-    fn statistics_replaces_productivity_as_a_direct_home_destination() {
-        assert!(home_entries()
-            .iter()
-            .any(|entry| entry.route == ScreenRoute::ReadingStats));
-        assert!(category_entries(ScreenRoute::Tools)
-            .iter()
-            .any(|entry| entry.route == ScreenRoute::Files));
+    fn statistics_and_files_are_direct_home_destinations() {
+        for route in [ScreenRoute::ReadingStats, ScreenRoute::Files] {
+            assert!(home_entries().iter().any(|entry| entry.route == route));
+        }
     }
 
     #[test]
@@ -453,17 +426,17 @@ mod tests {
     #[test]
     fn menu_usage_round_trips_and_skips_unknown_labels() {
         let mut usage = CategoryUsage::default();
-        usage.record(ScreenRoute::Tools, ScreenRoute::Files);
         usage.record(ScreenRoute::Settings, ScreenRoute::Audio);
         assert_eq!(CategoryUsage::parse(&usage.serialized()), usage);
 
-        let parsed = CategoryUsage::parse("settings=Gone,Audio,Audio\nbogus=1\ntools=\n");
+        // `tools=` is what firmware with a Tools grid wrote.
+        let parsed =
+            CategoryUsage::parse("settings=Gone,Audio,Audio\nbogus=1\ntools=File Browser\n");
         assert_eq!(
             parsed.ordered_entries(ScreenRoute::Settings)[0].route,
             ScreenRoute::Audio
         );
         assert_eq!(parsed.most_used_count(ScreenRoute::Settings), 1);
-        assert_eq!(parsed.most_used_count(ScreenRoute::Tools), 0);
     }
 
     #[test]
