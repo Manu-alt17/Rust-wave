@@ -7,7 +7,7 @@ use embedded_graphics::{
     pixelcolor::BinaryColor,
     prelude::{Drawable, Point, Primitive, Size},
     primitives::{
-        Circle, CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle,
+        Circle, CornerRadii, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle,
     },
 };
 
@@ -508,6 +508,7 @@ pub fn render_library(
                         metrics.row_height - LIBRARY_GRID_GAP_Y,
                         index == reader.library_selected,
                         thumbnail,
+                        &entry.book.title,
                         entry.status,
                     )?;
                 }
@@ -597,9 +598,11 @@ fn draw_library_section_header(
 /// One Library grid cell: a bordered tile (selection shown purely by border
 /// weight, matching the Home dashboard grid) holding the cover thumbnail and
 /// a status bar + label reporting whether it's still being read, finished,
-/// or never opened. No title text — the cover art already carries it, and
-/// dropping the title line entirely (rather than only for books with a
-/// confirmed real cover) buys back a full text line's height per cell.
+/// or never opened. No title line under the cover — the cover art already
+/// carries it, and dropping the line buys back its height in every cell. A
+/// book without a usable cover gets its title written on the placeholder
+/// instead (see [`draw_placeholder_title`]).
+#[allow(clippy::too_many_arguments)]
 fn draw_library_cell(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
@@ -607,6 +610,7 @@ fn draw_library_cell(
     cell_height: i32,
     selected: bool,
     thumbnail: Option<&CachedThumbnail>,
+    title: &str,
     status: LibraryCellStatus,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
@@ -671,6 +675,9 @@ fn draw_library_cell(
         Size::new(u32::from(THUMB_WIDTH), u32::from(THUMB_HEIGHT)),
         LIBRARY_THUMB_CORNER_RADIUS,
     );
+    if thumbnail.is_none_or(|thumbnail| thumbnail.placeholder) {
+        draw_placeholder_title(display, state, thumb_point, title)?;
+    }
 
     let text_left = top_left.x + LIBRARY_COVER_PAD;
     let text_right = top_left.x + LIBRARY_CELL_WIDTH - LIBRARY_COVER_PAD;
@@ -687,6 +694,109 @@ fn draw_library_cell(
         locale,
     )?;
     Ok(())
+}
+
+/// Most lines of title a placeholder cover shows.
+const PLACEHOLDER_TITLE_LINES: usize = 5;
+
+/// The title of a book without a usable cover, on a white label across the
+/// middle of its placeholder, so the cell still says which book it is.
+fn draw_placeholder_title(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    cover: Point,
+    title: &str,
+) -> Result<(), Infallible> {
+    let style = state.display.heading_style();
+    // Clear of the placeholder's spine line on the left.
+    let (margin_left, margin_right, padding) = (16, 10, 8);
+    let text_width = i32::from(THUMB_WIDTH) - margin_left - margin_right - 2 * padding;
+    let lines = wrap_to_width(title.trim(), style, text_width, PLACEHOLDER_TITLE_LINES);
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let line_height = i32::from(style.line_height());
+    let label_height = line_height * lines.len() as i32 + 2 * padding;
+    let label = Rectangle::new(
+        Point::new(
+            cover.x + margin_left,
+            cover.y + (i32::from(THUMB_HEIGHT) - label_height) / 2,
+        ),
+        Size::new((text_width + 2 * padding) as u32, label_height as u32),
+    );
+    label
+        .into_styled(
+            PrimitiveStyleBuilder::new()
+                .fill_color(BinaryColor::Off)
+                .stroke_color(BinaryColor::On)
+                .stroke_width(1)
+                .build(),
+        )
+        .draw(display)?;
+    // Baselines: the font's ascent is most of its line height.
+    let ascent = line_height * 4 / 5;
+    for (index, line) in lines.iter().enumerate() {
+        let x = label.top_left.x + padding + (text_width - style.text_width(line)) / 2;
+        let y = label.top_left.y + padding + line_height * index as i32 + ascent;
+        Text::new(line, Point::new(x, y), style).draw(display)?;
+    }
+    Ok(())
+}
+
+/// Break `text` into at most `max_lines` lines no wider than `max_width`,
+/// at spaces where possible and inside a word only when the word alone is
+/// too wide. Text that does not fit ends its last line with an ellipsis.
+fn wrap_to_width(text: &str, style: UiTextStyle, max_width: i32, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut overflow = false;
+    'words: for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if style.text_width(&candidate) <= max_width {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+            if lines.len() == max_lines {
+                overflow = true;
+                break;
+            }
+        }
+        for character in word.chars() {
+            current.push(character);
+            if style.text_width(&current) > max_width {
+                current.pop();
+                lines.push(std::mem::replace(&mut current, character.to_string()));
+                if lines.len() == max_lines {
+                    overflow = true;
+                    break 'words;
+                }
+            }
+        }
+    }
+    if !overflow && !current.is_empty() {
+        if lines.len() == max_lines {
+            overflow = true;
+        } else {
+            lines.push(current);
+        }
+    }
+    if overflow {
+        if let Some(last) = lines.last_mut() {
+            while !last.is_empty() && style.text_width(&format!("{last}…")) > max_width {
+                last.pop();
+            }
+            let trimmed = last.trim_end().len();
+            last.truncate(trimmed);
+            last.push('…');
+        }
+    }
+    lines
 }
 
 /// The status bar and its label share one line — the label beside the bar's
@@ -2668,6 +2778,67 @@ mod tests {
     fn library_visible_books_is_empty_for_an_empty_library() {
         let state = AppState::default();
         assert!(library_visible_books(&state).is_empty());
+    }
+
+    #[test]
+    fn wrap_to_width_breaks_at_spaces_and_ends_with_an_ellipsis() {
+        let style = AppState::default().display.heading_style();
+        let width = style.text_width("Il nome del");
+        assert_eq!(
+            super::wrap_to_width("Il nome del vento", style, width, 5),
+            vec!["Il nome del", "vento"]
+        );
+        let cut = super::wrap_to_width("Il nome del vento e altre storie", style, width, 2);
+        assert_eq!(cut.len(), 2);
+        assert!(cut[1].ends_with('…'), "{cut:?}");
+        assert!(cut.iter().all(|line| style.text_width(line) <= width));
+        // A word wider than a line is split inside it.
+        let word = "Precipitevolissimevolmente";
+        let split = super::wrap_to_width(word, style, width, 5);
+        assert!(split.len() > 1);
+        assert!(split.iter().all(|line| style.text_width(line) <= width));
+        assert_eq!(split.concat(), word);
+        assert!(super::wrap_to_width("  ", style, width, 5).is_empty());
+    }
+
+    #[test]
+    fn placeholder_covers_carry_the_title_real_covers_do_not() {
+        fn render(state: &AppState) -> Vec<u8> {
+            let mut frame = FrameBuffer::new_white();
+            let mut display = OrientedFrameBuffer::new(&mut frame, Default::default());
+            render_library(&mut display, state).unwrap();
+            frame.as_bytes().to_vec()
+        }
+        let mut state = AppState::default();
+        state.reader.books = vec![epub_book(0)];
+        // No thumbnail yet, then the generic placeholder: the title shows.
+        let before = render(&state);
+        state.reader.books[0].title = "Un altro titolo".into();
+        assert_ne!(render(&state), before);
+        let placeholder = crate::cover_cache::CachedThumbnail {
+            width: THUMB_WIDTH,
+            height: THUMB_HEIGHT,
+            bits: vec![0u8; (THUMB_WIDTH as usize / 8) * THUMB_HEIGHT as usize],
+            placeholder: true,
+        };
+        state
+            .reader
+            .library_thumbnails
+            .insert("book0.epub".into(), placeholder.clone());
+        let titled = render(&state);
+        state.reader.books[0].title = "Book 0".into();
+        assert_ne!(render(&state), titled);
+        // A real cover already shows its title.
+        state.reader.library_thumbnails.insert(
+            "book0.epub".into(),
+            crate::cover_cache::CachedThumbnail {
+                placeholder: false,
+                ..placeholder
+            },
+        );
+        let cover = render(&state);
+        state.reader.books[0].title = "Un altro titolo".into();
+        assert_eq!(render(&state), cover);
     }
 
     #[test]
