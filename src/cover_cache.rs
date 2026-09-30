@@ -100,9 +100,11 @@ const CACHE_FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const CACHE_FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 /// Bumped whenever the on-disk format, thumbnail size, or dithering changes
 /// in a way that must invalidate every existing cache entry. `"2"`: covers
-/// centre-cropped instead of stretched. The Wi-Fi portal computes the same
-/// fingerprint in the browser (`coverFingerprint`), so the two must match.
-const COVER_CACHE_FORMAT_VERSION: &str = "2";
+/// centre-cropped instead of stretched. `"3"`: progressive JPEGs decoded
+/// (by `jpeg_luma`) instead of left as placeholders. The Wi-Fi portal
+/// computes the same fingerprint in the browser (`coverFingerprint`), so the
+/// two must match.
+const COVER_CACHE_FORMAT_VERSION: &str = "3";
 
 /// One decoded 1bpp thumbnail, packed MSB-first, bit `1` = ink (black) —
 /// directly usable as the byte slice backing an
@@ -488,7 +490,8 @@ fn inline_image_fingerprint(book: &ReaderBook, href: &str, max_width: u16, max_h
 /// `COVER_CACHE_FORMAT_VERSION`. `"2"`: decoded by `esp_new_jpeg` on the
 /// device, and regenerated once so its decode timing shows up in logs.
 /// `"3"`: decoder-side downscale for any ratio, faster resize/dither.
-const INLINE_IMAGE_CACHE_FORMAT_VERSION: &str = "3";
+/// `"4"`: progressive JPEGs decoded by `jpeg_luma`.
+const INLINE_IMAGE_CACHE_FORMAT_VERSION: &str = "4";
 const INLINE_IMAGE_CACHE_MAGIC: [u8; 4] = *b"RWIM";
 const INLINE_IMAGE_CACHE_VERSION: u8 = 1;
 const INLINE_IMAGE_CACHE_HEADER_BYTES: usize = 4 + 1 + 1 + 2 + 2 + 8; // magic+version+flags+w+h+fingerprint
@@ -767,21 +770,51 @@ fn is_png(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 }
 
-/// On the device, try Espressif's SIMD-accelerated `esp_new_jpeg` first
-/// (see [`esp_jpeg::decode_gray`]); `jpeg-decoder` stays the fallback for
-/// what it rejects (progressive JPEGs, unusual sampling) and the only path
-/// on host builds.
+/// Working memory the luma-only decoder may take for one image: a 1165x1800
+/// progressive cover needs about 2.4 MB at half size, for the full-screen
+/// sleep cover. Over it, [`crate::jpeg_luma::decode`] steps down a scale.
+const JPEG_LUMA_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+
+/// On the device, baseline JPEGs go to Espressif's SIMD-accelerated
+/// `esp_new_jpeg` (see [`esp_jpeg::decode_gray`]). Progressive ones, which
+/// it cannot read, and anything else it rejects go to the luma-only decoder
+/// ([`crate::jpeg_luma`]), which keeps a fraction of what a general
+/// progressive decoder needs. `jpeg-decoder` is left with the CMYK and RGB
+/// files that one refuses, within [`JPEG_DECODER_BUDGET_BYTES`].
 fn decode_jpeg_fast_or_fallback(
     bytes: &[u8],
     target_width: u16,
     target_height: u16,
 ) -> Result<GrayImage, String> {
     #[cfg(target_os = "espidf")]
-    match esp_jpeg::decode_gray(bytes, u32::from(target_width), u32::from(target_height)) {
-        Ok(image) => return Ok(image),
-        Err(error) => log::info!(
-            "rustmix-wave=esp-jpeg status=fallback reason={error}"
-        ),
+    if !jpeg_frame(bytes).is_some_and(|frame| frame.progressive) {
+        match esp_jpeg::decode_gray(bytes, u32::from(target_width), u32::from(target_height)) {
+            Ok(image) => return Ok(image),
+            Err(error) => log::info!("rustmix-wave=esp-jpeg status=fallback reason={error}"),
+        }
+    }
+    let started = std::time::Instant::now();
+    match crate::jpeg_luma::decode(
+        bytes,
+        u32::from(target_width),
+        u32::from(target_height),
+        JPEG_LUMA_BUDGET_BYTES,
+    ) {
+        Ok(image) => {
+            log::info!(
+                "rustmix-wave=jpeg-luma status=decoded progressive={} size={}x{} elapsed-ms={}",
+                image.progressive,
+                image.width,
+                image.height,
+                started.elapsed().as_millis()
+            );
+            return Ok(GrayImage {
+                width: image.width,
+                height: image.height,
+                pixels: image.pixels,
+            });
+        }
+        Err(error) => log::info!("rustmix-wave=jpeg-luma status=fallback reason={error}"),
     }
     decode_jpeg_scaled(bytes, target_width, target_height)
 }
@@ -1309,8 +1342,9 @@ fn cover_fingerprint(book: &ReaderBook) -> u64 {
 }
 
 /// Bumped whenever the `.SLC` full-screen sleep cover decode or format
-/// changes in a way that must invalidate every existing entry.
-const FULLSCREEN_COVER_FORMAT_VERSION: &str = "1";
+/// changes in a way that must invalidate every existing entry. `"2"`:
+/// progressive JPEGs decoded by `jpeg_luma`.
+const FULLSCREEN_COVER_FORMAT_VERSION: &str = "2";
 
 fn fullscreen_cover_fingerprint(book: &ReaderBook, width: u16, height: u16) -> u64 {
     let mut hash = CACHE_FNV_OFFSET;
@@ -1536,6 +1570,26 @@ mod tests {
         assert!(thumbnail.placeholder);
         // Top-left corner pixel (border) must be ink.
         assert_eq!(thumbnail.bits[0] & 0x80, 0x80);
+    }
+
+    #[test]
+    fn progressive_and_cmyk_jpeg_covers_are_drawn() {
+        let progressive = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/jpeg/progressive_420.jpg"
+        ));
+        let cmyk = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/jpeg/cmyk.jpg"));
+        // The progressive one goes through jpeg_luma, the CMYK one back to
+        // jpeg-decoder.
+        for bytes in [&progressive[..], &cmyk[..]] {
+            let cover = decode_and_dither_cover(bytes, "image/jpeg").unwrap();
+            assert!(!cover.placeholder);
+            assert_eq!((cover.width, cover.height), (THUMB_WIDTH, THUMB_HEIGHT));
+            // A picture: neither blank paper nor a solid block of ink.
+            let ink: u32 = cover.bits.iter().map(|byte| byte.count_ones()).sum();
+            let pixels = u32::from(THUMB_WIDTH) * u32::from(THUMB_HEIGHT);
+            assert!(ink > pixels / 10 && ink < pixels * 9 / 10, "ink {ink} of {pixels}");
+        }
     }
 
     #[test]

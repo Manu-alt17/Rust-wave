@@ -22,6 +22,7 @@ pub mod epub;
 pub mod framebuffer;
 pub mod imu;
 pub mod input_events;
+pub mod jpeg_luma;
 pub mod mcu_deep_sleep;
 pub mod network;
 pub mod network_config;

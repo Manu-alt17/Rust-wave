@@ -694,7 +694,7 @@ function coverFingerprint(absPath,sizeBytes,modifiedSeconds){
   const u64=n=>{let v=BigInt(Math.trunc(n));for(let i=0;i<8;i++){buf.push(Number(v&0xffn));v>>=8n}};
   const u16=n=>{buf.push(n&0xff);buf.push((n>>8)&0xff)};
   // The last string is the firmware's COVER_CACHE_FORMAT_VERSION: the two must match.
-  str(absPath);u64(sizeBytes);u64(modifiedSeconds);str('epub');u16(COVER_THUMB_W);u16(COVER_THUMB_H);str('2');
+  str(absPath);u64(sizeBytes);u64(modifiedSeconds);str('epub');u16(COVER_THUMB_W);u16(COVER_THUMB_H);str('3');
   return fnv1a64(Uint8Array.from(buf));
 }
 function zipParseCentralDirectory(bytes){
