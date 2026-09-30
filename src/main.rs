@@ -13,13 +13,6 @@ mod firmware {
             delay::{Ets, FreeRtos},
             gpio::{AnyIOPin, PinDriver, Pull},
             i2c::{I2cConfig, I2cDriver},
-            i2s::{
-                config::{
-                    ClockSource, Config as I2sChannelConfig, DataBitWidth, MclkMultiple, SlotMode,
-                    StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
-                },
-                I2sDriver, I2sTx,
-            },
             peripherals::Peripherals,
             reset::restart,
             sd::{
@@ -50,8 +43,14 @@ mod firmware {
             READER_POWER_SAVE_GRACE_SECONDS, SAMPLE_LIVE_REFRESH_SECONDS,
         },
         audio::{
-            espidf::AudioRuntime, AudioPlaybackState, AudioSnapshot, AudioUiRequest, AUDIO_MCLK_HZ,
-            AUDIO_SAMPLE_RATE_HZ, DEFAULT_AUDIO_VOLUME_PERCENT,
+            engine::{AudioCommand, AudioEngine, PlayerCommand},
+            espidf::AudioRuntime,
+            AudioPlaybackState, AudioSnapshot, AudioUiRequest, AUDIO_MCLK_MULTIPLE,
+            DEFAULT_AUDIO_VOLUME_PERCENT,
+        },
+        audiobook::{
+            scan_audiobooks, AudiobookPositions, PlayerRequest, PlayerState, AUDIOBOOK_POSITIONS_PATH,
+            AUDIOBOOK_ROOT,
         },
         board_services::{BoardServices, BoardSnapshot},
         build_info::{FIRMWARE_VERSION, PRODUCT_SLUG},
@@ -1012,101 +1011,71 @@ mod firmware {
         // The codec-to-ESP DIN line (GPIO21) is left unclaimed: nothing
         // records, so the channel is TX-only.
         //
-        // This used to probe and configure the codec unconditionally at
-        // boot. It's deferred now: most boots never touch the Audio screen,
-        // so most boots paid for several I2C/I2S setup calls (including the
-        // I2C rail's own settle time) for nothing. The I2S0/pin peripherals
-        // are only *moved* out of `peripherals` here -- a plain field move,
-        // no I/O -- and held until `try_bring_up_audio` below is actually
-        // called on entering Audio. `audio_runtime` starts at `None`, and
-        // `state.audio` at its `AudioSnapshot::default()`, which already
-        // reads "has not been initialized" rather than an error.
-        let mut audio_peripherals = Some((
+        // Brought up lazily, on the first visit to Audio or the first
+        // audiobook: most boots never play anything, and the codec probe
+        // costs several I2C transactions plus the audio rail's settle time.
+        // The I2S0 peripheral and its pins are moved out of `peripherals`
+        // here and never used: the audio engine re-creates the channel from
+        // stolen handles for every sample rate, which is sound only because
+        // nothing else can reach them. `state.audio` starts at
+        // `AudioSnapshot::default()`, which reads "has not been initialized".
+        let _audio_i2s_reserved = (
             peripherals.i2s0,
             peripherals.pins.gpio13,
             peripherals.pins.gpio14,
             peripherals.pins.gpio47,
             peripherals.pins.gpio48,
-            peripherals.pins.gpio39,
-        ));
+        );
+        let mut audio_amplifier_pin = Some(peripherals.pins.gpio39);
         let shared_i2c_for_audio = shared_i2c.clone();
-        // Takes the peripherals at most once (`.take()`): later calls, once
-        // Audio has already triggered one attempt,
-        // just see `None` and no-op, matching the old single-attempt-at-boot
-        // behavior, just moved to whenever that attempt first happens.
-        let mut try_bring_up_audio = move || -> Option<Result<AudioRuntime<'_, _>>> {
-            let (i2s0, gpio13, gpio14, gpio47, gpio48, gpio39) = audio_peripherals.take()?;
-            info!(
-                "rustmix-wave=audio-init status=starting codec=es8311 address=0x18 wire-write=0x30"
-            );
-            Some((|| -> Result<_> {
-                let i2s_config = StdConfig::new(
-                    I2sChannelConfig::new().auto_clear(true),
-                    StdClkConfig::new(
-                        AUDIO_SAMPLE_RATE_HZ,
-                        ClockSource::default(),
-                        MclkMultiple::M384,
-                    ),
-                    StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
-                    StdGpioConfig::default(),
-                );
-                let mut i2s = I2sDriver::<I2sTx>::new_std_tx(
-                    i2s0,
-                    &i2s_config,
-                    gpio14,
-                    gpio48,
-                    Some(gpio13),
-                    gpio47,
-                )?;
-                i2s.tx_enable()?;
-                let amplifier = PinDriver::output(gpio39)?;
-                AudioRuntime::initialize(
-                    shared_i2c_for_audio.clone(),
-                    i2s,
-                    amplifier,
-                    &mut FreeRtosDelay,
-                )
-            })())
-        };
-        let mut audio_runtime: Option<AudioRuntime<'_, SharedI2cBus<I2cDriver<'_>>>> = None;
-        // Turns the deferred `try_bring_up_audio` attempt above into an updated
-        // `audio_runtime`/`state.audio`, doing nothing if audio is already
-        // up (`Some`) or was already attempted once and failed (the closure
-        // then returns `None` every time, its peripherals already spent).
-        let mut ensure_audio_runtime = move |audio_runtime: &mut Option<_>,
-                                              state: &mut AppState,
-                                              misc_power: &mut Axp2101<_>| {
-            if audio_runtime.is_some() {
+        let mut audio_engine: Option<AudioEngine> = None;
+        // One attempt per boot, the first time audio is needed: the
+        // amplifier pin is spent by it either way, so a codec that failed to
+        // answer stays reported as unavailable instead of being re-probed.
+        let mut ensure_audio_engine = move |audio_engine: &mut Option<AudioEngine>,
+                                            state: &mut AppState,
+                                            misc_power: &mut Axp2101<_>| {
+            if audio_engine.is_some() {
                 return;
             }
+            let Some(amplifier_pin) = audio_amplifier_pin.take() else {
+                return;
+            };
             if let Err(error) = misc_power.enable_audio_rail() {
                 warn!("rustmix-wave=pmic-audio-rail status=enable-failed error={error:#}");
             }
-            let Some(attempt) = try_bring_up_audio() else {
-                return;
-            };
+            info!(
+                "rustmix-wave=audio-init status=starting codec=es8311 address=0x18 wire-write=0x30"
+            );
+            let attempt = (|| -> Result<AudioEngine> {
+                let amplifier = PinDriver::output(amplifier_pin)?;
+                let runtime = AudioRuntime::initialize(
+                    shared_i2c_for_audio.clone(),
+                    amplifier,
+                    &mut FreeRtosDelay,
+                )?;
+                let snapshot = runtime.snapshot();
+                info!(
+                    "rustmix-wave=audio-codec status=ready codec=es8311 address={} wire-write={} mclk-multiple={AUDIO_MCLK_MULTIPLE}",
+                    snapshot.codec_address_label(),
+                    snapshot.codec_address.map_or_else(|| "--".into(), |address| format!("0x{:02X}", address << 1))
+                );
+                let profile = runtime.profile();
+                info!(
+                    "rustmix-wave=audio-codec-profile status=ready source=waveshare-esp-codec-dev-parity gpio44=0x{:02X} dac-reference=ready system14=0x{:02X} adc15=0x{:02X} adc17=0x{:02X} gp45=0x{:02X}",
+                    profile.gpio44,
+                    profile.system14,
+                    profile.adc15,
+                    profile.adc17,
+                    profile.gp45
+                );
+                AudioEngine::start(runtime)
+            })();
             match attempt {
-                Ok(runtime) => {
-                    let snapshot = runtime.snapshot();
-                    info!(
-                        "rustmix-wave=audio-codec status=ready codec=es8311 address={} wire-write={} mclk-hz={AUDIO_MCLK_HZ}",
-                        snapshot.codec_address_label(),
-                        snapshot.codec_address.map_or_else(|| "--".into(), |address| format!("0x{:02X}", address << 1))
-                    );
-                    let profile = runtime.profile();
-                    info!(
-                        "rustmix-wave=audio-codec-profile status=ready source=waveshare-esp-codec-dev-parity gpio44=0x{:02X} dac-reference=ready system14=0x{:02X} adc15=0x{:02X} adc17=0x{:02X} gp45=0x{:02X}",
-                        profile.gpio44,
-                        profile.system14,
-                        profile.adc15,
-                        profile.adc17,
-                        profile.gp45
-                    );
-                    info!("rustmix-wave=audio-i2s status=ready direction=tx sample-rate={AUDIO_SAMPLE_RATE_HZ} bits=16 tx-channels=2 mclk-gpio=13 bclk-gpio=14 ws-gpio=47 dout-gpio=48");
-                    info!("rustmix-wave=audio-amp status=ready gpio=39 default=off");
+                Ok(engine) => {
                     info!("rustmix-wave=audio-subsystem-ready mute=true volume={DEFAULT_AUDIO_VOLUME_PERCENT}");
-                    *audio_runtime = Some(runtime);
-                    state.update_audio_snapshot(snapshot);
+                    state.update_audio_snapshot(engine.current().audio);
+                    *audio_engine = Some(engine);
                 }
                 Err(error) => {
                     warn!("rustmix-wave=audio-init status=unavailable codec=es8311 error={error:#}");
@@ -1182,6 +1151,9 @@ mod firmware {
         state.set_saved_networks(saved_network_entries(&network_config, None));
         debug_runtime_memory("boot-complete");
 
+        state.audiobooks.positions =
+            AudiobookPositions::load(std::path::Path::new(AUDIOBOOK_POSITIONS_PATH));
+        let mut audiobook_positions_saved_at = Instant::now();
         let mut last_activity = Instant::now();
         let mut last_status_refresh = Instant::now();
         let mut last_charging_poll = Instant::now();
@@ -1472,35 +1444,39 @@ mod firmware {
                 }
             }
 
-            if let Some(runtime) = audio_runtime.as_mut() {
-                match runtime.tick() {
-                    Ok(changed) => {
-                        let latest = runtime.snapshot();
-                        if latest != state.audio {
-                            state.update_audio_snapshot(latest);
-                            log_audio_snapshot(&state.audio);
-                            if changed
-                                && state.panel_awake
-                                && matches!(
-                                    state.active_route(),
-                                    ScreenRoute::Audio | ScreenRoute::AudioDetails
-                                )
-                            {
-                                refresh_screen(
-                                    &mut panel,
-                                    &mut frame,
-                                    &mut state,
-                                    &mut panel_refresh,
-                                    RefreshRequest::Normal,
-                                )?;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        warn!("rustmix-wave=audio-event outcome=playback-error error={error:#}");
-                        runtime.record_failure(format!("{error:#}"));
-                        state.update_audio_snapshot(runtime.snapshot());
+            // The audio engine plays on its own thread; here its state is
+            // brought into the UI, positions are saved, and the audio
+            // screens redraw when what they show changed.
+            if let Some(engine) = audio_engine.as_mut() {
+                if let Some(status) = engine.poll() {
+                    let audio_changed = status.audio != state.audio;
+                    if audio_changed {
+                        state.update_audio_snapshot(status.audio);
                         log_audio_snapshot(&state.audio);
+                    }
+                    let previous_state = state.audiobooks.now_playing.state;
+                    let player_changed = state.audiobooks.update_now_playing(status.now_playing);
+                    let now_state = state.audiobooks.now_playing.state;
+                    if now_state != previous_state
+                        || audiobook_positions_saved_at.elapsed() >= AUDIOBOOK_POSITION_SAVE_INTERVAL
+                    {
+                        save_audiobook_positions(&state);
+                        audiobook_positions_saved_at = Instant::now();
+                    }
+                    let redraw = match state.active_route() {
+                        ScreenRoute::Audio | ScreenRoute::AudioDetails => audio_changed,
+                        ScreenRoute::AudiobookPlayer => player_changed || audio_changed,
+                        ScreenRoute::AudiobookLibrary => now_state != previous_state,
+                        _ => false,
+                    };
+                    if redraw && state.panel_awake {
+                        refresh_screen(
+                            &mut panel,
+                            &mut frame,
+                            &mut state,
+                            &mut panel_refresh,
+                            RefreshRequest::Normal,
+                        )?;
                     }
                 }
             }
@@ -1608,25 +1584,15 @@ mod firmware {
                 wifi_suspended_for_reading = false;
             }
 
-            let audio_idle = audio_runtime.as_ref().map_or(true, |runtime| {
-                matches!(
-                    runtime.snapshot().playback_state,
-                    AudioPlaybackState::Muted
-                        | AudioPlaybackState::Ready
-                        | AudioPlaybackState::Unavailable
-                        | AudioPlaybackState::Error
-                )
-            });
+            // Only an idle codec may lose its rail: a book playing (or
+            // opening) in the background keeps it, reader page or not.
+            let audio_idle = !state.audiobooks.now_playing.is_active()
+                && state.audio.playback_state != AudioPlaybackState::PlayingTestTone;
             if reader_power_save_ready && !audio_suspended_for_reading && audio_idle {
-                suspend_audio_for_reading(&mut audio_runtime, &mut misc_power, &mut state);
+                suspend_audio_for_reading(audio_engine.as_ref(), &mut misc_power);
                 audio_suspended_for_reading = true;
             } else if audio_suspended_for_reading && !route_is_reader_active {
-                resume_audio_after_reading(
-                    &mut audio_runtime,
-                    &mut misc_power,
-                    &mut state,
-                    &mut service_delay,
-                );
+                resume_audio_after_reading(audio_engine.as_ref(), &mut misc_power, &mut state);
                 audio_suspended_for_reading = false;
             }
 
@@ -1746,7 +1712,7 @@ mod firmware {
                                 &mut network_provision_join_pending,
                                 portal_via_hotspot,
                                 &mut storage_browser,
-                                &mut audio_runtime,
+                                audio_engine.as_ref(),
                                 &mut network_runtime,
                                 &mut sleep_network,
                                 &mut last_network_fingerprint,
@@ -1784,8 +1750,11 @@ mod firmware {
             } else {
                 None
             };
+            // Never while a book plays: standby is a reboot, the listening
+            // would stop.
             if let Some(idle_seconds) = auto_sleep_idle_seconds.filter(|idle_seconds| {
                 !sleep_mode.is_sleeping()
+                    && !state.audiobooks.now_playing.is_active()
                     && last_activity.elapsed() >= Duration::from_secs(*idle_seconds)
             }) {
                 info!(
@@ -1805,7 +1774,7 @@ mod firmware {
                     &mut network_provision_join_pending,
                     portal_via_hotspot,
                     &mut storage_browser,
-                    &mut audio_runtime,
+                    audio_engine.as_ref(),
                     &mut network_runtime,
                     &mut sleep_network,
                     &mut last_network_fingerprint,
@@ -2276,9 +2245,14 @@ mod firmware {
                         let library_book_actions_context = !reader_dictionary_context
                             && !network_saved_context
                             && state.apply_library_select_long_press();
+                        let audiobook_menu_context = !reader_dictionary_context
+                            && !network_saved_context
+                            && !library_book_actions_context
+                            && state.apply_audiobook_select_long_press();
                         if reader_dictionary_context
                             || network_saved_context
                             || library_book_actions_context
+                            || audiobook_menu_context
                         {
                             if reader_dictionary_context {
                                 info!(
@@ -2356,7 +2330,7 @@ mod firmware {
                             apply_storage_event(&mut storage_browser, &mut state, event);
                         } else if previous_route == ScreenRoute::Audio {
                             if let Some(request) = state.apply_audio_button(event) {
-                                apply_audio_request(&mut audio_runtime, &mut state, request);
+                                apply_audio_request(audio_engine.as_ref(), &mut state, request);
                             }
                         } else {
                             state.apply(event);
@@ -2373,7 +2347,20 @@ mod firmware {
                             if previous_route != ScreenRoute::Audio
                                 && state.active_route() == ScreenRoute::Audio
                             {
-                                ensure_audio_runtime(&mut audio_runtime, &mut state, &mut misc_power);
+                                ensure_audio_engine(&mut audio_engine, &mut state, &mut misc_power);
+                            }
+                            // Entering the audiobook list rescans the card, so
+                            // files copied meanwhile show up.
+                            if previous_route == ScreenRoute::Home
+                                && state.active_route() == ScreenRoute::AudiobookLibrary
+                            {
+                                refresh_audiobook_library(&mut state);
+                            }
+                            if let Some(request) = state.audiobooks.take_request() {
+                                if matches!(request, PlayerRequest::Open { .. }) {
+                                    ensure_audio_engine(&mut audio_engine, &mut state, &mut misc_power);
+                                }
+                                apply_player_request(audio_engine.as_ref(), &mut state, request);
                             }
                         }
                         // Consume Settings > Network transfer start/stop intents before
@@ -3091,7 +3078,7 @@ mod firmware {
     /// an explicit power-key press and the idle-timeout auto-sleep check --
     /// so the two can never drift into two different sleep-entry sequences.
     #[allow(clippy::too_many_arguments)]
-    fn enter_deep_sleep_mode<'d, SPI, DC, RST, CS, BUSY, DELAY, POWER, BoardI2c, PmicI2c>(
+    fn enter_deep_sleep_mode<SPI, DC, RST, CS, BUSY, DELAY, POWER, BoardI2c, PmicI2c>(
         panel: &mut Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER>,
         frame: &mut FrameBuffer,
         state: &mut AppState,
@@ -3105,7 +3092,7 @@ mod firmware {
         portal_join_pending: &mut Option<(String, String)>,
         portal_via_hotspot: bool,
         storage_browser: &mut StorageBrowser,
-        audio_runtime: &mut Option<AudioRuntime<'d, PmicI2c>>,
+        audio_engine: Option<&AudioEngine>,
         network_runtime: &mut NetworkRuntime,
         sleep_network: &mut SleepNetworkState,
         last_network_fingerprint: &mut NetworkLogFingerprint,
@@ -3198,15 +3185,15 @@ mod firmware {
             portal_via_hotspot,
             "sleep-entry",
         );
-        if let Some(runtime) = audio_runtime.as_mut() {
-            match runtime.stop_playback() {
-                Ok(()) => info!("rustmix-wave=audio-event outcome=playback-stop reason=sleep-mode"),
-                Err(error) => {
-                    warn!("rustmix-wave=audio-event outcome=playback-stop-failed reason=sleep-mode error={error:#}");
-                    runtime.record_failure(format!("{error:#}"));
-                }
-            }
-            state.update_audio_snapshot(runtime.snapshot());
+        if let Some(engine) = audio_engine {
+            // Pauses a playing book, then the position it reports is saved:
+            // sleep ends in a reboot, and the book resumes from here.
+            engine.suspend();
+            let status = engine.current();
+            state.update_audio_snapshot(status.audio);
+            state.audiobooks.update_now_playing(status.now_playing);
+            save_audiobook_positions(state);
+            info!("rustmix-wave=audio-event outcome=playback-stop reason=sleep-mode");
             log_audio_snapshot(&state.audio);
         }
         // Best-effort like the audio-rail/RTC-alarm teardown below: the
@@ -3384,31 +3371,19 @@ mod firmware {
     }
 
     /// Cut power to the ES8311 codec + onboard mic (AXP2101 ALDO2) while
-    /// Reader is the active screen and nothing is using audio. The I2S
-    /// peripheral and amplifier GPIO stay configured -- only the codec chip
-    /// loses power, mirroring the same rail the sleep-image path already
-    /// disables before deep sleep.
-    fn suspend_audio_for_reading<'d, I2C>(
-        audio_runtime: &mut Option<AudioRuntime<'d, I2C>>,
-        misc_power: &mut Axp2101<I2C>,
-        state: &mut AppState,
-    ) where
+    /// Reader is the active screen and nothing is using audio. The engine
+    /// first silences everything and closes the I2S channel -- which also
+    /// releases its power-management lock, so light sleep can engage --
+    /// and only then does the codec chip lose power, the same rail the
+    /// sleep-image path disables before deep sleep.
+    fn suspend_audio_for_reading<I2C>(audio_engine: Option<&AudioEngine>, misc_power: &mut Axp2101<I2C>)
+    where
         I2C: embedded_hal::i2c::I2c,
         I2C::Error: core::fmt::Debug,
     {
-        if let Some(runtime) = audio_runtime.as_mut() {
-            if let Err(error) = runtime.stop_playback() {
-                warn!("rustmix-wave=reader-power-save status=audio-stop-failed error={error:#}");
-            }
-            // Release the I2S driver's APB-frequency-max PM lock (held
-            // continuously since boot otherwise) so automatic light sleep can
-            // actually engage while nothing is playing or recording.
-            if let Err(error) = runtime.suspend_i2s() {
-                warn!("rustmix-wave=reader-power-save status=i2s-suspend-failed error={error:#}");
-            } else {
-                info!("rustmix-wave=reader-power-save status=i2s-suspended");
-            }
-            state.update_audio_snapshot(runtime.snapshot());
+        if let Some(engine) = audio_engine {
+            engine.suspend();
+            info!("rustmix-wave=reader-power-save status=audio-engine-suspended");
         }
         match misc_power.disable_audio_rail() {
             Ok(()) => info!("rustmix-wave=reader-power-save status=audio-rail-disabled"),
@@ -3421,37 +3396,81 @@ mod firmware {
     /// Restore the ES8311 codec after [`suspend_audio_for_reading`]. The
     /// power cycle resets every ES8311 register to its power-on default, so
     /// the codec is reprogrammed from scratch before use resumes.
-    fn resume_audio_after_reading<'d, I2C, D>(
-        audio_runtime: &mut Option<AudioRuntime<'d, I2C>>,
+    fn resume_audio_after_reading<I2C>(
+        audio_engine: Option<&AudioEngine>,
         misc_power: &mut Axp2101<I2C>,
         state: &mut AppState,
-        delay: &mut D,
     ) where
         I2C: embedded_hal::i2c::I2c,
         I2C::Error: core::fmt::Debug,
-        D: embedded_hal::delay::DelayNs,
     {
         if let Err(error) = misc_power.enable_audio_rail() {
             warn!("rustmix-wave=reader-power-save status=audio-rail-enable-failed error={error:#}");
             return;
         }
         info!("rustmix-wave=reader-power-save status=audio-rail-enabled");
-        if let Some(runtime) = audio_runtime.as_mut() {
-            if let Err(error) = runtime.resume_i2s() {
-                warn!("rustmix-wave=reader-power-save status=i2s-resume-failed error={error:#}");
-            } else {
-                info!("rustmix-wave=reader-power-save status=i2s-resumed");
-            }
-            match runtime.reinit_after_rail_restore(delay) {
+        if let Some(engine) = audio_engine {
+            match engine.restore() {
                 Ok(()) => info!("rustmix-wave=reader-power-save status=audio-codec-reinitialized"),
-                Err(error) => {
-                    warn!(
-                        "rustmix-wave=reader-power-save status=audio-codec-reinit-failed error={error:#}"
-                    );
-                    runtime.record_failure(format!("{error:#}"));
-                }
+                Err(error) => warn!(
+                    "rustmix-wave=reader-power-save status=audio-codec-reinit-failed error={error}"
+                ),
             }
-            state.update_audio_snapshot(runtime.snapshot());
+            state.update_audio_snapshot(engine.current().audio);
+        }
+    }
+
+    /// Write every audiobook's listening position to the SD card.
+    fn save_audiobook_positions(state: &AppState) {
+        if let Err(error) = state
+            .audiobooks
+            .positions
+            .save(std::path::Path::new(AUDIOBOOK_POSITIONS_PATH))
+        {
+            warn!("rustmix-wave=audiobook-positions status=save-failed error={error}");
+        }
+    }
+
+    /// Carry out a request from the audiobook screens: bring the audio
+    /// engine up if needed, then hand it the matching command.
+    fn apply_player_request(
+        audio_engine: Option<&AudioEngine>,
+        state: &mut AppState,
+        request: PlayerRequest,
+    ) {
+        let Some(engine) = audio_engine else {
+            state.audiobooks.now_playing.state = PlayerState::Error;
+            state.audiobooks.now_playing.error = Some(
+                state
+                    .audio
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "audio unavailable".into()),
+            );
+            return;
+        };
+        let command = match request {
+            PlayerRequest::Open { key } => {
+                let Some(book) = state.audiobooks.book(&key).cloned() else {
+                    warn!("rustmix-wave=audiobook status=open-failed reason=unknown-title key={key:?}");
+                    return;
+                };
+                let position = state.audiobooks.positions.get(&key).unwrap_or_default();
+                AudioCommand::Player(PlayerCommand::Play { book, position })
+            }
+            PlayerRequest::TogglePause => AudioCommand::Player(PlayerCommand::TogglePause),
+            PlayerRequest::SeekBy { seconds } => {
+                AudioCommand::Player(PlayerCommand::SeekBy { seconds })
+            }
+            PlayerRequest::SkipTrack { forward } => {
+                AudioCommand::Player(PlayerCommand::SkipTrack { forward })
+            }
+            PlayerRequest::Stop => AudioCommand::Player(PlayerCommand::Stop),
+            PlayerRequest::Volume { up: true } => AudioCommand::Ui(AudioUiRequest::VolumeUp),
+            PlayerRequest::Volume { up: false } => AudioCommand::Ui(AudioUiRequest::VolumeDown),
+        };
+        if !engine.send(command) {
+            warn!("rustmix-wave=audio-engine status=gone");
         }
     }
 
@@ -3514,27 +3533,36 @@ mod firmware {
         }
     }
 
-    fn apply_audio_request<'d, I2C>(
-        runtime: &mut Option<AudioRuntime<'d, I2C>>,
+    /// Hand a Settings > Audio request to the engine; the new state comes
+    /// back through `AudioEngine::poll` in the main loop.
+    fn apply_audio_request(
+        audio_engine: Option<&AudioEngine>,
         state: &mut AppState,
         request: AudioUiRequest,
-    ) where
-        I2C: embedded_hal::i2c::I2c,
-        I2C::Error: core::fmt::Debug,
-    {
-        let Some(runtime) = runtime.as_mut() else {
+    ) {
+        let Some(engine) = audio_engine else {
             warn!("rustmix-wave=audio-event outcome=unavailable request={request:?}");
             return;
         };
-        match runtime.apply_request(request) {
-            Ok(outcome) => info!("rustmix-wave=audio-event outcome={outcome}"),
-            Err(error) => {
-                warn!("rustmix-wave=audio-event outcome=request-failed request={request:?} error={error:#}");
-                runtime.record_failure(format!("{error:#}"));
-            }
+        if !engine.send(AudioCommand::Ui(request)) {
+            warn!("rustmix-wave=audio-engine status=gone");
+            state.update_audio_snapshot(AudioSnapshot::unavailable("audio engine stopped"));
         }
-        state.update_audio_snapshot(runtime.snapshot());
-        log_audio_snapshot(&state.audio);
+    }
+
+    /// Rescan `RUSTMIX/AUDIO`, creating it the first time so whoever puts
+    /// the card in a PC finds where audiobooks go.
+    fn refresh_audiobook_library(state: &mut AppState) {
+        let root = std::path::Path::new(AUDIOBOOK_ROOT);
+        if let Err(error) = std::fs::create_dir_all(root) {
+            warn!("rustmix-wave=audiobook-library status=mkdir-failed error={error}");
+        }
+        let scan = scan_audiobooks(root).map_err(|error| error.to_string());
+        match &scan {
+            Ok(books) => info!("rustmix-wave=audiobook-library status=scanned titles={}", books.len()),
+            Err(error) => warn!("rustmix-wave=audiobook-library status=scan-failed error={error}"),
+        }
+        state.audiobooks.set_library(scan);
     }
 
     fn apply_storage_event(browser: &mut StorageBrowser, state: &mut AppState, event: ButtonEvent) {
@@ -3569,6 +3597,11 @@ mod firmware {
     /// Upper bound on finishing a warm-cache book open before the first
     /// refresh of the Reader route. Measured opens take ~100 ms.
     const FAST_READER_OPEN_BUDGET: Duration = Duration::from_millis(400);
+
+    /// While a book plays its position reaches the SD card this often, as
+    /// well as at every pause, stop and track change: a power cut costs at
+    /// most this much listening.
+    const AUDIOBOOK_POSITION_SAVE_INTERVAL: Duration = Duration::from_secs(30);
 
     /// Opening a book routes to `ReaderLoading` first. When the book's
     /// `.EPX` cache is warm the open itself finishes in ~100 ms, far less
@@ -3626,6 +3659,9 @@ mod firmware {
         POWER: waveshare_epd397_rust_app::power::PanelPower,
     {
         settle_fast_reader_open(state);
+        if state.active_route() == ScreenRoute::AudiobookPlayer {
+            state.audiobooks.note_player_drawn();
+        }
         // A refresh request while the panel sleeps (rail off after the idle
         // timeout) cannot succeed: the controller is unpowered, BUSY reads
         // high through its pull-up, and `wait_until_idle` times out after

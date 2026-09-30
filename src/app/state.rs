@@ -21,6 +21,7 @@ use crate::{
 };
 
 use super::{
+    audiobooks::AudiobookUiState,
     display::DisplayPreferences,
     menu::{category_index, home_entries, CategoryUsage, CATEGORY_COUNT, MAIN_CATEGORY_COUNT},
     router::{ScreenRoute, ScreenRouter},
@@ -89,6 +90,8 @@ pub struct AppState {
     /// the phone portal.
     pub network_saved: NetworkSavedUiState,
     network_saved_forget_request: Option<String>,
+    /// Audiobook library, player and saved listening positions.
+    pub audiobooks: AudiobookUiState,
     /// Global display-maintenance menu opened by a physical Power long press.
     pub power_key_menu: PowerKeyMenuUiState,
     power_key_menu_return_route: ScreenRoute,
@@ -143,6 +146,7 @@ impl Default for AppState {
             wifi_transfer_request: None,
             network_saved: NetworkSavedUiState::default(),
             network_saved_forget_request: None,
+            audiobooks: AudiobookUiState::default(),
             power_key_menu: PowerKeyMenuUiState::default(),
             power_key_menu_return_route: ScreenRoute::Home,
             power_key_manual_refresh_requested: false,
@@ -223,6 +227,18 @@ impl AppState {
             self.apply_power_key_menu(event);
         } else if route == ScreenRoute::ClockSetTime {
             self.apply_clock_set_time(event);
+        } else if route == ScreenRoute::AudiobookLibrary {
+            if event == ButtonEvent::Select {
+                self.note_select_press();
+            }
+            if self.audiobooks.apply_library(event) {
+                self.router.navigate_to(ScreenRoute::AudiobookPlayer);
+            }
+        } else if route == ScreenRoute::AudiobookPlayer {
+            if event == ButtonEvent::Select {
+                self.note_select_press();
+            }
+            self.audiobooks.apply_player(event);
         } else if matches!(
             route,
             ScreenRoute::ContinueReading
@@ -546,6 +562,16 @@ impl AppState {
         } else {
             self.network_saved.begin_forget_confirmation();
         }
+    }
+
+    /// Held SELECT on the audiobook player opens its menu (skip, tracks,
+    /// stop).
+    pub fn apply_audiobook_select_long_press(&mut self) -> bool {
+        if self.router.current() != ScreenRoute::AudiobookPlayer {
+            return false;
+        }
+        self.audiobooks.open_menu();
+        true
     }
 
     /// Held SELECT on the Library grid opens the "book actions" overlay
@@ -891,6 +917,11 @@ impl AppState {
             return;
         }
         if self.router.current() == ScreenRoute::ReaderPage && self.reader.dictionary_step_back() {
+            return;
+        }
+        // BOOT closes the player menu before it leaves the player; leaving
+        // does not stop the book, which keeps playing in the background.
+        if self.router.current() == ScreenRoute::AudiobookPlayer && self.audiobooks.close_menu() {
             return;
         }
         if self.router.current() == ScreenRoute::WifiTransfer {

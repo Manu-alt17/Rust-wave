@@ -11,7 +11,7 @@ use crate::regional::Locale;
 
 use super::router::ScreenRoute;
 
-pub const MAIN_CATEGORY_COUNT: usize = 6;
+pub const MAIN_CATEGORY_COUNT: usize = 7;
 pub const CATEGORY_COUNT: usize = 1;
 pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
@@ -68,6 +68,15 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::Library,
+    },
+    MenuEntry {
+        label_en: "Audiobooks",
+        label_it: "Audiolibri",
+        subtitle_en: "MP3 audiobooks from the SD card",
+        subtitle_it: "Audiolibri MP3 dalla scheda SD",
+        badge_en: "",
+        badge_it: "",
+        route: ScreenRoute::AudiobookLibrary,
     },
     MenuEntry {
         label_en: "Statistics",

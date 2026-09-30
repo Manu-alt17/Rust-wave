@@ -7,6 +7,7 @@ use crate::orientation::OrientedFrameBuffer;
 use super::{router::ScreenRoute, state::AppState};
 
 pub mod audio;
+pub mod audiobooks;
 pub mod category;
 pub mod clock;
 pub mod device_info;
@@ -39,6 +40,8 @@ pub fn render_active_screen(
         ScreenRoute::ReaderPreferences => reader::render_preferences(display, state),
         ScreenRoute::ReaderToc => reader::render_toc(display, state),
         ScreenRoute::ReadingStats => reading_stats::render_reading_stats(display, state),
+        ScreenRoute::AudiobookLibrary => audiobooks::render_audiobook_library(display, state),
+        ScreenRoute::AudiobookPlayer => audiobooks::render_audiobook_player(display, state),
         ScreenRoute::Clock => clock::render_clock(display, state),
         ScreenRoute::ClockSetTime => clock::render_clock_set_time(display, state),
         ScreenRoute::ClockDetails => clock::render_clock_details(display, state),

@@ -15,6 +15,7 @@ use embedded_iconoir::{
         actions::{InfoEmpty as CompactInfoEmpty, RefreshDouble as CompactRefreshDouble},
         activities::{BookStack as CompactBookStack, StatsReport as CompactStatsReport},
         audio::SoundLow as CompactSoundLow,
+        music::Headset as CompactHeadset,
         connectivity::Wifi as CompactWifi,
         docs::Folder as CompactFolder,
         editor::TextSize as CompactTextSize,
@@ -221,6 +222,9 @@ fn draw_route_icon_compact(
     match route {
         ScreenRoute::Library => {
             draw_iconoir_icon_scaled(display, top_left, &CompactBookStack::new(BinaryColor::On))
+        }
+        ScreenRoute::AudiobookLibrary => {
+            draw_iconoir_icon_scaled(display, top_left, &CompactHeadset::new(BinaryColor::On))
         }
         ScreenRoute::ReadingStats => {
             draw_iconoir_icon_scaled(display, top_left, &CompactStatsReport::new(BinaryColor::On))

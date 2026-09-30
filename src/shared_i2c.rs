@@ -1,21 +1,20 @@
-//! Single-threaded shared I2C bus adapter.
+//! Shared I2C bus adapter.
 //!
-//! The Waveshare sample places the PMIC, RTC, environmental sensor and IMU on
-//! one I2C bus. The first Rust milestones gave the bus exclusively to the PMIC
-//! because only the panel rail was required. This adapter keeps ownership
+//! The Waveshare sample places the PMIC, RTC, environmental sensor, IMU and
+//! the ES8311 audio codec on one I2C bus. This adapter keeps ownership
 //! explicit while allowing small protocol drivers to share that verified bus.
 
-use std::{cell::RefCell, rc::Rc};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use embedded_hal::i2c::{ErrorType, I2c, Operation};
 
-/// Cloneable single-threaded owner for one blocking I2C bus.
+/// Cloneable owner for one blocking I2C bus.
 ///
-/// The firmware event loop is synchronous, so transactions never overlap.
-/// `RefCell` protects against accidental nested mutable access during future
-/// extensions without introducing an async executor or RTOS mutex.
+/// Most drivers run on the firmware's main loop, but the audio engine
+/// drives the codec from its own thread, so each transaction takes a
+/// mutex: two transactions never interleave on the wire.
 pub struct SharedI2cBus<I2C> {
-    inner: Rc<RefCell<I2C>>,
+    inner: Arc<Mutex<I2C>>,
 }
 
 impl<I2C> SharedI2cBus<I2C> {
@@ -23,7 +22,7 @@ impl<I2C> SharedI2cBus<I2C> {
     #[must_use]
     pub fn new(i2c: I2C) -> Self {
         Self {
-            inner: Rc::new(RefCell::new(i2c)),
+            inner: Arc::new(Mutex::new(i2c)),
         }
     }
 }
@@ -31,7 +30,7 @@ impl<I2C> SharedI2cBus<I2C> {
 impl<I2C> Clone for SharedI2cBus<I2C> {
     fn clone(&self) -> Self {
         Self {
-            inner: Rc::clone(&self.inner),
+            inner: Arc::clone(&self.inner),
         }
     }
 }
@@ -52,7 +51,12 @@ where
         address: u8,
         operations: &mut [Operation<'_>],
     ) -> Result<(), Self::Error> {
-        self.inner.borrow_mut().transaction(address, operations)
+        // A panic mid-transaction leaves the bus itself usable: carry on
+        // with the guard rather than wedging every later caller.
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .transaction(address, operations)
     }
 }
 

@@ -91,3 +91,11 @@ esp_idf_tools_install_dir = "global"
 remote_component = { name = "espressif/esp_new_jpeg", version = "1.0.2" }
 bindings_header = "bindings/esp_new_jpeg.h"
 bindings_module = "esp_new_jpeg"
+
+# Helix fixed-point MP3 decoder (RealNetworks RPSL/RCSL), packaged for
+# ESP-IDF: the decoder the Waveshare audio examples for this board use.
+# Audiobook playback, see `audio::mp3`.
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "chmorgan/esp-libhelix-mp3", version = "1.0.3" }
+bindings_header = "bindings/libhelix_mp3.h"
+bindings_module = "libhelix_mp3"

@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod audiobook;
 pub mod board_services;
 pub mod boot_profile;
 pub mod build_info;

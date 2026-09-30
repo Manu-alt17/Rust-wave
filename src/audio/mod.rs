@@ -1,14 +1,20 @@
 //! Native audio domain for the Waveshare ESP32-S3 e-Paper 3.97 board.
 //!
-//! Test-tone playback through the ES8311 on the I2S0 TX channel.
-//! Host-testable state lives here; ESP-IDF wiring stays in [`espidf`].
+//! Test tone and audiobook playback through the ES8311 on the I2S0 TX
+//! channel. Host-testable state lives here; ESP-IDF wiring stays in
+//! [`espidf`] (codec and amplifier), [`mp3`] (decoder) and [`engine`]
+//! (the playback thread).
 
 pub mod tone;
 
 #[cfg(target_os = "espidf")]
 pub mod board_codec;
 #[cfg(target_os = "espidf")]
+pub mod engine;
+#[cfg(target_os = "espidf")]
 pub mod espidf;
+#[cfg(target_os = "espidf")]
+pub mod mp3;
 
 /// ES8311 seven-bit address when the CE strap is low.
 pub const ES8311_I2C_ADDRESS_LOW: u8 = 0x18;
@@ -16,12 +22,18 @@ pub const ES8311_I2C_ADDRESS_LOW: u8 = 0x18;
 pub const ES8311_I2C_ADDRESS_HIGH: u8 = 0x19;
 /// Eight-bit wire write address commonly printed by board reference material.
 pub const ES8311_WIRE_WRITE_ADDRESS_LOW: u8 = ES8311_I2C_ADDRESS_LOW << 1;
-/// Uploaded sample-app playback sample rate.
+/// Test tone sample rate.
 pub const AUDIO_SAMPLE_RATE_HZ: u32 = 16_000;
-/// Uploaded board BSP uses a 384 × sample-rate MCLK for its ES8311 path.
-pub const AUDIO_MCLK_MULTIPLE: u32 = 384;
-/// 16 kHz × 384 = 6.144 MHz.
+/// MCLK is 256 × the sample rate for every stream, the ratio the codec is
+/// set up for (see [`CODEC_REFERENCE_MCLK_HZ`]).
+pub const AUDIO_MCLK_MULTIPLE: u32 = 256;
+/// Test tone MCLK: 16 kHz × 256 = 4.096 MHz.
 pub const AUDIO_MCLK_HZ: u32 = AUDIO_SAMPLE_RATE_HZ * AUDIO_MCLK_MULTIPLE;
+/// The ES8311 clock table entry the codec is programmed from. Its dividers
+/// depend only on the 256× ratio, identical for every 256× entry in the
+/// table, so any sample rate with a 256× MCLK plays through it unchanged.
+pub const CODEC_REFERENCE_MCLK_HZ: u32 = 12_288_000;
+pub const CODEC_REFERENCE_SAMPLE_RATE_HZ: u32 = 48_000;
 /// Match the uploaded Waveshare playback BSP while keeping safe startup mute
 /// and amplifier-disable behavior until explicit playback begins.
 pub const DEFAULT_AUDIO_VOLUME_PERCENT: u8 = 60;
@@ -59,6 +71,7 @@ pub enum AudioPlaybackState {
     Muted,
     Ready,
     PlayingTestTone,
+    PlayingAudiobook,
     Error,
 }
 
@@ -70,6 +83,7 @@ impl AudioPlaybackState {
             Self::Muted => "MUTED",
             Self::Ready => "READY",
             Self::PlayingTestTone => "TEST TONE",
+            Self::PlayingAudiobook => "AUDIOBOOK",
             Self::Error => "ERROR",
         }
     }
@@ -118,6 +132,7 @@ impl AudioSnapshot {
             AudioPlaybackState::Muted => "MUTED",
             AudioPlaybackState::Ready => "READY",
             AudioPlaybackState::PlayingTestTone => "TEST",
+            AudioPlaybackState::PlayingAudiobook => "BOOK",
             AudioPlaybackState::Error => "ERROR",
         }
     }

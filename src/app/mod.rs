@@ -8,6 +8,7 @@ use core::convert::Infallible;
 
 use crate::{framebuffer::FrameBuffer, orientation::OrientedFrameBuffer};
 
+pub mod audiobooks;
 pub mod display;
 pub mod i18n;
 pub mod menu;
@@ -131,6 +132,51 @@ mod tests {
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Files);
         render_current_screen(&mut frame, &state).unwrap();
+    }
+
+    /// Sample audiobooks for the audiobook preview shots: one in progress
+    /// and playing, two never started.
+    fn seed_audiobooks(state: &mut AppState) {
+        use crate::audiobook::{
+            Audiobook, AudiobookTrack, ListeningPosition, NowPlaying, PlayerState,
+        };
+        let book = |key: &str, tracks: usize| Audiobook {
+            key: key.into(),
+            title: key.into(),
+            tracks: (1..=tracks)
+                .map(|index| AudiobookTrack {
+                    path: format!("/sdcard/RUSTMIX/AUDIO/{key}/{index:02}.mp3").into(),
+                    title: format!("{index:02} - Capitolo {index}"),
+                    size_bytes: 20_000_000,
+                })
+                .collect(),
+        };
+        let position = ListeningPosition {
+            track: 4,
+            byte_offset: 9_000_000,
+            position_ms: 1_325_000,
+        };
+        state
+            .audiobooks
+            .positions
+            .set("Il nome del vento", position);
+        state.audiobooks.set_library(Ok(vec![
+            book("Il nome del vento", 12),
+            book("L'amica geniale", 9),
+            book("Perché leggere i classici", 1),
+        ]));
+        state.audiobooks.now_playing = NowPlaying {
+            key: "Il nome del vento".into(),
+            title: "Il nome del vento".into(),
+            track: 4,
+            track_count: 12,
+            track_title: "05 - Capitolo 5".into(),
+            position,
+            duration_ms: 2_760_000,
+            state: PlayerState::Playing,
+            error: None,
+        };
+        state.audio.volume_percent = 60;
     }
 
     /// Sample Library books for the `library` preview shot: two
@@ -479,6 +525,24 @@ mod tests {
             ("files", |state| {
                 state.home_selected = home_index(ScreenRoute::Files);
                 state.apply(crate::buttons::ButtonEvent::Select);
+            }),
+            ("audiobooks", |state| {
+                seed_audiobooks(state);
+                state.router.navigate_to(ScreenRoute::AudiobookLibrary);
+            }),
+            ("audiobooks-empty", |state| {
+                state.audiobooks.set_library(Ok(Vec::new()));
+                state.router.navigate_to(ScreenRoute::AudiobookLibrary);
+            }),
+            ("audiobook-player", |state| {
+                seed_audiobooks(state);
+                state.router.navigate_to(ScreenRoute::AudiobookPlayer);
+            }),
+            ("audiobook-player-menu", |state| {
+                seed_audiobooks(state);
+                state.router.navigate_to(ScreenRoute::AudiobookPlayer);
+                state.audiobooks.open_menu();
+                state.audiobooks.apply_player(crate::buttons::ButtonEvent::Down);
             }),
             ("statistics-empty", |state| {
                 state.home_selected = home_index(ScreenRoute::ReadingStats);
