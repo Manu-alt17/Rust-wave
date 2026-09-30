@@ -29,7 +29,6 @@ copy_example() {
 }
 
 copy_example "$SRC/WIFI.TXT.example" "$DEST/WIFI.TXT"
-copy_example "$SRC/ALARMS.TXT.example" "$DEST/ALARMS.TXT"
 copy_example "$SRC/DISPLAY.TXT.example" "$DEST/DISPLAY.TXT"
 copy_example "$SRC/SLEEP/SLEEP.BMP" "$DEST/SLEEP/SLEEP.BMP"
 copy_example "$SRC/SLEEP/SLEEP01.BMP" "$DEST/SLEEP/SLEEP01.BMP"

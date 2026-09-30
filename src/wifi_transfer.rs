@@ -239,7 +239,6 @@ pub fn is_protected_portal_path(relative: &str) -> bool {
         upper.as_str(),
         "WIFI.TXT"
             | "CLOCK.TXT"
-            | "ALARMS.TXT"
             | "DISPLAY.TXT"
             | "VOICE/META.TXT"
             | "VOICE/SETTINGS.TXT"
@@ -1957,7 +1956,6 @@ mod tests {
     fn configuration_files_are_protected() {
         assert!(is_protected_portal_path("/WIFI.TXT"));
         assert!(is_protected_portal_path("CLOCK.TXT"));
-        assert!(is_protected_portal_path("ALARMS.TXT"));
         assert!(is_protected_portal_path("/VOICE/META.TXT"));
         assert!(is_protected_portal_path("VOICE/SETTINGS.TXT"));
         assert!(!is_protected_portal_path("/VOICE/VOICE001.WAV"));

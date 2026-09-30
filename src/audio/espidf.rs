@@ -119,10 +119,6 @@ where
         self.profile
     }
 
-    pub fn start_alarm_chime(&mut self) -> Result<()> {
-        self.begin_playback(ChimeMode::AlarmRepeat)
-    }
-
     /// Disable both I2S channels. ESP-IDF's I2S driver holds an
     /// `ESP_PM_APB_FREQ_MAX` power-management lock for as long as either
     /// channel is enabled (see `i2s_channel_enable` in
@@ -371,7 +367,6 @@ where
     fn begin_playback(&mut self, mode: ChimeMode) -> Result<()> {
         match mode {
             ChimeMode::TestOnce => self.chime.start_test_once(),
-            ChimeMode::AlarmRepeat => self.chime.start_alarm_repeat(),
             ChimeMode::Idle => self.chime.stop(),
         }
         self.codec
@@ -384,7 +379,6 @@ where
         self.snapshot.amplifier_enabled = true;
         self.snapshot.playback_state = match mode {
             ChimeMode::TestOnce => AudioPlaybackState::PlayingTestTone,
-            ChimeMode::AlarmRepeat => AudioPlaybackState::PlayingAlarm,
             ChimeMode::Idle => AudioPlaybackState::Ready,
         };
         self.snapshot.error = None;
@@ -409,9 +403,7 @@ where
             self.snapshot.amplifier_enabled = true;
         }
         self.snapshot.muted = muted;
-        self.snapshot.playback_state = if self.chime.mode() == ChimeMode::AlarmRepeat {
-            AudioPlaybackState::PlayingAlarm
-        } else if self.chime.mode() == ChimeMode::TestOnce {
+        self.snapshot.playback_state = if self.chime.mode() == ChimeMode::TestOnce {
             AudioPlaybackState::PlayingTestTone
         } else if voice_note_playing {
             AudioPlaybackState::PlayingVoiceNote

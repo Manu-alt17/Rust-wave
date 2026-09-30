@@ -194,20 +194,13 @@ pub fn render_device_info_runtime(
     line(
         display,
         206,
-        t(locale, "RTC alarms", "Sveglie RTC"),
-        state.alarms.home_badge(),
-        body,
-    )?;
-    line(
-        display,
-        246,
         t(locale, "Display zone", "Fuso orario"),
         &timezone,
         body,
     )?;
     line(
         display,
-        286,
+        246,
         t(locale, "Temperature", "Temperatura"),
         state.regional.temperature_unit.marker(),
         body,
@@ -242,13 +235,6 @@ pub fn render_device_info_runtime(
             "Hold menu / short sleep",
             "Pressione lunga menu / breve sospensione",
         ),
-        body,
-    )?;
-    line(
-        display,
-        572,
-        t(locale, "RTC alarm", "Sveglia RTC"),
-        t(locale, "GPIO45 active-low", "GPIO45 attivo basso"),
         body,
     )?;
     Text::new(

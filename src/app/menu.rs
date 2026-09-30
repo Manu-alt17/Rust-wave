@@ -209,8 +209,8 @@ const SETTINGS_ENTRIES: [MenuEntry; SETTINGS_ENTRY_COUNT] = [
     MenuEntry {
         label_en: "Audio",
         label_it: "Audio",
-        subtitle_en: "ES8311 playback and alarm chime",
-        subtitle_it: "Riproduzione ES8311 e suoneria sveglia",
+        subtitle_en: "ES8311 playback and volume",
+        subtitle_it: "Riproduzione ES8311 e volume",
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::Audio,

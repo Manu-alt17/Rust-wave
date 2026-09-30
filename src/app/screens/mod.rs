@@ -6,7 +6,6 @@ use crate::orientation::OrientedFrameBuffer;
 
 use super::{router::ScreenRoute, state::AppState};
 
-pub mod alarms;
 pub mod audio;
 pub mod category;
 pub mod clock;
@@ -62,7 +61,6 @@ pub fn render_active_screen(
         ScreenRoute::NetworkDetails => network::render_network_details(display, state),
         ScreenRoute::NetworkSaved => network::render_network_saved(display, state),
         ScreenRoute::WifiTransfer => network::render_wifi_transfer(display, state),
-        ScreenRoute::Alarms => alarms::render_alarms(display, state),
         ScreenRoute::Audio => audio::render_audio(display, state),
         ScreenRoute::AudioDetails => audio::render_audio_details(display, state),
         ScreenRoute::Files => files::render_files(display, state),

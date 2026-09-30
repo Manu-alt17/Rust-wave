@@ -4,7 +4,6 @@
 //! widgets and protocol helpers can be unit-tested on the host. ESP-IDF wiring
 //! remains isolated in `main.rs`.
 
-pub mod alarm;
 pub mod app;
 pub mod audio;
 pub mod board_services;
@@ -42,7 +41,6 @@ pub mod reader;
 pub mod reading_stats;
 pub mod regional;
 pub mod rtc;
-pub mod rtc_alarm_interrupt;
 pub mod runtime_memory;
 pub mod runtime_worker;
 pub mod shared_i2c;

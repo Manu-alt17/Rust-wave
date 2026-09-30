@@ -26,7 +26,6 @@ pub enum ScreenRoute {
     Files,
     Dictionary,
     UnitConverter,
-    Alarms,
     Audio,
     AudioDetails,
     Clock,
@@ -74,7 +73,6 @@ impl ScreenRoute {
             Self::Files => "File Browser",
             Self::Dictionary => "Dictionary",
             Self::UnitConverter => "Unit Converter",
-            Self::Alarms => "Alarms",
             Self::Audio => "Audio",
             Self::AudioDetails => "Audio details",
             Self::Clock => "Clock",
@@ -136,7 +134,6 @@ impl ScreenRoute {
                 Self::Files => "Esplora file",
                 Self::Dictionary => "Dizionario",
                 Self::UnitConverter => "Conv",
-                Self::Alarms => "Sveglie",
                 Self::Audio => "Audio",
                 Self::AudioDetails => "Dettagli audio",
                 Self::Clock => "Orologio",
@@ -185,7 +182,6 @@ impl ScreenRoute {
             Self::Files => "file-browser",
             Self::Dictionary => "dictionary",
             Self::UnitConverter => "unit-converter",
-            Self::Alarms => "alarms",
             Self::Audio => "audio",
             Self::AudioDetails => "audio-details",
             Self::Clock => "clock",
@@ -250,8 +246,7 @@ impl ScreenRoute {
             Self::VoiceNoteDetails | Self::VoiceNoteRecording => Some(Self::VoiceNotes),
             Self::Files | Self::Dictionary | Self::UnitConverter => Some(Self::Tools),
             Self::PowerKeyMenu => Some(Self::Home),
-            Self::Alarms
-            | Self::Audio
+            Self::Audio
             | Self::Clock
             | Self::Display
             | Self::Language
@@ -285,7 +280,6 @@ impl ScreenRoute {
                 | Self::NetworkDetails
                 | Self::NetworkSaved
                 | Self::WifiTransfer
-                | Self::Alarms
                 | Self::ReaderLoading
                 | Self::VoiceNoteRecording
         )

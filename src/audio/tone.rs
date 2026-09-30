@@ -1,8 +1,8 @@
 //! Fixed-point PCM chime generation.
 //!
 //! Avoid runtime floating-point trigonometry and large embedded PCM arrays.
-//! A small triangle oscillator is sufficient for an audible hardware test and
-//! alarm cadence while keeping host tests deterministic.
+//! A small triangle oscillator is sufficient for an audible hardware test
+//! while keeping host tests deterministic.
 
 use super::AUDIO_SAMPLE_RATE_HZ;
 
@@ -18,7 +18,6 @@ pub enum ChimeMode {
     #[default]
     Idle,
     TestOnce,
-    AlarmRepeat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,10 +57,6 @@ pub struct ChimeGenerator {
 impl ChimeGenerator {
     pub fn start_test_once(&mut self) {
         self.start(ChimeMode::TestOnce);
-    }
-
-    pub fn start_alarm_repeat(&mut self) {
-        self.start(ChimeMode::AlarmRepeat);
     }
 
     pub fn stop(&mut self) {
@@ -121,10 +116,8 @@ impl ChimeGenerator {
             self.segment_index += 1;
             if self.segment_index >= CHIME_SEGMENTS.len() {
                 self.segment_index = 0;
-                if self.mode == ChimeMode::TestOnce {
-                    self.mode = ChimeMode::Idle;
-                    *completed_test = true;
-                }
+                self.mode = ChimeMode::Idle;
+                *completed_test = true;
             }
         }
         sample
@@ -178,7 +171,7 @@ mod tests {
     #[test]
     fn mute_produces_silence() {
         let mut generator = ChimeGenerator::default();
-        generator.start_alarm_repeat();
+        generator.start_test_once();
         let mut bytes = [1_u8; PCM_CHUNK_BYTES];
         generator.fill_stereo_pcm(&mut bytes, 100, true);
         assert!(bytes.iter().all(|byte| *byte == 0));
@@ -192,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn one_shot_chime_finishes_but_alarm_repeats() {
+    fn one_shot_chime_finishes() {
         let mut generator = ChimeGenerator::default();
         generator.start_test_once();
         let mut bytes = [0_u8; PCM_CHUNK_BYTES];
@@ -202,11 +195,5 @@ mod tests {
         }
         assert!(completed);
         assert_eq!(generator.mode(), ChimeMode::Idle);
-
-        generator.start_alarm_repeat();
-        for _ in 0..100 {
-            generator.fill_stereo_pcm(&mut bytes, 20, false);
-        }
-        assert_eq!(generator.mode(), ChimeMode::AlarmRepeat);
     }
 }

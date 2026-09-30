@@ -15,8 +15,6 @@ use crate::app::ScreenRoute;
 pub enum SleepWakeCause {
     /// A second short power-key press toggled the device back to active mode.
     PowerKey,
-    /// A validated PCF85063 alarm occurred while the sleep image was visible.
-    RtcAlarm,
 }
 
 impl SleepWakeCause {
@@ -24,7 +22,6 @@ impl SleepWakeCause {
     pub const fn marker(self) -> &'static str {
         match self {
             Self::PowerKey => "power-key",
-            Self::RtcAlarm => "rtc-alarm",
         }
     }
 }
@@ -79,7 +76,7 @@ impl SleepModeState {
     }
 
     /// Exit sleep-image mode and return the route that should be restored for a
-    /// normal power-key wake. Alarm wake deliberately routes to Alarms instead.
+    /// normal power-key wake.
     pub fn exit(&mut self, _cause: SleepWakeCause) -> ScreenRoute {
         self.sleeping = false;
         self.restore_route

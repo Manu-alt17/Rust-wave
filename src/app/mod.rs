@@ -75,8 +75,6 @@ pub const VOICE_RECORD_SCREEN_REFRESH_SECONDS: u64 =
 /// real e-paper update takes far longer, so redraws triggered by generation
 /// progress must be throttled independently of how fast thumbnails build.
 pub const LIBRARY_THUMBNAIL_REFRESH_SECONDS: u64 = 2;
-/// Poll the PCF85063 alarm flag and domain schedule once per second.
-pub const ALARM_POLL_SECONDS: u64 = 1;
 /// Minimum continuous time on a reader-active route before Wi-Fi and the
 /// audio rail are suspended for battery savings. Long enough that briefly
 /// opening a book from Library and backing out doesn't thrash the radio.

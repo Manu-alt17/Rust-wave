@@ -39,15 +39,14 @@ mod firmware {
     };
     use log::{debug, info, warn};
     use waveshare_epd397_rust_app::{
-        alarm::{AlarmEngine, AlarmSnapshot, AlarmUiOutcome, ALARMS_CONFIG_PATH, ALARMS_ENABLED},
         boot_profile,
         app::{
             display::{DisplayPreferences, SleepScreenMode, DISPLAY_CONFIG_PATH},
             menu::{CategoryUsage, MENU_USAGE_CONFIG_PATH},
             render_current_screen,
             screens::reader::library_visible_books,
-            AppState, ScreenRoute, ALARM_POLL_SECONDS, AUTO_DEEP_SLEEP_ENABLED,
-            AUTO_DEEP_SLEEP_IDLE_SECONDS, DEV_BENCH_BUILD,
+            AppState, ScreenRoute, AUTO_DEEP_SLEEP_ENABLED, AUTO_DEEP_SLEEP_IDLE_SECONDS,
+            DEV_BENCH_BUILD,
             CHARGING_STATUS_POLL_SECONDS, IMU_EVENT_SCREEN_REFRESH_SECONDS,
             LIBRARY_THUMBNAIL_REFRESH_SECONDS,
             MOTION_LIVE_REFRESH_SECONDS, NETWORK_LIVE_REFRESH_SECONDS,
@@ -107,8 +106,6 @@ mod firmware {
             ReadingStatsTracker, STATS_DIRECTORY,
         },
         regional::{RegionalPreferences, CLOCK_CONFIG_PATH},
-        rtc::RtcDateTime,
-        rtc_alarm_interrupt::{espidf::RtcAlarmInterruptMonitor, RTC_ALARM_INTERRUPT_GPIO},
         power_profile::{self, PowerProfileTracker, POWER_PROFILE_LOG_SECONDS},
         runtime_memory::{debug_runtime_memory, log_runtime_memory},
         shared_i2c::SharedI2cBus,
@@ -357,12 +354,12 @@ mod firmware {
 
         // The e-paper panel and the I2C-driven PMIC rail that powers it are
         // constructed here (cheap: `Epaper397::new` only sets pin state, no
-        // I/O), well ahead of the display/network/alarm config loads
-        // and sensor bring-up below. Actually powering/initializing the
+        // I/O), well ahead of the display/network config loads and sensor
+        // bring-up below. Actually powering/initializing the
         // panel is deferred to right before the first real paint, same as
         // any other boot -- see the merged paint block further down.
         //
-        // PMIC (power key), RTC (alarms) and IMU all share this bus and are
+        // PMIC (power key), RTC and IMU all share this bus and are
         // polled continuously by the main loop regardless of which screen is
         // active. Without an explicit hardware timeout, esp-idf-hal's
         // embedded_hal::i2c::I2c impl blocks each transaction for BLOCK
@@ -589,13 +586,6 @@ mod firmware {
         };
 
         config_span.end();
-        // Alarms are loaded on demand, the first time their own screen is
-        // opened (`load_alarms_on_demand`): nothing the device normally lands
-        // on shows them, so reading their SD config here only delayed every
-        // boot. Until then no alarm is scheduled or polled, and no RTC alarm
-        // is programmed.
-        let mut alarm_engine = AlarmEngine::default();
-        let mut alarms_loaded = false;
         let mut board_services = BoardServices::new(shared_i2c.clone());
 
         // Schematic trace confirmed ALDO1, ALDO4, BLDO1, BLDO2, CPUSLDO,
@@ -627,14 +617,11 @@ mod firmware {
         debug!(
             "rustmix-wave=select-button-hold status=ready gpio=5 active-low=true short-press=confirm hold-ms={SELECT_LONG_PRESS_MS} long-press=contextual-navigation"
         );
-        // The uploaded BSP routes the PCF85063 active-low alarm output to
-        // GPIO45. Validate that board-level line before introducing MCU
-        // deep-sleep entry in the following isolated power milestone.
-        let mut rtc_alarm_interrupt =
-            RtcAlarmInterruptMonitor::new(PinDriver::input(peripherals.pins.gpio45, Pull::Up)?);
-        debug!(
-            "rustmix-wave=rtc-alarm-int status=ready gpio={RTC_ALARM_INTERRUPT_GPIO} active-low=true wake-policy=active-loop-readiness"
-        );
+        // The PCF85063 active-low alarm output is wired to GPIO45, a boot
+        // strapping pin. Nothing reads it any more (the RTC alarm stays
+        // disabled, see `disable_rtc_alarm` below), but the line keeps its
+        // pull-up so it never floats while the firmware runs.
+        let _rtc_alarm_int_line = PinDriver::input(peripherals.pins.gpio45, Pull::Up)?;
         // Every boot-time pin driver is configured by now (audio's are only
         // claimed later, lazily). Automatic light sleep has been allowed
         // since `esp_pm_configure` at the top of `run`, so keep the awake
@@ -789,7 +776,6 @@ mod firmware {
                 );
             }
         }
-        state.update_alarm_snapshot(alarm_engine.snapshot());
         state.update_storage_snapshot(storage_browser.snapshot());
         log_storage_snapshot(&state.storage);
         debug!(
@@ -803,6 +789,13 @@ mod firmware {
         appstate_span.end();
         let board_init_span = boot_profile::span("board-services-init");
         let init = board_services.initialize(&mut service_delay);
+        // This firmware has no alarms, but an earlier one (or the factory
+        // image) may have left the PCF85063 alarm armed. Its interrupt line
+        // is GPIO45, a boot strapping pin, so keep it disabled and its flag
+        // clear from the first boot on.
+        if let Err(error) = board_services.disable_rtc_alarm() {
+            warn!("rustmix-wave=rtc-alarm-disable status=failed reason=boot error={error:#}");
+        }
         board_init_span.end();
         debug!(
             "rustmix-wave=sample-board-services-init rtc={} environment={} power={} imu={} rtc-integrity-lost={} shtc3-id={} qmi8658-address={} qmi8658-revision={}",
@@ -922,7 +915,7 @@ mod firmware {
         panel_finish_span.end();
         // This is the single global refresh that shows the real first
         // screen, on every boot cause. None of the work above (display/
-        // network/alarm config loads, board services, the
+        // network config loads, board services, the
         // reader-resume decision) touches the panel, and none of it affects
         // what Home/Reader draws either (Home's menu tiles are a static
         // const list, and reader/voice/audio state isn't read by Home), so
@@ -1057,14 +1050,13 @@ mod firmware {
         // codec-to-ESP DIN GPIO21 and amplifier GPIO39.
         //
         // This used to probe and configure the codec unconditionally at
-        // boot. It's deferred now: most boots never touch Voice Notes, the
-        // Audio screen, or ring an alarm, so most boots paid for several
-        // I2C/I2S setup calls (including the I2C rail's own settle time) for
-        // nothing. The I2S0/pin peripherals are only *moved* out of
-        // `peripherals` here -- a plain field move, no I/O -- and held until
-        // `try_bring_up_audio` below is actually called, from one of three
-        // sites further down: entering Voice Notes, entering Audio, or an
-        // alarm about to chime. `audio_runtime` starts at `None`, and
+        // boot. It's deferred now: most boots never touch Voice Notes or the
+        // Audio screen, so most boots paid for several I2C/I2S setup calls
+        // (including the I2C rail's own settle time) for nothing. The
+        // I2S0/pin peripherals are only *moved* out of `peripherals` here --
+        // a plain field move, no I/O -- and held until `try_bring_up_audio`
+        // below is actually called, from one of two sites further down:
+        // entering Voice Notes or entering Audio. `audio_runtime` starts at `None`, and
         // `state.audio` at its `AudioSnapshot::default()`, which already
         // reads "has not been initialized" rather than an error.
         let mut audio_peripherals = Some((
@@ -1078,7 +1070,7 @@ mod firmware {
         ));
         let shared_i2c_for_audio = shared_i2c.clone();
         // Takes the peripherals at most once (`.take()`): later calls, once
-        // Voice Notes/Audio/an alarm have already triggered one attempt,
+        // Voice Notes or Audio have already triggered one attempt,
         // just see `None` and no-op, matching the old single-attempt-at-boot
         // behavior, just moved to whenever that attempt first happens.
         let mut try_bring_up_audio = move || -> Option<Result<AudioRuntime<'_, _>>> {
@@ -1119,8 +1111,8 @@ mod firmware {
             })())
         };
         let mut audio_runtime: Option<AudioRuntime<'_, SharedI2cBus<I2cDriver<'_>>>> = None;
-        // Shared by the three lazy-init call sites below (entering Voice
-        // Notes, entering Audio, an alarm about to chime): turns the
+        // Shared by the two lazy-init call sites below (entering Voice
+        // Notes, entering Audio): turns the
         // deferred `try_bring_up_audio` attempt above into an updated
         // `audio_runtime`/`state.audio`, doing nothing if audio is already
         // up (`Some`) or was already attempted once and failed (the closure
@@ -1242,7 +1234,6 @@ mod firmware {
         let mut last_status_refresh = Instant::now();
         let mut last_charging_poll = Instant::now();
         let mut last_displayed_charging = state.battery_charging();
-        let mut last_alarm_poll = Instant::now();
         let mut last_power_key_poll = Instant::now();
         let mut last_ota_check_attempt: Option<Instant> = None;
         let mut ota_self_test_confirmed = false;
@@ -1708,9 +1699,7 @@ mod firmware {
                                     && state.panel_awake
                                     && matches!(
                                         state.active_route(),
-                                        ScreenRoute::Audio
-                                            | ScreenRoute::AudioDetails
-                                            | ScreenRoute::Alarms
+                                        ScreenRoute::Audio | ScreenRoute::AudioDetails
                                     )
                                 {
                                     refresh_screen(
@@ -1751,12 +1740,6 @@ mod firmware {
                     }
                     state.update_board_snapshot(board_services.read_light_snapshot());
                     log_board_snapshot(state.board, state.regional);
-                    if let Some(rtc) = state.board.rtc.filter(|_| alarms_loaded) {
-                        alarm_engine.recompute_next(state.regional.localize_rtc(rtc));
-                        sync_alarm_hardware(&mut alarm_engine, &mut board_services, state.regional);
-                        state.update_alarm_snapshot(alarm_engine.snapshot());
-                        log_alarm_snapshot(&state.alarms);
-                    }
                     // Diagnostic for the OTA-worker internal-RAM fragmentation
                     // investigation: captures the heap right as Wi-Fi finishes
                     // associating and SNTP completes, to see how much of the
@@ -1792,9 +1775,7 @@ mod firmware {
 
             // Reader battery power-save: Wi-Fi and the audio rail are cut
             // after a grace period of continuous dwell on a reader-active
-            // route, and restored the moment the user leaves it (or, for
-            // audio, right before an alarm chime needs to play -- see the
-            // explicit resume call ahead of `start_alarm_chime` below).
+            // route, and restored the moment the user leaves it.
             let route_is_reader_active = state.active_route().is_reader_active();
             if route_is_reader_active {
                 if reader_route_active_since.is_none() {
@@ -1848,7 +1829,6 @@ mod firmware {
 
             let audio_idle = voice_recording.is_none()
                 && voice_playback.is_none()
-                && state.alarms.active.is_none()
                 && audio_runtime.as_ref().map_or(true, |runtime| {
                     matches!(
                         runtime.snapshot().playback_state,
@@ -1907,157 +1887,6 @@ mod firmware {
                     ),
                 }
                 imu_low_power_for_reading = false;
-            }
-
-            if ALARMS_ENABLED
-                && alarm_engine.should_poll()
-                && last_alarm_poll.elapsed() >= Duration::from_secs(ALARM_POLL_SECONDS)
-            {
-                match board_services.read_rtc() {
-                    Ok(rtc) => {
-                        let local = state.regional.localize_rtc(rtc);
-                        let interrupt_sample = rtc_alarm_interrupt.sample();
-                        if interrupt_sample.changed {
-                            info!(
-                                "rustmix-wave=rtc-alarm-int status={} gpio={RTC_ALARM_INTERRUPT_GPIO} level={}",
-                                interrupt_sample.level.marker(),
-                                interrupt_sample.level.raw_level_marker()
-                            );
-                        }
-                        let hardware_flag = match board_services.take_rtc_alarm_flag() {
-                            Ok(flag) => flag,
-                            Err(error) => {
-                                warn!("rustmix-wave=rtc-alarm-flag status=unavailable error={error:#}");
-                                false
-                            }
-                        };
-                        let outcome =
-                            alarm_engine.poll(local, hardware_flag || interrupt_sample.asserted());
-                        if outcome.schedule_changed {
-                            sync_alarm_hardware(
-                                &mut alarm_engine,
-                                &mut board_services,
-                                state.regional,
-                            );
-                        }
-                        state.update_alarm_snapshot(alarm_engine.snapshot());
-                        if outcome.triggered {
-                            if let Some(active) = voice_recording.take() {
-                                let _ = active.cancel();
-                                if let Some(runtime) = audio_runtime.as_mut() {
-                                    let _ = runtime.finish_voice_recording();
-                                    state.update_audio_snapshot(runtime.snapshot());
-                                }
-                                state.voice_notes.cancel_recording();
-                                info!("rustmix-wave=voice-record status=cancelled reason=alarm-trigger");
-                            }
-                            if voice_playback.is_some() {
-                                stop_voice_note_playback(
-                                    &mut voice_playback,
-                                    &mut audio_runtime,
-                                    &mut state,
-                                    "alarm-trigger",
-                                );
-                            }
-                            info!(
-                                "rustmix-wave=alarm-triggered active={} local={} hardware-flag={hardware_flag} interrupt-low={}",
-                                state.alarms.active.as_ref().map_or("alarm", |active| active.name.as_str()),
-                                local.date_time(),
-                                interrupt_sample.asserted()
-                            );
-                            if audio_suspended_for_reading {
-                                info!(
-                                    "rustmix-wave=reader-power-save status=audio-resume-for-alarm"
-                                );
-                                resume_audio_after_reading(
-                                    &mut audio_runtime,
-                                    &mut misc_power,
-                                    &mut state,
-                                    &mut service_delay,
-                                );
-                                audio_suspended_for_reading = false;
-                            }
-                            // Lazy audio bring-up's third trigger: a ringing
-                            // alarm is the one case that needs sound with no
-                            // screen visit at all. No-ops if Voice Notes or
-                            // Audio already brought the codec up earlier this
-                            // session, or if this was already attempted once.
-                            ensure_audio_runtime(&mut audio_runtime, &mut state, &mut misc_power);
-                            if let Some(runtime) = audio_runtime.as_mut() {
-                                match runtime.start_alarm_chime() {
-                                    Ok(()) => {
-                                        info!("rustmix-wave=audio-event outcome=alarm-chime-start")
-                                    }
-                                    Err(error) => {
-                                        warn!("rustmix-wave=audio-event outcome=alarm-chime-failed error={error:#}");
-                                        runtime.record_failure(format!("{error:#}"));
-                                    }
-                                }
-                                state.update_audio_snapshot(runtime.snapshot());
-                                log_audio_snapshot(&state.audio);
-                            } else {
-                                warn!("rustmix-wave=audio-event outcome=alarm-chime-unavailable fallback=visual-only");
-                            }
-                            let woke_from_sleep = !state.panel_awake;
-                            if sleep_mode.is_sleeping() {
-                                let _ = sleep_mode.exit(SleepWakeCause::RtcAlarm);
-                                sleep_wake_guard.reset_after_wake();
-                                sleep_wake_guard_started_at = None;
-                                info!("rustmix-wave=sleep-mode-exit cause=rtc-alarm restore-route=alarms");
-                            }
-                            if woke_from_sleep {
-                                panel.initialize()?;
-                                state.panel_awake = true;
-                                panel_refresh
-                                    .reset_after_external_global(PanelGlobalReason::AfterWake);
-                                sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
-                                if let Err(error) = board_services.wake_imu() {
-                                    warn!(
-                                        "rustmix-wave=imu-suspend status=resume-failed error={error:#}"
-                                    );
-                                }
-                            }
-                            state.router.navigate_to(ScreenRoute::Alarms);
-                            info!("rustmix-wave=screen-route route=alarms cause=alarm-trigger");
-                            if woke_from_sleep {
-                                info!(
-                                    "rustmix-wave=wake-global-refresh reason=rtc-alarm-sleep-image"
-                                );
-                            }
-                            refresh_screen(
-                                &mut panel,
-                                &mut frame,
-                                &mut state,
-                                &mut panel_refresh,
-                                if woke_from_sleep {
-                                    RefreshRequest::ForceGlobalAfterWake
-                                } else {
-                                    RefreshRequest::Normal
-                                },
-                            )?;
-                            if sleep_network.is_suspended() {
-                                resume_network(
-                                    &mut network_runtime,
-                                    network_config.as_ref(),
-                                    &mut state,
-                                    &mut sleep_network,
-                                    &mut last_network_fingerprint,
-                                    &mut last_network_log,
-                                    "sleep-image",
-                                );
-                            }
-                            wifi_suspended_for_reading = false;
-                            imu_low_power_for_reading = false;
-                            reader_route_active_since = None;
-                            last_activity = Instant::now();
-                            last_status_refresh = Instant::now();
-                        }
-                    }
-                    Err(error) => {
-                        warn!("rustmix-wave=rtc-alarm-poll status=unavailable error={error:#}")
-                    }
-                }
-                last_alarm_poll = Instant::now();
             }
 
             if sleep_mode.is_sleeping() {
@@ -2153,30 +1982,20 @@ mod firmware {
                             last_activity = Instant::now();
                             last_status_refresh = Instant::now();
                         } else if event == PowerKeyEvent::LongPress {
-                            if state.alarms.active.is_some() {
-                                warn!(
-                                    "rustmix-wave=power-key-menu outcome=rejected reason=active-alarm"
-                                );
-                            } else {
-                                state.open_power_key_menu();
-                                refresh_screen(
-                                    &mut panel,
-                                    &mut frame,
-                                    &mut state,
-                                    &mut panel_refresh,
-                                    RefreshRequest::Normal,
-                                )?;
-                                info!(
-                                    "rustmix-wave=power-key-menu outcome=opened return-route={}",
-                                    state.power_key_sleep_restore_route().marker()
-                                );
-                                last_activity = Instant::now();
-                                last_status_refresh = Instant::now();
-                            }
-                        } else if state.alarms.active.is_some() {
-                            warn!(
-                                "rustmix-wave=sleep-mode-enter status=rejected reason=active-alarm"
+                            state.open_power_key_menu();
+                            refresh_screen(
+                                &mut panel,
+                                &mut frame,
+                                &mut state,
+                                &mut panel_refresh,
+                                RefreshRequest::Normal,
+                            )?;
+                            info!(
+                                "rustmix-wave=power-key-menu outcome=opened return-route={}",
+                                state.power_key_sleep_restore_route().marker()
                             );
+                            last_activity = Instant::now();
+                            last_status_refresh = Instant::now();
                         } else {
                             enter_deep_sleep_mode(
                                 &mut panel,
@@ -2229,7 +2048,6 @@ mod firmware {
             // repeat call every subsequent loop tick.
             if AUTO_DEEP_SLEEP_ENABLED
                 && !sleep_mode.is_sleeping()
-                && state.alarms.active.is_none()
                 && last_activity.elapsed() >= Duration::from_secs(AUTO_DEEP_SLEEP_IDLE_SECONDS)
             {
                 info!(
@@ -3003,42 +2821,6 @@ mod firmware {
                         let previous_regional = state.regional;
                         if previous_route == ScreenRoute::Files {
                             apply_storage_event(&mut storage_browser, &mut state, event);
-                        } else if previous_route == ScreenRoute::Alarms {
-                            let local = state.board.rtc.map_or_else(fallback_local_time, |rtc| {
-                                state.regional.localize_rtc(rtc)
-                            });
-                            let outcome =
-                                apply_alarm_event(&mut alarm_engine, &mut state, event, local);
-                            if matches!(
-                                outcome,
-                                AlarmUiOutcome::Saved
-                                    | AlarmUiOutcome::Snoozed
-                                    | AlarmUiOutcome::Dismissed
-                            ) {
-                                sync_alarm_hardware(
-                                    &mut alarm_engine,
-                                    &mut board_services,
-                                    state.regional,
-                                );
-                                state.update_alarm_snapshot(alarm_engine.snapshot());
-                                log_alarm_snapshot(&state.alarms);
-                            }
-                            if matches!(
-                                outcome,
-                                AlarmUiOutcome::Snoozed | AlarmUiOutcome::Dismissed
-                            ) {
-                                if let Some(runtime) = audio_runtime.as_mut() {
-                                    match runtime.stop_playback() {
-                                Ok(()) => info!("rustmix-wave=audio-event outcome=alarm-chime-stop reason={outcome:?}"),
-                                Err(error) => {
-                                    warn!("rustmix-wave=audio-event outcome=alarm-chime-stop-failed error={error:#}");
-                                    runtime.record_failure(format!("{error:#}"));
-                                }
-                            }
-                                    state.update_audio_snapshot(runtime.snapshot());
-                                    log_audio_snapshot(&state.audio);
-                                }
-                            }
                         } else if previous_route == ScreenRoute::Audio {
                             if let Some(request) = state.apply_audio_button(event) {
                                 apply_audio_request(&mut audio_runtime, &mut state, request);
@@ -3046,14 +2828,6 @@ mod firmware {
                         } else {
                             state.apply(event);
                             record_reader_page_turn(&mut state, &mut reading_stats_tracker);
-                            if !alarms_loaded && state.active_route() == ScreenRoute::Alarms {
-                                load_alarms_on_demand(
-                                    &mut alarm_engine,
-                                    &mut board_services,
-                                    &mut state,
-                                );
-                                alarms_loaded = true;
-                            }
                             if state.active_route() == ScreenRoute::Files {
                                 storage_browser.refresh();
                                 state.update_storage_snapshot(storage_browser.snapshot());
@@ -3136,7 +2910,6 @@ mod firmware {
                         apply_clock_set_time_ui_request(
                             &mut board_services,
                             &mut service_delay,
-                            &mut alarm_engine,
                             &mut state,
                         );
                         apply_clock_set_timezone_ui_request(&mut network_config, &mut state);
@@ -4037,15 +3810,13 @@ mod firmware {
             "rustmix-wave=mcu-deep-sleep status=entering wake-gpio={} wake-level=active-low rtc-alarm-wake=disabled reason=gpio45-not-rtc-io-capable shutdown=pmic fallback=deep-sleep",
             mcu_deep_sleep::DEEP_SLEEP_WAKE_GPIO
         );
-        // Disarm the PCF85063 hardware alarm slot before powering down. It
-        // can never wake real MCU deep sleep (GPIO45 is outside the RTC IO
-        // range), so leaving it armed only risks the alarm firing while the
-        // CPU is off: its interrupt line would then latch low on GPIO45 --
-        // one of the ESP32-S3's boot strapping pins (VDD_SPI voltage
-        // select) -- and stay that way until re-sampled at the next reset,
-        // which can corrupt the GPIO5 wake boot. The next boot's
-        // `sync_alarm_hardware` call re-arms it for software polling, which
-        // is the only path that ever actually rings the alarm.
+        // Disarm the PCF85063 hardware alarm slot before powering down
+        // (it is also disarmed at every boot). It can never wake real MCU
+        // deep sleep (GPIO45 is outside the RTC IO range), so an alarm left
+        // armed only risks firing while the CPU is off: its interrupt line
+        // would then latch low on GPIO45 -- one of the ESP32-S3's boot
+        // strapping pins (VDD_SPI voltage select) -- and stay that way until
+        // re-sampled at the next reset, which can corrupt the GPIO5 wake boot.
         if let Err(error) = board_services.disable_rtc_alarm() {
             warn!(
                 "rustmix-wave=rtc-alarm-disable status=failed reason=pre-deep-sleep error={error:#}"
@@ -4247,39 +4018,11 @@ mod firmware {
         }
     }
 
-    fn apply_alarm_event(
-        engine: &mut AlarmEngine,
-        state: &mut AppState,
-        event: ButtonEvent,
-        now_local: RtcDateTime,
-    ) -> AlarmUiOutcome {
-        if event == ButtonEvent::Select {
-            state.note_select_press();
-        }
-        let outcome = engine.apply_button(event, now_local);
-        if outcome == AlarmUiOutcome::ReturnHome {
-            state.router.back();
-        }
-        state.update_alarm_snapshot(engine.snapshot());
-        info!(
-            "rustmix-wave=alarm-ui-event outcome={outcome:?} active={} schedules={} selected={} next={} hardware-programmed={}",
-            state.alarms.active.is_some(),
-            state.alarms.alarms.len(),
-            state.alarms.selected,
-            state.alarms.next_label(),
-            state.alarms.hardware_programmed
-        );
-        outcome
-    }
-
     /// Persist a manually edited local wall-clock value committed from the
-    /// Clock screen's Set Date & Time editor and refresh dependent state:
-    /// the board snapshot and, since alarm scheduling depends on the wall
-    /// clock, the alarm engine's next occurrence and hardware programming.
+    /// Clock screen's Set Date & Time editor and refresh the board snapshot.
     fn apply_clock_set_time_ui_request<I2C, D>(
         board_services: &mut BoardServices<I2C>,
         service_delay: &mut D,
-        alarm_engine: &mut AlarmEngine,
         state: &mut AppState,
     ) where
         I2C: embedded_hal::i2c::I2c,
@@ -4298,12 +4041,6 @@ mod firmware {
         }
         state.update_board_snapshot(board_services.read_snapshot(service_delay));
         log_board_snapshot(state.board, state.regional);
-        if let Some(rtc) = state.board.rtc {
-            alarm_engine.recompute_next(state.regional.localize_rtc(rtc));
-            sync_alarm_hardware(alarm_engine, board_services, state.regional);
-            state.update_alarm_snapshot(alarm_engine.snapshot());
-            log_alarm_snapshot(&state.alarms);
-        }
     }
 
     /// Sync a timezone committed from the Clock screen's Set Date & Time
@@ -4436,11 +4173,6 @@ mod firmware {
                     warn!("rustmix-wave=voice-record status=rejected reason=wifi-transfer-active");
                     return;
                 }
-                if state.alarms.active.is_some() {
-                    state.voice_notes.fail("Alarm active");
-                    warn!("rustmix-wave=voice-record status=rejected reason=active-alarm");
-                    return;
-                }
                 if playback.is_some() {
                     stop_voice_note_playback(playback, audio_runtime, state, "recording-start");
                 }
@@ -4550,11 +4282,6 @@ mod firmware {
                         .voice_notes
                         .fail("Stop Wi-Fi Transfer before playback");
                     warn!("rustmix-wave=voice-note-playback status=rejected reason=wifi-transfer-active");
-                    return;
-                }
-                if state.alarms.active.is_some() {
-                    state.voice_notes.fail("Alarm active");
-                    warn!("rustmix-wave=voice-note-playback status=rejected reason=active-alarm");
                     return;
                 }
                 let Some(file_name) = state
@@ -4691,89 +4418,6 @@ mod firmware {
                 state.refresh_voice_notes_catalog();
                 refresh_voice_note_storage_available(state, mounted);
             }
-        }
-    }
-
-    /// Read ALARMS.TXT the first time the Alarms screen is opened, then
-    /// schedule and program the RTC exactly as boot used to. Alarms are not
-    /// loaded at boot at all (see where `alarm_engine` is created), so until
-    /// this runs none are polled or armed.
-    fn load_alarms_on_demand<I2C>(
-        engine: &mut AlarmEngine,
-        board_services: &mut BoardServices<I2C>,
-        state: &mut AppState,
-    ) where
-        I2C: embedded_hal::i2c::I2c,
-        I2C::Error: core::fmt::Debug,
-    {
-        *engine = match AlarmEngine::load_from_path(ALARMS_CONFIG_PATH) {
-            Ok(engine) => {
-                info!(
-                    "rustmix-wave=alarm-config status=ready path={ALARMS_CONFIG_PATH} schedules={} load=on-demand",
-                    engine.snapshot().alarms.len()
-                );
-                engine
-            }
-            Err(error) => {
-                warn!(
-                    "rustmix-wave=alarm-config status=unavailable path={ALARMS_CONFIG_PATH} error={error:#}"
-                );
-                AlarmEngine::unavailable(format!("{error:#}"))
-            }
-        };
-        if let Some(rtc) = state.board.rtc {
-            engine.recompute_next(state.regional.localize_rtc(rtc));
-        }
-        sync_alarm_hardware(engine, board_services, state.regional);
-        state.update_alarm_snapshot(engine.snapshot());
-        log_alarm_snapshot(&state.alarms);
-    }
-
-    fn sync_alarm_hardware<I2C>(
-        engine: &mut AlarmEngine,
-        board_services: &mut BoardServices<I2C>,
-        regional: RegionalPreferences,
-    ) where
-        I2C: embedded_hal::i2c::I2c,
-        I2C::Error: core::fmt::Debug,
-    {
-        if let Some(next) = engine.next_occurrence().filter(|_| ALARMS_ENABLED) {
-            let stored = regional.local_to_rtc(next.local);
-            match board_services.program_rtc_alarm(stored) {
-                Ok(()) => {
-                    engine.set_hardware_programmed(true);
-                    info!(
-                        "rustmix-wave=rtc-alarm-program status=armed local={} stored={} snooze={}",
-                        next.local.date_time(),
-                        stored.date_time(),
-                        next.snooze
-                    );
-                }
-                Err(error) => {
-                    engine.set_hardware_programmed(false);
-                    warn!("rustmix-wave=rtc-alarm-program status=failed error={error:#}");
-                }
-            }
-        } else {
-            match board_services.disable_rtc_alarm() {
-                Ok(()) => {
-                    engine.set_hardware_programmed(false);
-                    info!("rustmix-wave=rtc-alarm-program status=idle");
-                }
-                Err(error) => warn!("rustmix-wave=rtc-alarm-disable status=failed error={error:#}"),
-            }
-        }
-    }
-
-    fn fallback_local_time() -> RtcDateTime {
-        RtcDateTime {
-            year: 2000,
-            month: 1,
-            day: 1,
-            weekday: 6,
-            hour: 0,
-            minute: 0,
-            second: 0,
         }
     }
 
@@ -5178,19 +4822,6 @@ mod firmware {
             snapshot.muted,
             snapshot.volume_percent,
             snapshot.playback_state.label(),
-            snapshot.error.as_deref().unwrap_or("none")
-        );
-    }
-
-    fn log_alarm_snapshot(snapshot: &AlarmSnapshot) {
-        info!(
-            "rustmix-wave=alarm-snapshot schedules={} active={} selected={} next={} snooze-minutes={} hardware-programmed={} error={}",
-            snapshot.alarms.len(),
-            snapshot.active.as_ref().map_or("none", |active| active.name.as_str()),
-            snapshot.selected,
-            snapshot.next_label(),
-            snapshot.snooze_minutes,
-            snapshot.hardware_programmed,
             snapshot.error.as_deref().unwrap_or("none")
         );
     }

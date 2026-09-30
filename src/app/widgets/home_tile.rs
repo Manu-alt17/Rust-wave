@@ -21,10 +21,7 @@ use embedded_iconoir::{
         docs::{Folder as CompactFolder, MultiplePages as CompactMultiplePages},
         editor::TextSize as CompactTextSize,
         navigation::Compass as CompactCompass,
-        other::{
-            Alarm as CompactAlarm, Clock as CompactClock, Import as CompactImport,
-            Language as CompactLanguage,
-        },
+        other::{Clock as CompactClock, Import as CompactImport, Language as CompactLanguage},
         system::{Calculator as CompactCalculator, Settings as CompactSettingsIcon},
     },
     prelude::IconoirNewIcon,
@@ -244,9 +241,6 @@ fn draw_route_icon_compact(
             top_left,
             &CompactSettingsIcon::new(BinaryColor::On),
         ),
-        ScreenRoute::Alarms => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactAlarm::new(BinaryColor::On))
-        }
         ScreenRoute::Audio => {
             draw_iconoir_icon_scaled(display, top_left, &CompactSoundLow::new(BinaryColor::On))
         }

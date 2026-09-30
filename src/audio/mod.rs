@@ -1,6 +1,6 @@
 //! Native audio domain for the Waveshare ESP32-S3 e-Paper 3.97 board.
 //!
-//! Alarm/test-tone playback and Voice Notes microphone capture share one
+//! Test-tone playback and Voice Notes microphone capture share one
 //! ES8311 / I2S0 owner. Compressed audio and SD-backed music playback remain
 //! out of scope. Host-testable state lives here; ESP-IDF wiring stays in
 //! [`espidf`].
@@ -11,8 +11,6 @@ pub mod tone;
 pub mod board_codec;
 #[cfg(target_os = "espidf")]
 pub mod espidf;
-
-use crate::regional::Locale;
 
 /// ES8311 seven-bit address when the CE strap is low.
 pub const ES8311_I2C_ADDRESS_LOW: u8 = 0x18;
@@ -63,7 +61,6 @@ pub enum AudioPlaybackState {
     Muted,
     Ready,
     PlayingTestTone,
-    PlayingAlarm,
     PlayingVoiceNote,
     RecordingVoiceNote,
     Error,
@@ -77,7 +74,6 @@ impl AudioPlaybackState {
             Self::Muted => "MUTED",
             Self::Ready => "READY",
             Self::PlayingTestTone => "TEST TONE",
-            Self::PlayingAlarm => "ALARM CHIME",
             Self::PlayingVoiceNote => "VOICE NOTE",
             Self::RecordingVoiceNote => "VOICE RECORD",
             Self::Error => "ERROR",
@@ -128,46 +124,9 @@ impl AudioSnapshot {
             AudioPlaybackState::Muted => "MUTED",
             AudioPlaybackState::Ready => "READY",
             AudioPlaybackState::PlayingTestTone => "TEST",
-            AudioPlaybackState::PlayingAlarm => "RING",
             AudioPlaybackState::PlayingVoiceNote => "NOTE",
             AudioPlaybackState::RecordingVoiceNote => "REC",
             AudioPlaybackState::Error => "ERROR",
-        }
-    }
-
-    #[must_use]
-    pub const fn alarm_label(&self) -> &'static str {
-        match self.playback_state {
-            AudioPlaybackState::PlayingAlarm => "Audible alarm chime is active.",
-            AudioPlaybackState::PlayingVoiceNote => "Saved voice-note playback owns the codec.",
-            AudioPlaybackState::RecordingVoiceNote => "Voice-note recording owns the codec.",
-            AudioPlaybackState::Unavailable | AudioPlaybackState::Error => {
-                "Audio unavailable - visual alarm only."
-            }
-            _ => "Audio is ready for the alarm chime.",
-        }
-    }
-
-    /// Locale-aware sibling of [`Self::alarm_label`]. `alarm_label` itself is
-    /// left untouched because `src/main.rs`'s serial diagnostics logging
-    /// depends on its English output staying stable.
-    #[must_use]
-    pub const fn alarm_label_i18n(&self, locale: Locale) -> &'static str {
-        match locale {
-            Locale::English => self.alarm_label(),
-            Locale::Italian => match self.playback_state {
-                AudioPlaybackState::PlayingAlarm => "La suoneria della sveglia è attiva.",
-                AudioPlaybackState::PlayingVoiceNote => {
-                    "La riproduzione di una nota vocale occupa il codec."
-                }
-                AudioPlaybackState::RecordingVoiceNote => {
-                    "La registrazione di una nota vocale occupa il codec."
-                }
-                AudioPlaybackState::Unavailable | AudioPlaybackState::Error => {
-                    "Audio non disponibile - solo allarme visivo."
-                }
-                _ => "L'audio è pronto per la suoneria della sveglia.",
-            },
         }
     }
 
@@ -222,10 +181,9 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_audio_falls_back_to_visual_alarm() {
+    fn unavailable_audio_reports_no_audio() {
         let snapshot = AudioSnapshot::unavailable("codec absent");
         assert_eq!(snapshot.playback_state, AudioPlaybackState::Unavailable);
         assert_eq!(snapshot.home_badge(), "NO AUD");
-        assert!(snapshot.alarm_label().contains("visual alarm"));
     }
 }

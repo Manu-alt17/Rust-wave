@@ -1,13 +1,9 @@
 //! Real ESP32-S3 hardware deep sleep entry and GPIO wakeup.
 //!
-//! GPIO45, the PCF85063 RTC alarm interrupt line documented in
-//! [`crate::rtc_alarm_interrupt`], sits outside the ESP32-S3's RTC IO range
-//! (GPIO0-21) and cannot be configured as an `ext1` deep-sleep wakeup source.
-//! Real hardware deep sleep therefore wakes on the rotary SELECT key (GPIO5)
-//! only; a PCF85063 alarm cannot wake the board once it is in hardware deep
-//! sleep. This is an accepted product trade-off, not an oversight: the
-//! short-press sleep path always arms real deep sleep, even while an alarm is
-//! enabled.
+//! Real hardware deep sleep wakes on the SELECT key (GPIO5) only. GPIO45,
+//! the PCF85063 RTC alarm interrupt line, sits outside the ESP32-S3's RTC IO
+//! range (GPIO0-21) and could not be an `ext1` wakeup source anyway; the RTC
+//! alarm is kept disabled.
 //!
 //! Deep sleep powers down the ESP32-S3 digital domain and its RAM. Waking up
 //! from it is a full reboot through the bootloader, not a resume:

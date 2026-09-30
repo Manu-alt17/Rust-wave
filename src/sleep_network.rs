@@ -1,8 +1,7 @@
 //! Hardware-independent network suspension policy for sleep-image mode.
 //!
-//! The MCU intentionally remains awake in this milestone so PMIC power-key
-//! polling and the proven GPIO45 RTC alarm route stay reliable. Optional
-//! network services are suspended while the static e-paper image is visible.
+//! Optional network services are suspended while the static e-paper sleep
+//! image is visible.
 
 /// Tracks whether optional networking should be paused for sleep-image mode.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

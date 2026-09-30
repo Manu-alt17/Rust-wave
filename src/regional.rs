@@ -446,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn converts_local_alarm_schedule_back_into_rtc_storage_basis() {
+    fn converts_local_time_back_into_rtc_storage_basis() {
         let preferences = RegionalPreferences::default();
         let local = RtcDateTime {
             year: 2026,

@@ -1,8 +1,8 @@
 //! Runtime-only local wall-clock editor for the Clock screen's manual
 //! "Set date & time" action.
 //!
-//! Mirrors the alarm runtime editor's interaction: Up/Down adjusts the
-//! selected field's value and Select advances to the next field. The editor
+//! Up/Down adjusts the selected field's value and Select advances to the
+//! next field. The editor
 //! keeps a UTC anchor captured when it opened; picking a different timezone
 //! re-derives the displayed local fields from that same anchor instant
 //! instead of reinterpreting the already-displayed numbers under the new
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn opens_on_timezone_then_adjusts_hour_and_minute_matching_alarm_editor_order() {
+    fn opens_on_timezone_then_adjusts_hour_and_minute() {
         let mut editor = editor_at(utc(2026, 8, 18, 21, 59), TimeZoneProfile::Utc);
         assert_eq!(editor.selected_field(), ClockEditField::Timezone);
         editor.advance_field();

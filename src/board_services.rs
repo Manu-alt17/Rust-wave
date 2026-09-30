@@ -190,8 +190,8 @@ where
         Ok(stored)
     }
 
-    /// Read only the RTC wall clock for alarm polling without waking other
-    /// optional sensors or generating a full dashboard snapshot.
+    /// Read only the RTC wall clock without waking other optional sensors or
+    /// generating a full dashboard snapshot.
     pub fn read_rtc(&mut self) -> anyhow::Result<RtcDateTime> {
         self.rtc.read_datetime()
     }
@@ -206,25 +206,10 @@ where
         Ok(())
     }
 
-    /// Program the PCF85063 single hardware alarm slot using retained RTC
-    /// storage-basis fields selected by the alarm domain scheduler.
-    pub fn program_rtc_alarm(&mut self, stored: RtcDateTime) -> anyhow::Result<()> {
-        self.rtc.program_alarm(stored)
-    }
-
-    /// Disable the PCF85063 hardware alarm slot when no schedule is armed.
+    /// Disable the PCF85063 hardware alarm slot and clear its flag, releasing
+    /// the interrupt line on GPIO45 (a boot strapping pin).
     pub fn disable_rtc_alarm(&mut self) -> anyhow::Result<()> {
         self.rtc.disable_alarm()
-    }
-
-    /// Read and clear the sticky PCF85063 alarm flag. A missing RTC remains a
-    /// non-fatal service error handled by the caller.
-    pub fn take_rtc_alarm_flag(&mut self) -> anyhow::Result<bool> {
-        let asserted = self.rtc.alarm_flag()?;
-        if asserted {
-            self.rtc.clear_alarm_flag()?;
-        }
-        Ok(asserted)
     }
 
     /// Enable PMIC short-sleep and long-menu Power-key event polling.

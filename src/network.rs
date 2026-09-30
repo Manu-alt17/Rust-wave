@@ -535,7 +535,7 @@ pub mod espidf {
         }
 
         /// Stop optional network services while retaining station ownership so
-        /// a later power-key or RTC-alarm wake can reconnect without rebuilding
+        /// a later power-key wake can reconnect without rebuilding
         /// the complete application shell.
         pub fn suspend(&mut self) -> Result<()> {
             let _ = self.sntp.take();

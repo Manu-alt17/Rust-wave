@@ -107,7 +107,7 @@ mod tests {
     fn header_titles_fit_between_status_and_clock() {
         #[rustfmt::skip]
         const TITLES: &[&str] = &[
-            "ALARMS", "SVEGLIE", "AUDIO INFO", "INFO AUDIO",
+            "AUDIO INFO", "INFO AUDIO",
             "CLOCK", "OROLOGIO",
             "RTC INFO", "INFO RTC", "DATE & TIME", "DATA E ORA", "DICTIONARY", "DIZIONARIO",
             "DISPLAY", "SCHERMO", "ENVIRONMENT", "AMBIENTE", "SENSOR INFO", "INFO SENSORE",

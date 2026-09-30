@@ -120,36 +120,12 @@ where
         decode_datetime_registers(registers)
     }
 
-    /// Program the single PCF85063 hardware alarm slot using stored RTC
-    /// wall-clock fields. The domain scheduler selects the earliest local
-    /// occurrence and converts it to this retained storage basis first.
-    pub fn program_alarm(&mut self, value: RtcDateTime) -> Result<()> {
-        validate_datetime(value)?;
-        let registers = [
-            SECOND_ALARM_REG,
-            encode_bcd(value.second)? & !ALARM_FIELD_DISABLED,
-            encode_bcd(value.minute)? & !ALARM_FIELD_DISABLED,
-            encode_bcd(value.hour)? & !ALARM_FIELD_DISABLED,
-            encode_bcd(value.day)? & !ALARM_FIELD_DISABLED,
-            ALARM_FIELD_DISABLED, // weekday comparison disabled; absolute day is enough.
-        ];
-        self.i2c
-            .write(PCF85063_ADDRESS, &registers)
-            .map_err(|error| anyhow!("PCF85063 alarm write failed: {error:?}"))?;
-        let control = self.read_register(CONTROL_2_REG)?;
-        self.write_register(
-            CONTROL_2_REG,
-            (control & !ALARM_FLAG) | ALARM_INTERRUPT_ENABLE,
-        )
-    }
-
-    /// Disable all alarm compare fields and the alarm interrupt-enable bit.
+    /// Disable all alarm compare fields, the alarm interrupt-enable bit and
+    /// the sticky alarm flag, releasing the interrupt line.
     ///
-    /// One burst write over the five contiguous alarm registers (mirroring
-    /// `program_alarm`'s write) instead of five individual read-modify-write
-    /// round trips: the compare value bits are meaningless once every field
-    /// is disabled, since nothing reads them again until `program_alarm`
-    /// overwrites all five anyway, so there is nothing to preserve.
+    /// One burst write over the five contiguous alarm registers instead of
+    /// five individual read-modify-write round trips: the compare value bits
+    /// are meaningless once every field is disabled.
     pub fn disable_alarm(&mut self) -> Result<()> {
         self.i2c
             .write(
@@ -169,17 +145,6 @@ where
             CONTROL_2_REG,
             control & !(ALARM_INTERRUPT_ENABLE | ALARM_FLAG),
         )
-    }
-
-    /// Return whether the PCF85063 alarm flag is currently asserted.
-    pub fn alarm_flag(&mut self) -> Result<bool> {
-        Ok(self.read_register(CONTROL_2_REG)? & ALARM_FLAG != 0)
-    }
-
-    /// Clear the sticky PCF85063 alarm flag while preserving alarm enablement.
-    pub fn clear_alarm_flag(&mut self) -> Result<()> {
-        let control = self.read_register(CONTROL_2_REG)?;
-        self.write_register(CONTROL_2_REG, control & !ALARM_FLAG)
     }
 
     /// Write RTC wall-clock fields after a validated SNTP synchronization.

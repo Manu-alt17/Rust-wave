@@ -1,7 +1,6 @@
 //! Product UI state transitions independent of hardware wiring.
 
 use crate::{
-    alarm::AlarmSnapshot,
     audio::{AudioSnapshot, AudioUiRequest},
     board_services::BoardSnapshot,
     buttons::ButtonEvent,
@@ -70,8 +69,6 @@ pub struct AppState {
     pub storage: StorageSnapshot,
     /// Password-free snapshot owned by the networking boundary.
     pub network: NetworkSnapshot,
-    /// SD-backed alarm schedules and active-alarm UI snapshot.
-    pub alarms: AlarmSnapshot,
     /// Playback-only ES8311 diagnostics snapshot.
     pub audio: AudioSnapshot,
     /// Selected Audio-overview action.
@@ -151,7 +148,6 @@ impl Default for AppState {
             board: BoardSnapshot::default(),
             storage: StorageSnapshot::default(),
             network: NetworkSnapshot::default(),
-            alarms: AlarmSnapshot::default(),
             audio: AudioSnapshot::default(),
             audio_action_selected: 0,
             clock_action_selected: 0,
@@ -228,7 +224,7 @@ impl AppState {
     }
 
     /// Apply one debounced button event to routes whose behavior is fully
-    /// hardware-independent. Files, Alarms and Audio remain delegated to their
+    /// hardware-independent. Files and Audio remain delegated to their
     /// existing owners from main.rs.
     pub fn apply(&mut self, event: ButtonEvent) {
         let route = self.router.current();
@@ -381,7 +377,7 @@ impl AppState {
                     | ScreenRoute::WifiTransfer,
                     _,
                 )
-                | (ScreenRoute::Files | ScreenRoute::Alarms | ScreenRoute::Audio, _) => {}
+                | (ScreenRoute::Files | ScreenRoute::Audio, _) => {}
                 _ => {}
             }
         }
@@ -1165,10 +1161,6 @@ impl AppState {
         if self.wifi_transfer.state != WifiTransferState::Off {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
         }
-    }
-
-    pub fn update_alarm_snapshot(&mut self, alarms: AlarmSnapshot) {
-        self.alarms = alarms;
     }
 
     pub fn update_audio_snapshot(&mut self, audio: AudioSnapshot) {
