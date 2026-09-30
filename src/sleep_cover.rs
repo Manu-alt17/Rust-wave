@@ -8,8 +8,8 @@
 //! the device, so its arrow points at the key. The percent uses the largest
 //! UI strike that still fits that band.
 //!
-//! Drawn through the same portrait mapping as every product screen, like
-//! `sleep_wake_overlay`, since sleep frames are native-panel buffers.
+//! Drawn through the same portrait mapping as every product screen, since
+//! sleep frames are native-panel buffers.
 
 use core::convert::Infallible;
 

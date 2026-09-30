@@ -10,8 +10,6 @@ pub const PRODUCT_NAME: &str = "Rustmix Wave / EPD397";
 pub const PRODUCT_SLUG: &str = "rustmix-wave-epd397";
 /// Cargo semantic version for the current firmware package.
 pub const FIRMWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Stable milestone identifier for acceptance logs and diagnostics.
-pub const UI_SHELL_MILESTONE: &str = "text-editor-layout-alignment";
 
 /// GitHub repository owner checked by [`crate::ota`] for release-based OTA
 /// updates.
@@ -29,13 +27,12 @@ pub const OTA_REPO_NAME: &str = "Rust-wave";
 
 #[cfg(test)]
 mod tests {
-    use super::{FIRMWARE_VERSION, PRODUCT_NAME, PRODUCT_SLUG, UI_SHELL_MILESTONE};
+    use super::{FIRMWARE_VERSION, PRODUCT_NAME, PRODUCT_SLUG};
 
     #[test]
-    fn exposes_text_editor_layout_alignment_metadata() {
+    fn exposes_product_metadata() {
         assert_eq!(PRODUCT_NAME, "Rustmix Wave / EPD397");
         assert_eq!(PRODUCT_SLUG, "rustmix-wave-epd397");
         assert_eq!(FIRMWARE_VERSION, env!("CARGO_PKG_VERSION"));
-        assert_eq!(UI_SHELL_MILESTONE, "text-editor-layout-alignment");
     }
 }

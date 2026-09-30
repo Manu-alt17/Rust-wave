@@ -54,7 +54,7 @@ mod firmware {
             AUDIO_SAMPLE_RATE_HZ, DEFAULT_AUDIO_VOLUME_PERCENT,
         },
         board_services::{BoardServices, BoardSnapshot},
-        build_info::{FIRMWARE_VERSION, PRODUCT_SLUG, UI_SHELL_MILESTONE},
+        build_info::{FIRMWARE_VERSION, PRODUCT_SLUG},
         buttons::{
             BootBackButton, ButtonEvent, Buttons, SelectHoldButton, SelectPressEvent,
             set_select_long_press_ms, READER_SELECT_LONG_PRESS_MS, SELECT_LONG_PRESS_MS,
@@ -273,7 +273,7 @@ mod firmware {
         }
         power_profile::log_build_status();
         debug!(
-            "rustmix-wave=product-ui-shell-start product={PRODUCT_SLUG} version={FIRMWARE_VERSION} milestone={UI_SHELL_MILESTONE}"
+            "rustmix-wave=product-ui-shell-start product={PRODUCT_SLUG} version={FIRMWARE_VERSION}"
         );
         let mut boot_cause = mcu_deep_sleep::espidf::boot_cause();
         debug!(
