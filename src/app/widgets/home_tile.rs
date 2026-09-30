@@ -17,6 +17,7 @@ use embedded_iconoir::{
         audio::SoundLow as CompactSoundLow,
         music::Headset as CompactHeadset,
         connectivity::Wifi as CompactWifi,
+        devices::Laptop as CompactLaptop,
         docs::Folder as CompactFolder,
         editor::TextSize as CompactTextSize,
         other::{Clock as CompactClock, Import as CompactImport, Language as CompactLanguage},
@@ -257,6 +258,9 @@ fn draw_route_icon_compact(
         }
         ScreenRoute::OtaUpdate => {
             draw_iconoir_icon_scaled(display, top_left, &CompactRefreshDouble::new(BinaryColor::On))
+        }
+        ScreenRoute::UsbDisk => {
+            draw_iconoir_icon_scaled(display, top_left, &CompactLaptop::new(BinaryColor::On))
         }
         ScreenRoute::Files => {
             draw_iconoir_icon_scaled(display, top_left, &CompactFolder::new(BinaryColor::On))

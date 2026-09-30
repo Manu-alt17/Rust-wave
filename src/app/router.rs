@@ -38,6 +38,7 @@ pub enum ScreenRoute {
     NetworkDetails,
     NetworkSaved,
     WifiTransfer,
+    UsbDisk,
 }
 
 impl ScreenRoute {
@@ -76,6 +77,7 @@ impl ScreenRoute {
             Self::NetworkDetails => "Provisioning details",
             Self::NetworkSaved => "Saved Networks",
             Self::WifiTransfer => "Wi-Fi Transfer",
+            Self::UsbDisk => "Connect to PC",
         }
     }
 
@@ -127,6 +129,7 @@ impl ScreenRoute {
                 Self::NetworkDetails => "Dettagli configurazione",
                 Self::NetworkSaved => "Reti salvate",
                 Self::WifiTransfer => "Trasferimento Wi-Fi",
+                Self::UsbDisk => "Collega al PC",
             },
         }
     }
@@ -166,6 +169,7 @@ impl ScreenRoute {
             Self::NetworkDetails => "network-details",
             Self::NetworkSaved => "network-saved",
             Self::WifiTransfer => "wifi-transfer",
+            Self::UsbDisk => "usb-disk",
         }
     }
 
@@ -214,6 +218,7 @@ impl ScreenRoute {
             | Self::Language
             | Self::DeviceInfo
             | Self::OtaUpdate
+            | Self::UsbDisk
             | Self::Network => Some(Self::Settings),
             Self::AudioDetails => Some(Self::Audio),
             Self::ClockSetTime | Self::ClockDetails => Some(Self::Clock),

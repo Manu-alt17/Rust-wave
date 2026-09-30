@@ -20,6 +20,7 @@ pub mod ota;
 pub mod power_key;
 pub mod reader;
 pub mod reading_stats;
+pub mod usb_disk;
 
 /// Draw the active screen selected by the router.
 pub fn render_active_screen(
@@ -59,6 +60,7 @@ pub fn render_active_screen(
         ScreenRoute::DeviceInfoBoard => device_info::render_device_info_board(display, state),
         ScreenRoute::DeviceInfoRuntime => device_info::render_device_info_runtime(display, state),
         ScreenRoute::OtaUpdate => ota::render_ota_update(display, state),
+        ScreenRoute::UsbDisk => usb_disk::render_usb_disk(display, state),
         ScreenRoute::Settings => {
             unreachable!("category routes handled above")
         }

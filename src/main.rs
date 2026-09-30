@@ -93,7 +93,7 @@ mod firmware {
             book_id_for, compute_snapshot, resolve_unix_timestamp, ReadingStatsSnapshot,
             ReadingStatsTracker, STATS_DIRECTORY,
         },
-        regional::{RegionalPreferences, CLOCK_CONFIG_PATH},
+        regional::{Locale, RegionalPreferences, CLOCK_CONFIG_PATH},
         power_profile::{self, PowerProfileTracker, POWER_PROFILE_LOG_SECONDS},
         runtime_memory::{debug_runtime_memory, log_runtime_memory},
         shared_i2c::SharedI2cBus,
@@ -105,6 +105,7 @@ mod firmware {
             StorageBrowser, StorageSnapshot, StorageUiOutcome, SDMMC_COMMAND_TIMEOUT_MS,
             SDMMC_STABLE_SPEED_KHZ, SD_MOUNT_POINT, STORAGE_IO_RETRY_ATTEMPTS,
         },
+        usb_disk::{self, UsbDiskPhase},
         wifi_transfer::{
             espidf::WifiTransferServer, WifiTransferSnapshot, WifiTransferUiRequest,
             NETWORK_PROVISION_RESCAN_SECONDS, WIFI_TRANSFER_ROOT, WIFI_TRANSFER_SERVER_STACK_BYTES,
@@ -235,6 +236,10 @@ mod firmware {
         boot_profile::mark("run-entered");
         let early_span = boot_profile::span("logger-pm-bootcause");
         sys::link_patches();
+        // First thing: a restart out of "Connect to PC" -- or a crash while
+        // in it -- can leave the USB PHY wired to the disk, and then neither
+        // the serial port nor the disk works until power is removed.
+        usb_disk::espidf::release_phy();
         EspLogger::initialize_default();
         info!("rustmix-wave=epd397-rust-app-start");
         if DEV_BENCH_BUILD {
@@ -329,7 +334,9 @@ mod firmware {
         record_reset_reason(mounted_sd.is_some());
         reset_reason_span.end();
         let mut storage_browser = StorageBrowser::new(SD_MOUNT_POINT, mounted_sd.is_some());
-        let _mounted_sd = mounted_sd;
+        // Held for the whole run, and dropped (unmounting the card) only to
+        // hand the card to a PC in "Connect to PC" mode.
+        let mut mounted_sd = mounted_sd;
 
         // The e-paper panel and the I2C-driven PMIC rail that powers it are
         // constructed here (cheap: `Epaper397::new` only sets pin state, no
@@ -817,7 +824,7 @@ mod firmware {
         // first frame routes straight into it instead of Home.
         let marker_span = boot_profile::span("reader-deep-sleep-marker-check");
         let resume_reader_on_wake = boot_cause.is_sleep_resume()
-            && _mounted_sd.is_some()
+            && mounted_sd.is_some()
             && state.reader.deep_sleep_marker_indicates_active();
         marker_span.end();
         let reader_persistence = state.reader.load_persistent_state();
@@ -1213,7 +1220,7 @@ mod firmware {
         let mut last_power_profile_log = Instant::now();
         boot_profile::mark("main-loop-entered");
         let _ = misc_power.write_lifecycle_stage(power::LifecycleStage::MainLoop);
-        if _mounted_sd.is_some() {
+        if mounted_sd.is_some() {
             let header = format!(
                 "=== boot-profile phase=boot version={FIRMWARE_VERSION} cause={} reset-reason={} boot-to-loop-ms={}",
                 boot_cause.marker(),
@@ -1302,7 +1309,7 @@ mod firmware {
                 }) || boot_profile_loop_started.elapsed()
                     >= Duration::from_secs(BOOT_PROFILE_MAX_SECONDS))
             {
-                finish_boot_profile("settled", _mounted_sd.is_some());
+                finish_boot_profile("settled", mounted_sd.is_some());
             }
 
             let portal_snapshot_before = state.wifi_transfer.clone();
@@ -2028,7 +2035,7 @@ mod firmware {
             // keys.
             const READER_WARMUP_IDLE_SECONDS: u64 = 10;
             if !sleep_mode.is_sleeping()
-                && _mounted_sd.is_some()
+                && mounted_sd.is_some()
                 && state.reader.loading.is_none()
                 && last_activity.elapsed() >= Duration::from_secs(READER_WARMUP_IDLE_SECONDS)
                 && input_queue.is_empty()
@@ -2361,6 +2368,63 @@ mod firmware {
                                     ensure_audio_engine(&mut audio_engine, &mut state, &mut misc_power);
                                 }
                                 apply_player_request(audio_engine.as_ref(), &mut state, request);
+                            }
+                            // "Connect to PC": close everything that uses
+                            // the card, unmount it and hand it to the PC.
+                            // One way: this ends in a restart.
+                            if state.take_usb_disk_request() {
+                                if mounted_sd.is_none() {
+                                    state.usb_disk = UsbDiskPhase::Failed(
+                                        match state.regional.locale {
+                                            Locale::English => "The microSD card is not readable.",
+                                            Locale::Italian => "La microSD non è leggibile.",
+                                        }
+                                        .into(),
+                                    );
+                                } else {
+                                    if let Some(engine) = audio_engine.as_ref() {
+                                        engine.send(AudioCommand::Player(PlayerCommand::Stop));
+                                        engine.suspend();
+                                        state
+                                            .audiobooks
+                                            .update_now_playing(engine.current().now_playing);
+                                    }
+                                    save_audiobook_positions(&state);
+                                    stop_portal_server(
+                                        &mut network_runtime,
+                                        &mut wifi_transfer_server,
+                                        &network_config,
+                                        &mut state,
+                                        &mut network_provision_join_pending,
+                                        &mut storage_browser,
+                                        portal_via_hotspot,
+                                        "usb-disk",
+                                    );
+                                    drop(mounted_sd.take());
+                                    info!("rustmix-wave=usb-disk status=sd-unmounted");
+                                    state.usb_disk = UsbDiskPhase::Active;
+                                }
+                                refresh_screen(
+                                    &mut panel,
+                                    &mut frame,
+                                    &mut state,
+                                    &mut panel_refresh,
+                                    RefreshRequest::Normal,
+                                )?;
+                                if state.usb_disk == UsbDiskPhase::Active {
+                                    if let Err(error) = usb_disk::espidf::start(USB_DISK_SD_PINS) {
+                                        warn!("rustmix-wave=usb-disk status=start-failed error={error}");
+                                        state.usb_disk = UsbDiskPhase::Failed(error);
+                                        refresh_screen(
+                                            &mut panel,
+                                            &mut frame,
+                                            &mut state,
+                                            &mut panel_refresh,
+                                            RefreshRequest::Normal,
+                                        )?;
+                                    }
+                                }
+                                wait_for_usb_disk_exit(&input_queue);
                             }
                         }
                         // Consume Settings > Network transfer start/stop intents before
@@ -3602,6 +3666,34 @@ mod firmware {
     /// well as at every pause, stop and track change: a power cut costs at
     /// most this much listening.
     const AUDIOBOOK_POSITION_SAVE_INTERVAL: Duration = Duration::from_secs(30);
+
+    /// The SDMMC pins the card is mounted with (see the mount at boot),
+    /// for "Connect to PC", which re-initializes the bare card in C.
+    const USB_DISK_SD_PINS: usb_disk::espidf::SdPins = usb_disk::espidf::SdPins {
+        clk: 16,
+        cmd: 17,
+        d0: 15,
+        d1: 7,
+        d2: 8,
+        d3: 18,
+    };
+
+    /// Disk mode's only loop: nothing else runs while the PC owns the card.
+    /// Any key but BOOT restarts the device -- GPIO0 is a strapping pin, and
+    /// a restart with it held down would enter download mode. Presses queued
+    /// before disk mode began are dropped, so only a fresh one ends it.
+    fn wait_for_usb_disk_exit(input_queue: &InputEventQueue) -> ! {
+        while input_queue.pop().is_some() {}
+        loop {
+            input_queue.wait_timeout(Duration::from_millis(500));
+            while let Some(event) = input_queue.pop() {
+                if !matches!(event, InputEvent::Back) {
+                    info!("rustmix-wave=usb-disk status=restarting");
+                    usb_disk::espidf::restart();
+                }
+            }
+        }
+    }
 
     /// Opening a book routes to `ReaderLoading` first. When the book's
     /// `.EPX` cache is warm the open itself finishes in ~100 ms, far less

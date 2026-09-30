@@ -67,6 +67,9 @@ CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
 CONFIG_FATFS_API_ENCODING_UTF_8=y
 
+# "Connect to PC" (components/usbdisk): TinyUSB's mass-storage class.
+CONFIG_TINYUSB_MSC_ENABLED=y
+
 # Keep the ~8 KB RTC FAST memory region out of the heap. It is not
 # DMA-reachable, yet it satisfies ordinary internal allocations: an SD read
 # buffer landing there (seen with fs::read of a 6570-byte .THB once internal

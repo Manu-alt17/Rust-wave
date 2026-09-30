@@ -14,6 +14,12 @@ CARGO_WORKSPACE_DIR = { value = "", relative = true }
 # esp-idf-sys copies globbed files into that project (ESP_IDF_GLOB_*).
 ESP_IDF_GLOB_PARTITIONS_BASE = { value = ".", relative = true }
 ESP_IDF_GLOB_PARTITIONS_CSV = "partitions.csv"
+# esp-idf-sys generates bindings for the TinyUSB headers once the USB disk
+# component (components/usbdisk) pulls esp_tinyusb into the build, but it
+# passes bindgen only the components' include paths, not their compile
+# definitions. Without the one TinyUSB sets publicly, CFG_TUSB_MCU, the
+# headers take the chip for an unknown MCU and look for a bare "FreeRTOS.h".
+BINDGEN_EXTRA_CLANG_ARGS = "-DCFG_TUSB_MCU=OPT_MCU_ESP32S3"
 
 [build]
 target = "xtensa-esp32s3-espidf"

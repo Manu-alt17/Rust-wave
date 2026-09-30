@@ -13,7 +13,7 @@ use super::router::ScreenRoute;
 
 pub const MAIN_CATEGORY_COUNT: usize = 7;
 pub const CATEGORY_COUNT: usize = 1;
-pub const SETTINGS_ENTRY_COUNT: usize = 7;
+pub const SETTINGS_ENTRY_COUNT: usize = 8;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
 /// heading of the Settings grid (see
 /// `screens::category::render_tile_grid`). The section holds the entries
@@ -110,8 +110,8 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         label_it: "Opzioni",
         subtitle_en: "Device services and display",
         subtitle_it: "Servizi del dispositivo e schermo",
-        badge_en: "7",
-        badge_it: "7",
+        badge_en: "8",
+        badge_it: "8",
         route: ScreenRoute::Settings,
     },
     // Kept last rather than first so the grid tiles above keep the leading
@@ -176,8 +176,8 @@ const SETTINGS_ENTRIES: [MenuEntry; SETTINGS_ENTRY_COUNT] = [
     MenuEntry {
         label_en: "Display",
         label_it: "Schermo",
-        subtitle_en: "Global UI font and size",
-        subtitle_it: "Carattere e dimensione dell'interfaccia",
+        subtitle_en: "UI size, sleep screen and standby",
+        subtitle_it: "Dimensione interfaccia, sfondo e standby",
         badge_en: "NEW",
         badge_it: "NUOVO",
         route: ScreenRoute::Display,
@@ -201,6 +201,15 @@ const SETTINGS_ENTRIES: [MenuEntry; SETTINGS_ENTRY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::DeviceInfo,
+    },
+    MenuEntry {
+        label_en: "To PC",
+        label_it: "Al PC",
+        subtitle_en: "Use the microSD as a USB disk on a computer",
+        subtitle_it: "Usa la microSD come disco USB del computer",
+        badge_en: "",
+        badge_it: "",
+        route: ScreenRoute::UsbDisk,
     },
 ];
 

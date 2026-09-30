@@ -526,6 +526,13 @@ mod tests {
                 state.home_selected = home_index(ScreenRoute::Files);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
+            ("usb-disk", |state| {
+                state.router.navigate_to(ScreenRoute::UsbDisk);
+            }),
+            ("usb-disk-active", |state| {
+                state.router.navigate_to(ScreenRoute::UsbDisk);
+                state.usb_disk = crate::usb_disk::UsbDiskPhase::Active;
+            }),
             ("audiobooks", |state| {
                 seed_audiobooks(state);
                 state.router.navigate_to(ScreenRoute::AudiobookLibrary);

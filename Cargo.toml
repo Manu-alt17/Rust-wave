@@ -99,3 +99,11 @@ bindings_module = "esp_new_jpeg"
 remote_component = { name = "chmorgan/esp-libhelix-mp3", version = "1.0.3" }
 bindings_header = "bindings/libhelix_mp3.h"
 bindings_module = "libhelix_mp3"
+
+# The microSD as a USB disk for a PC ("Connect to PC"): a small local C
+# component over Espressif's TinyUSB stack, whose USB descriptors are C
+# macros. See components/usbdisk/include/usbdisk.h.
+[[package.metadata.esp-idf-sys.extra_components]]
+component_dirs = ["components/usbdisk"]
+bindings_header = "components/usbdisk/include/usbdisk.h"
+bindings_module = "usbdisk"

@@ -48,4 +48,5 @@ pub mod sleep_mode;
 pub mod sleep_network;
 
 pub mod storage;
+pub mod usb_disk;
 pub mod wifi_transfer;

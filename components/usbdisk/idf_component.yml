@@ -1,0 +1,6 @@
+dependencies:
+  # Espressif's USB device stack. The 1.x line: the TinyUSB headers
+  # esp-idf-sys generates bindings for are 1.x's (tusb_msc_storage.h and
+  # friends); 2.x renamed them and its headers break that bindgen run.
+  espressif/esp_tinyusb:
+    version: "~1.7.0"

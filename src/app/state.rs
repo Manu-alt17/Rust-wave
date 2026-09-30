@@ -17,6 +17,7 @@ use crate::{
     reading_stats::ReadingStatsSnapshot,
     regional::RegionalPreferences,
     storage::StorageSnapshot,
+    usb_disk::UsbDiskPhase,
     wifi_transfer::{WifiTransferSnapshot, WifiTransferState, WifiTransferUiRequest},
 };
 
@@ -90,6 +91,9 @@ pub struct AppState {
     /// the phone portal.
     pub network_saved: NetworkSavedUiState,
     network_saved_forget_request: Option<String>,
+    /// "Connect to PC" screen, and its request to start disk mode.
+    pub usb_disk: UsbDiskPhase,
+    usb_disk_request: bool,
     /// Audiobook library, player and saved listening positions.
     pub audiobooks: AudiobookUiState,
     /// Global display-maintenance menu opened by a physical Power long press.
@@ -147,6 +151,8 @@ impl Default for AppState {
             network_saved: NetworkSavedUiState::default(),
             network_saved_forget_request: None,
             audiobooks: AudiobookUiState::default(),
+            usb_disk: UsbDiskPhase::Idle,
+            usb_disk_request: false,
             power_key_menu: PowerKeyMenuUiState::default(),
             power_key_menu_return_route: ScreenRoute::Home,
             power_key_manual_refresh_requested: false,
@@ -239,6 +245,11 @@ impl AppState {
                 self.note_select_press();
             }
             self.audiobooks.apply_player(event);
+        } else if route == ScreenRoute::UsbDisk {
+            if event == ButtonEvent::Select && self.usb_disk == UsbDiskPhase::Idle {
+                self.note_select_press();
+                self.usb_disk_request = true;
+            }
         } else if matches!(
             route,
             ScreenRoute::ContinueReading
@@ -562,6 +573,11 @@ impl AppState {
         } else {
             self.network_saved.begin_forget_confirmation();
         }
+    }
+
+    /// SELECT on "Connect to PC" asks the runtime to start disk mode.
+    pub fn take_usb_disk_request(&mut self) -> bool {
+        std::mem::take(&mut self.usb_disk_request)
     }
 
     /// Held SELECT on the audiobook player opens its menu (skip, tracks,
