@@ -1516,14 +1516,14 @@ mod tests {
         let mut state = AppState::default();
         assert_eq!(
             state.regional.timezone,
-            crate::regional::TimeZoneProfile::AmericaNewYork
+            crate::regional::TimeZoneProfile::EuropeRome
         );
         state.router.navigate_to(ScreenRoute::Clock);
         state.apply(ButtonEvent::Select); // open editor on the Timezone field
-        state.apply(ButtonEvent::Up); // cycle away from America/New_York
+        state.apply(ButtonEvent::Up); // cycle away from Europe/Rome
         assert_ne!(
             state.clock_time_editor.unwrap().timezone,
-            crate::regional::TimeZoneProfile::AmericaNewYork
+            crate::regional::TimeZoneProfile::EuropeRome
         );
         for _ in 0..(ClockEditField::COUNT - 1) {
             state.apply(ButtonEvent::Select); // advance to Save
@@ -1531,7 +1531,7 @@ mod tests {
         state.apply(ButtonEvent::Select); // commit
         assert_ne!(
             state.regional.timezone,
-            crate::regional::TimeZoneProfile::AmericaNewYork
+            crate::regional::TimeZoneProfile::EuropeRome
         );
     }
 

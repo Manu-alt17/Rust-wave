@@ -18,19 +18,15 @@ pub const CLOCK_CONFIG_PATH: &str = "/sdcard/RUSTMIX/CLOCK.TXT";
 
 /// RTC wall-clock basis inherited from the uploaded sample application.
 pub const SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES: i16 = 8 * 60;
-/// Daylight offset retained as the fallback when a date is unavailable.
-pub const DEFAULT_DISPLAY_UTC_OFFSET_MINUTES: i16 = -4 * 60;
-/// Product-facing default timezone profile.
-pub const DEFAULT_TIMEZONE_NAME: &str = "America/New_York";
-/// Daylight abbreviation retained as the fallback when a date is unavailable.
-pub const DEFAULT_TIMEZONE_ABBREVIATION: &str = "EDT";
+/// Product-facing default timezone profile: this reader is made for Italy.
+pub const DEFAULT_TIMEZONE_NAME: &str = "Europe/Rome";
 
 /// Supported timezone profiles for the first Wi-Fi/NTP milestone.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TimeZoneProfile {
-    #[default]
     AmericaNewYork,
     Utc,
+    #[default]
     EuropeRome,
 }
 
@@ -123,11 +119,11 @@ impl TimeZoneProfile {
     }
 }
 
-/// UI display language.
+/// UI display language. Italian by default, like the timezone.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Locale {
-    #[default]
     English,
+    #[default]
     Italian,
 }
 
@@ -235,11 +231,7 @@ impl RegionalPreferences {
             return format!("{abbreviation} {}", format_utc_offset(offset_minutes));
         }
         match self.timezone {
-            TimeZoneProfile::AmericaNewYork => format!(
-                "{} {}",
-                DEFAULT_TIMEZONE_ABBREVIATION,
-                format_utc_offset(DEFAULT_DISPLAY_UTC_OFFSET_MINUTES)
-            ),
+            TimeZoneProfile::AmericaNewYork => "EDT UTC-04:00".into(),
             TimeZoneProfile::Utc => "UTC UTC+00:00".into(),
             TimeZoneProfile::EuropeRome => "CET UTC+01:00".into(),
         }
@@ -392,8 +384,8 @@ fn date_time_key(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8
 #[cfg(test)]
 mod tests {
     use super::{
-        format_utc_offset, Locale, RegionalPreferences, TimeZoneProfile,
-        DEFAULT_DISPLAY_UTC_OFFSET_MINUTES, SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES,
+        format_utc_offset, Locale, RegionalPreferences, TimeZoneProfile, DEFAULT_TIMEZONE_NAME,
+        SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES,
     };
     use crate::rtc::RtcDateTime;
 
@@ -410,15 +402,24 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_new_york() {
+    fn defaults_to_rome_in_italian() {
         let preferences = RegionalPreferences::default();
-        assert_eq!(preferences.timezone_name(), "America/New_York");
-        assert_eq!(preferences.timezone_label(), "EDT UTC-04:00");
+        assert_eq!(preferences.timezone_name(), "Europe/Rome");
+        assert_eq!(preferences.timezone_name(), DEFAULT_TIMEZONE_NAME);
+        assert_eq!(preferences.timezone_label(), "CET UTC+01:00");
+        assert_eq!(preferences.locale, Locale::Italian);
+        assert_eq!(
+            crate::network_config::DEFAULT_TIMEZONE,
+            DEFAULT_TIMEZONE_NAME
+        );
     }
 
     #[test]
     fn converts_local_time_back_into_rtc_storage_basis() {
-        let preferences = RegionalPreferences::default();
+        let preferences = RegionalPreferences {
+            timezone: TimeZoneProfile::AmericaNewYork,
+            ..RegionalPreferences::default()
+        };
         let local = RtcDateTime {
             year: 2026,
             month: 6,
@@ -436,7 +437,6 @@ mod tests {
     #[test]
     fn records_uploaded_sample_rtc_storage_basis_explicitly() {
         assert_eq!(SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES, 480);
-        assert_eq!(DEFAULT_DISPLAY_UTC_OFFSET_MINUTES, -240);
     }
 
     #[test]
@@ -555,10 +555,12 @@ mod tests {
             minute: 25,
             second: 30,
         };
+        let new_york = RegionalPreferences {
+            timezone: TimeZoneProfile::AmericaNewYork,
+            ..RegionalPreferences::default()
+        };
         assert_eq!(
-            RegionalPreferences::default()
-                .localize_rtc(sample_wall_clock)
-                .date_time(),
+            new_york.localize_rtc(sample_wall_clock).date_time(),
             "2026-06-03  13:25:30"
         );
     }

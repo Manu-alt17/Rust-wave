@@ -243,7 +243,8 @@ mod tests {
             }),
             ..BoardSnapshot::default()
         };
-        assert_eq!(snapshot.time_label(RegionalPreferences::default()), "02:05");
+        // 14:05 on the sample RTC basis (UTC+8) is 06:05 UTC, 08:05 in Rome.
+        assert_eq!(snapshot.time_label(RegionalPreferences::default()), "08:05");
         assert_eq!(snapshot.battery_label(), "BAT 82%");
     }
 }

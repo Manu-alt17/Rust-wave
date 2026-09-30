@@ -109,7 +109,7 @@ impl Default for NetworkSnapshot {
             ssid: None,
             ipv4_address: None,
             rssi_dbm: None,
-            timezone_name: "America/New_York".into(),
+            timezone_name: crate::network_config::DEFAULT_TIMEZONE.into(),
             ntp_server: "pool.ntp.org".into(),
             last_sync_utc: None,
             error: None,

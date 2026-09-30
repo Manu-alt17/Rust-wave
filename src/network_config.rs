@@ -21,7 +21,7 @@ pub const WIFI_CONFIG_PATH: &str = "/sdcard/RUSTMIX/WIFI.TXT";
 /// Default SNTP pool used when the optional key is omitted.
 pub const DEFAULT_NTP_SERVER: &str = "pool.ntp.org";
 /// Default timezone profile used when the optional key is omitted.
-pub const DEFAULT_TIMEZONE: &str = "America/New_York";
+pub const DEFAULT_TIMEZONE: &str = crate::regional::DEFAULT_TIMEZONE_NAME;
 /// Upper bound on saved networks. Keeps the boot-time fail-over sequence
 /// bounded and the provisioning portal's list short enough to fit one screen.
 pub const WIFI_MAX_SAVED_NETWORKS: usize = 8;
