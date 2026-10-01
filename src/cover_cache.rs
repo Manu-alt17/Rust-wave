@@ -174,6 +174,15 @@ impl CoverCache {
     pub fn generate_thumbnail(&self, book: &ReaderBook) -> CachedThumbnail {
         let _span = crate::boot_profile::span("cover-generate-thumbnail");
         let cache_path = self.cache_path(book);
+        let Some(_attempt) = DecodeAttempt::begin(&cache_path) else {
+            log::warn!(
+                "rustmix-wave=cover-cache status=skipped-after-crash path={}",
+                book.path
+            );
+            let placeholder = placeholder_bitmap();
+            let _ = atomic_write(&cache_path, &write_cache_bytes(book, &placeholder));
+            return placeholder;
+        };
         let worker_book = book.clone();
         let result = crate::runtime_worker::run_named_worker_in_psram(
             "cover-thumbnail",
@@ -244,23 +253,31 @@ impl CoverCache {
             Some(cover) => cover,
             None => {
                 let worker_book = book.clone();
-                let result = crate::runtime_worker::run_named_worker_in_psram(
-                    "sleep-cover",
-                    COVER_WORKER_STACK_BYTES,
-                    move || -> Result<CachedThumbnail, String> {
-                        if worker_book.format != BookFormat::Epub {
-                            return Err("not an EPUB".into());
-                        }
-                        let cover = crate::epub::extract_cover(&worker_book.path)?
-                            .ok_or_else(|| String::from("no cover in manifest"))?;
-                        decode_and_dither_fill(
-                            &cover.bytes,
-                            &cover.media_type,
-                            u32::from(width),
-                            u32::from(height),
+                let attempt = DecodeAttempt::begin(&cache_path);
+                let result = attempt.as_ref().map_or_else(
+                    || Err(String::from("an earlier attempt crashed the device")),
+                    |_| {
+                        crate::runtime_worker::run_named_worker_in_psram(
+                            "sleep-cover",
+                            COVER_WORKER_STACK_BYTES,
+                            move || -> Result<CachedThumbnail, String> {
+                                if worker_book.format != BookFormat::Epub {
+                                    return Err("not an EPUB".into());
+                                }
+                                let cover = crate::epub::extract_cover(&worker_book.path)?
+                                    .ok_or_else(|| String::from("no cover in manifest"))?;
+                                decode_and_dither_fill(
+                                    &cover.bytes,
+                                    &cover.media_type,
+                                    u32::from(width),
+                                    u32::from(height),
+                                )
+                            },
                         )
+                        .map_err(|error| error.to_string())
                     },
                 );
+                drop(attempt);
                 let cover = result.unwrap_or_else(|error| {
                     log::warn!(
                         "rustmix-wave=sleep-cover status=unavailable path={} error={error}",
@@ -378,7 +395,10 @@ impl EpubImageCache {
         let worker_book_path = book.path.clone();
         let worker_href = href.to_string();
         let worker_cache_path = cache_path.clone();
-        let result = crate::runtime_worker::run_named_worker_in_psram(
+        let attempt = DecodeAttempt::begin(&cache_path);
+        let result = attempt.as_ref().map_or_else(
+            || Err(String::from("an earlier attempt crashed the device")),
+            |_| crate::runtime_worker::run_named_worker_in_psram(
             "inline-image",
             COVER_WORKER_STACK_BYTES,
             move || -> Result<CachedThumbnail, String> {
@@ -418,7 +438,10 @@ impl EpubImageCache {
                 );
                 Ok(thumbnail)
             },
+            )
+            .map_err(|error| error.to_string()),
         );
+        drop(attempt);
         result.unwrap_or_else(|error| {
             log::warn!(
                 "rustmix-wave=inline-image-cache status=decode-failed path={} href={href} error={error}",
@@ -1178,47 +1201,76 @@ fn decode_png_full(bytes: &[u8]) -> Result<GrayImage, String> {
     // ahead of the allocation rather than after it.
     let header = reader.info();
     let (header_width, header_height) = (header.width, header.height);
-    let decoded_upper_bound_bytes =
-        u64::from(header_width) * u64::from(header_height) * header.color_type.samples() as u64;
-    if decoded_upper_bound_bytes > MAX_PNG_DECODED_BUFFER_BYTES {
+    // The frame as decoded, after the expansion to 8-bit samples: a palette
+    // image comes out RGB, three times the size its header suggests.
+    let output_len = reader.output_buffer_size();
+    if output_len as u64 > MAX_PNG_DECODED_BUFFER_BYTES {
         return Err(format!(
-            "PNG decoded size {header_width}x{header_height} exceeds {MAX_PNG_DECODED_BUFFER_BYTES} byte decode budget"
+            "PNG {header_width}x{header_height} decodes to {output_len} bytes, over the {MAX_PNG_DECODED_BUFFER_BYTES} byte budget"
         ));
     }
-    let mut buffer = vec![0u8; reader.output_buffer_size()];
+    // Reserved fallibly: a failed allocation aborts, and a cover that aborts
+    // the firmware brings it down again at every boot.
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(output_len).map_err(|_| {
+        format!(
+            "no memory for a {output_len}-byte PNG frame ({header_width}x{header_height}){}",
+            largest_psram_block_note()
+        )
+    })?;
+    buffer.resize(output_len, 0);
     let info = reader
         .next_frame(&mut buffer)
         .map_err(|error| format!("PNG frame decode failed: {error}"))?;
     if info.width == 0 || info.height == 0 {
         return Err("PNG cover has zero dimensions".into());
     }
-    let pixel_count = (info.width * info.height) as usize;
-    let pixels = match info.color_type {
-        png::ColorType::Grayscale => buffer[..pixel_count].to_vec(),
-        png::ColorType::GrayscaleAlpha => buffer
-            .chunks_exact(2)
-            .take(pixel_count)
-            .map(|pixel| pixel[0])
-            .collect(),
-        png::ColorType::Rgb => buffer
-            .chunks_exact(3)
-            .take(pixel_count)
-            .map(|pixel| luma(pixel[0], pixel[1], pixel[2]))
-            .collect(),
-        png::ColorType::Rgba => buffer
-            .chunks_exact(4)
-            .take(pixel_count)
-            .map(|pixel| luma(pixel[0], pixel[1], pixel[2]))
-            .collect(),
+    let channels = match info.color_type {
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
         png::ColorType::Indexed => {
             return Err("PNG cover used indexed color after normalize_to_color8".into())
         }
     };
+    let pixel_count = (info.width * info.height) as usize;
+    if buffer.len() < pixel_count * channels {
+        return Err("PNG frame shorter than its header says".into());
+    }
+    // To gray in place: the value of pixel i goes to byte i, at or before
+    // where its own samples start, so no second frame-sized buffer.
+    for index in 0..pixel_count {
+        let start = index * channels;
+        buffer[index] = if channels >= 3 {
+            luma(buffer[start], buffer[start + 1], buffer[start + 2])
+        } else {
+            buffer[start]
+        };
+    }
+    buffer.truncate(pixel_count);
     Ok(GrayImage {
         width: info.width,
         height: info.height,
-        pixels,
+        pixels: buffer,
     })
+}
+
+/// For allocation-failure messages: the largest block of PSRAM still free,
+/// which tells fragmentation apart from plain exhaustion.
+fn largest_psram_block_note() -> String {
+    #[cfg(target_os = "espidf")]
+    {
+        let largest = unsafe {
+            esp_idf_svc::sys::heap_caps_get_largest_free_block(esp_idf_svc::sys::MALLOC_CAP_SPIRAM)
+        };
+        let free = unsafe {
+            esp_idf_svc::sys::heap_caps_get_free_size(esp_idf_svc::sys::MALLOC_CAP_SPIRAM)
+        };
+        format!(", PSRAM free {free} bytes, largest block {largest}")
+    }
+    #[cfg(not(target_os = "espidf"))]
+    String::new()
 }
 
 fn rgb_to_gray(pixels: &[u8]) -> Vec<u8> {
@@ -1479,6 +1531,37 @@ fn parse_cache_bytes(bytes: &[u8], book: &ReaderBook) -> Option<CachedThumbnail>
 
 /// Write-temp-then-rename so a crash or power loss mid-write never leaves a
 /// truncated `.THB` file that `parse_cache_bytes` would need to detect.
+/// A marker on the card while one image is decoded. Decoding runs on a
+/// worker, but an out-of-memory abort or a stack overflow there still takes
+/// the whole firmware down, and nothing gets cached: the next boot decodes
+/// the same image, crashes again, and the device never gets past it (seen:
+/// a PNG cover that the Home "Continue" card decodes at every boot). A
+/// marker still there means the last attempt never came back, and the
+/// caller caches its placeholder instead of trying again.
+struct DecodeAttempt {
+    marker: PathBuf,
+}
+
+impl DecodeAttempt {
+    /// `None` when an earlier attempt for `cache_path` crashed the device.
+    fn begin(cache_path: &Path) -> Option<Self> {
+        let marker = cache_path.with_extension("PND");
+        if marker.exists() {
+            let _ = fs::remove_file(&marker);
+            return None;
+        }
+        // Best effort: without a card, nothing gets cached either.
+        let _ = fs::write(&marker, b"");
+        Some(Self { marker })
+    }
+}
+
+impl Drop for DecodeAttempt {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.marker);
+    }
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1627,6 +1710,27 @@ mod tests {
             size_bytes: 1234,
             modified_seconds: 5678,
         }
+    }
+
+    #[test]
+    fn a_decode_that_crashed_the_device_is_not_tried_again() {
+        let root = temp_dir("decode-guard");
+        fs::create_dir_all(&root).unwrap();
+        let cache = CoverCache::new(&root);
+        let book = sample_book("/no/such/book.epub");
+        // What a crash during the previous attempt leaves on the card.
+        let marker = cache.cache_path(&book).with_extension("PND");
+        fs::write(&marker, b"").unwrap();
+        let thumbnail = cache.generate_thumbnail(&book);
+        assert!(thumbnail.placeholder);
+        assert!(!marker.exists());
+        // Cached, so the next boot does not decode it either.
+        assert_eq!(cache.load_cached_thumbnail(&book), Some(thumbnail));
+        // A normal attempt leaves no marker behind.
+        let other = sample_book("/no/such/other.epub");
+        let _ = cache.generate_thumbnail(&other);
+        assert!(!cache.cache_path(&other).with_extension("PND").exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1969,7 +2073,7 @@ mod tests {
 
         let error = result.expect_err("oversized PNG must be rejected, not decoded");
         assert!(
-            error.contains("exceeds") && error.contains("decode budget"),
+            error.contains("over the") && error.contains("byte budget"),
             "unexpected error message: {error}"
         );
         println!("poc: oversized-png-rejected-in={elapsed:?} error={error}");
