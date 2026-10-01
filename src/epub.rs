@@ -616,7 +616,7 @@ fn local_data_offset(local_header: &[u8], entry: &ZipEntry) -> Result<usize, Str
 }
 
 fn inflate_entry(entry: &ZipEntry, compressed: &[u8]) -> Result<Vec<u8>, String> {
-    let output = match entry.method {
+    let mut output = match entry.method {
         0 => compressed.to_vec(),
         // Bounded while inflating, not only after: the central directory's
         // declared size is checked up front (`check_entry_limits`) but can
@@ -637,6 +637,10 @@ fn inflate_entry(entry: &ZipEntry, compressed: &[u8]) -> Result<Vec<u8>, String>
     if entry.uncompressed_size != 0 && output.len() != entry.uncompressed_size {
         return Err(format!("EPUB member size mismatch: {}", entry.name));
     }
+    // The inflate starts at twice the compressed size and doubles from
+    // there: an image, which deflate cannot shrink, kept twice its size
+    // allocated for as long as it was being decoded.
+    output.shrink_to_fit();
     Ok(output)
 }
 

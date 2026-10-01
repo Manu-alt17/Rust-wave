@@ -1220,8 +1220,9 @@ fn decode_png(bytes: &[u8], target_width: u16, target_height: u16) -> Result<Gra
 /// A plain PNG read one row at a time and shrunk while it is read, by the
 /// largest whole factor that still leaves it covering the target: each
 /// output pixel is the average of a factor x factor block. In memory there
-/// are a few rows and the image already reduced, never the full frame. A
-/// cover at the size stores ask for, 1600x2560, is 12 MB as an RGB frame,
+/// are the inflate window (the `png` crate compacts it past 128 KB), a few
+/// rows and the image already reduced, never the full frame. A cover at
+/// the size stores ask for, 1600x2560, is 12 MB as an RGB frame,
 /// over the budget the full decode refused it on; for the thumbnail this
 /// keeps 229x366 of it. The crop and the area-average resize that follow
 /// work as for any other decode.
