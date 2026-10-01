@@ -260,6 +260,31 @@ mod tests {
         ];
     }
 
+    /// A page of text for the Reader previews, broken short enough for the
+    /// book font at every size, as the real pagination would.
+    fn preview_page_lines() -> Vec<crate::reader::ReaderPageLine> {
+        [
+            ("In my younger and more", false),
+            ("vulnerable years my father", false),
+            ("gave me some advice that I've", false),
+            ("been turning over in my mind", false),
+            ("ever since.", true),
+            ("\u{201c}Whenever you feel like", false),
+            ("criticizing any one,\u{201d} he told", false),
+            ("me, \u{201c}just remember that all", false),
+            ("the people in this world", false),
+            ("haven't had the advantages", false),
+            ("that you've had.\u{201d}", true),
+        ]
+        .into_iter()
+        .map(|(text, paragraph_end)| crate::reader::ReaderPageLine {
+            text: text.into(),
+            paragraph_end,
+            image: None,
+        })
+        .collect()
+    }
+
     /// Host-only visual review aid: renders a few representative screens to
     /// PNGs in the OS temp directory (logical portrait orientation, as a
     /// human looks at the device) so UI layout changes can be eyeballed
@@ -678,23 +703,7 @@ mod tests {
                         page_index: 66,
                         byte_offset: 0,
                         next_byte_offset: 0,
-                        lines: vec![
-                            crate::reader::ReaderPageLine {
-                                text: "In my younger and more vulnerable years my".into(),
-                                paragraph_end: false,
-                                image: None,
-                            },
-                            crate::reader::ReaderPageLine {
-                                text: "father gave me some advice that I have been".into(),
-                                paragraph_end: false,
-                                image: None,
-                            },
-                            crate::reader::ReaderPageLine {
-                                text: "turning over in my mind ever since.".into(),
-                                paragraph_end: true,
-                                image: None,
-                            },
-                        ],
+                        lines: preview_page_lines(),
                     }],
                     epub_chapter_pages: Vec::new(),
                     epub_pending_chapter: None,
@@ -725,23 +734,7 @@ mod tests {
                         page_index: 66,
                         byte_offset: 0,
                         next_byte_offset: 0,
-                        lines: vec![
-                            crate::reader::ReaderPageLine {
-                                text: "In my younger and more vulnerable years my".into(),
-                                paragraph_end: false,
-                                image: None,
-                            },
-                            crate::reader::ReaderPageLine {
-                                text: "father gave me some advice that I have been".into(),
-                                paragraph_end: false,
-                                image: None,
-                            },
-                            crate::reader::ReaderPageLine {
-                                text: "turning over in my mind ever since.".into(),
-                                paragraph_end: true,
-                                image: None,
-                            },
-                        ],
+                        lines: preview_page_lines(),
                     }],
                     epub_chapter_pages: Vec::new(),
                     epub_pending_chapter: None,
