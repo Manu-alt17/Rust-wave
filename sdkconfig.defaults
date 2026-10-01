@@ -94,6 +94,20 @@ CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
 
+# Boot time. A wake from standby is a PMIC power-on, so a full boot, every
+# time the reader is picked up. Measured on the board:
+# - the PSRAM self-test took 0.43 s of every boot;
+# - the bootloader's check of the whole app image, a SHA-256 of 2.7 MB,
+#   took 0.35 s.
+# The image is still checked after any reset other than a power-on (a
+# software restart after an OTA update, a panic, a USB reset), so a damaged
+# image is caught at the next of those, and esp_ota_end() verifies a new image
+# before it can ever boot. The bootloader option takes effect only with the
+# bootloader built from this file: scripts/flash.sh passes it to espflash,
+# whose own bootloader keeps ESP-IDF's defaults.
+CONFIG_SPIRAM_MEMTEST=n
+CONFIG_BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON=y
+
 # Wi-Fi/SNTP milestone defaults.
 CONFIG_LWIP_SNTP_MAX_SERVERS=1
 CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000

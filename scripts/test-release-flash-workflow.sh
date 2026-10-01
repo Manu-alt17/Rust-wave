@@ -38,7 +38,8 @@ chmod +x "$FAKEBIN/espflash"
   PATH="$FAKEBIN:$PATH" ./scripts/build-release-firmware.sh --skip-validate
 )
 
-PREFIX="$FIXTURE/dist/waveshare-epd397-rust-app-v1.0.0"
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)"
+PREFIX="$FIXTURE/dist/waveshare-epd397-rust-app-v${VERSION}"
 for required in \
   "$PREFIX.elf" \
   "$PREFIX-flash-release.sh" \
@@ -61,13 +62,13 @@ if unzip -Z1 "$PREFIX-firmware-release.zip" | grep -q -- '-flash.bin$'; then
   exit 1
 fi
 
-grep -Fq 'espflash flash --chip esp32s3 --monitor waveshare-epd397-rust-app-v1.0.0.elf' "$PREFIX-FLASHING.txt"
+grep -Fq "espflash flash --chip esp32s3 --erase-parts otadata --monitor waveshare-epd397-rust-app-v${VERSION}.elf" "$PREFIX-FLASHING.txt"
 grep -Fq 'Do not flash this release with espflash write-bin.' "$PREFIX-FLASHING.txt"
 
 PATH="$FAKEBIN:$PATH" "$FIXTURE/scripts/flash-release.sh" "$PREFIX.elf"
-[[ "$(cat "$TMP/espflash-args.txt")" == "flash --chip esp32s3 --monitor $PREFIX.elf" ]]
+[[ "$(cat "$TMP/espflash-args.txt")" == "flash --chip esp32s3 --partition-table $FIXTURE/partitions.csv --erase-parts otadata --monitor $PREFIX.elf" ]]
 
 PATH="$FAKEBIN:$PATH" "$FIXTURE/scripts/flash-release.sh" --port /dev/cu.TEST "$PREFIX.elf"
-[[ "$(cat "$TMP/espflash-args.txt")" == "flash --chip esp32s3 --port /dev/cu.TEST --monitor $PREFIX.elf" ]]
+[[ "$(cat "$TMP/espflash-args.txt")" == "flash --chip esp32s3 --port /dev/cu.TEST --partition-table $FIXTURE/partitions.csv --erase-parts otadata --monitor $PREFIX.elf" ]]
 
 echo 'release-flash-workflow-selftest=ok'

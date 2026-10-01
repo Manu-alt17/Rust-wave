@@ -4,7 +4,6 @@
 
 - **Silent panel wake**: the log shows the silent reload and a partial refresh on the first key press after a minute's pause, with no panel error, but only the eye can confirm that no trace of the previous page is left.
 - **Wi-Fi with a single saved network** now connects without a scan first; the test card had no `WIFI.TXT`.
-- **Audiobook volume** is not saved: every boot starts from the default.
 - Whether the AXP2101 powers itself back on while VBUS is connected during a soft power-off, and how that boot is classified.
 
 ## Upgrading from earlier versions
@@ -34,3 +33,7 @@ Connect to PC runs at USB Full Speed (12 Mbit/s). Windows reports a copy finishe
 ## Merged factory-image release artifact
 
 The supported release artifact is the ESP-IDF ELF flashed through `espflash flash`. Raw-address flashing with `espflash write-bin` is intentionally unsupported. A merged factory image remains deferred until the bootloader, partition-table, and application offsets have been validated on physical hardware.
+
+## Boot time and the bootloader
+
+A wake from standby is a full boot. The PSRAM self-test is off (0.4 s), and the bootloader skips its check of the app image at power-on (0.35 s), but only the bootloader built from `sdkconfig.defaults` does that: `scripts/flash.sh` passes it to espflash, while `scripts/flash-release.sh` and a plain `espflash flash` write espflash's own bootloader, which still checks the image and logs at INFO. The release bundle does not carry the project's bootloader yet.

@@ -51,13 +51,24 @@ if ! cargo +esp build --release; then
   cargo +esp build --release
 fi
 
+ARGS=(flash --chip esp32s3)
+if [[ -n "$PORT" ]]; then
+  ARGS+=(--port "$PORT")
+fi
+
+# The bootloader built from sdkconfig.defaults (warnings-only log, no image
+# check at power-on, see there): without --bootloader espflash writes its
+# own, built with ESP-IDF's defaults.
+BOOTLOADER="$(ls -t target/xtensa-esp32s3-espidf/release/build/esp-idf-sys-*/out/build/bootloader/bootloader.bin 2>/dev/null | head -n1 || true)"
+if [[ -n "$BOOTLOADER" ]]; then
+  ARGS+=(--bootloader "$BOOTLOADER")
+else
+  echo 'flash=warning bootloader=espflash-default reason=esp-idf-bootloader-not-found' >&2
+fi
+
 # Reset otadata so the bootloader falls back to booting ota_0 -- the slot
 # espflash always writes to on this partition table (no "factory" partition,
 # see partitions.csv). Without this, a device that has ever completed an OTA
 # update keeps booting whatever slot otadata points at, silently ignoring a
 # fresh USB flash into ota_0.
-if [[ -n "$PORT" ]]; then
-  exec espflash flash --chip esp32s3 --port "$PORT" --partition-table partitions.csv --erase-parts otadata --monitor "$BIN"
-else
-  exec espflash flash --chip esp32s3 --partition-table partitions.csv --erase-parts otadata --monitor "$BIN"
-fi
+exec espflash "${ARGS[@]}" --partition-table partitions.csv --erase-parts otadata --monitor "$BIN"

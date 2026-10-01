@@ -71,6 +71,8 @@ Power press while off -> boot, restoring the route in use
 
 Standby draws the sleep screen (`src/sleep_images.rs` for the BMPs in `RUSTMIX/SLEEP`, `src/sleep_cover.rs` for the current book's cover), saves state, writes a shutdown marker to the PMIC and powers the board off. Should the power-off not happen, a PMIC watchdog armed just before it cuts power 16 s later, and meanwhile the MCU is in deep sleep; either way the next boot finds the marker and resumes. Automatic standby follows the idle time in the Display settings; it is held off while an audiobook plays or the microSD is connected to a PC.
 
+So every wake is a full boot, kept short: no PSRAM self-test, no check of the app image by the bootloader at power-on (see `sdkconfig.defaults`), warnings-only logs. Volume, positions and preferences are on the card and read back at boot.
+
 GPIO0 BOOT is Back. It never wakes or restarts the board, being a strapping pin.
 
 ## Reader
