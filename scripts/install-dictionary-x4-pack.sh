@@ -49,7 +49,7 @@ fi
 
 SRC="$X4_REPO/examples/sd-card/RUSTMIX/APPS/DICT"
 DEST="$VOLUME/RUSTMIX/APPS/DICT"
-for required in APP.TOM INDEX.TXT MAIN.LUA DATA; do
+for required in INDEX.TXT DATA; do
   if [[ ! -e "$SRC/$required" ]]; then
     echo "dictionary-x4-pack=failed missing=$SRC/$required" >&2
     exit 1

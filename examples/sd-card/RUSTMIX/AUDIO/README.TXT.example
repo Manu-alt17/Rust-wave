@@ -1,0 +1,9 @@
+Rustmix Wave audiobooks
+
+Copy audiobooks into /RUSTMIX/AUDIO on the SD card:
+  - one .mp3 file is one audiobook;
+  - one folder of .mp3 files is one audiobook, its tracks played in name
+    order with numbers counted as numbers (2 before 10).
+
+MP3 (MPEG-1 or 2, layer III), mono or stereo, up to 48 kHz. The position of
+every audiobook is saved in /RUSTMIX/AUDIOPOS.TXT.

@@ -1,6 +1,6 @@
 Rustmix Wave Dictionary sample pack
 
-The native Waveshare Dictionary reuses the Rustmix X4 SD contract:
+The Reader's word lookup reuses the Rustmix X4 SD contract:
   /RUSTMIX/APPS/DICT/INDEX.TXT
   /RUSTMIX/APPS/DICT/DATA/*.JSN
 

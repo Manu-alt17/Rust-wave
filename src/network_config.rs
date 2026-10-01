@@ -586,4 +586,12 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn the_sd_card_example_parses() {
+        let example = include_str!("../examples/sd-card/RUSTMIX/WIFI.TXT.example");
+        let config = NetworkConfig::parse(example).unwrap();
+        assert_eq!(config.networks.len(), 1);
+        assert_eq!(config.timezone, DEFAULT_TIMEZONE);
+    }
 }

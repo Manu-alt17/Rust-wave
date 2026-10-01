@@ -15,7 +15,7 @@ fi
 
 SRC="$ROOT/examples/sd-card/RUSTMIX"
 DEST="$VOLUME/RUSTMIX"
-mkdir -p "$DEST/SLEEP" "$DEST/BOOKS" "$DEST/READER/CACHE" "$DEST/APPS/DICT/DATA"
+mkdir -p "$DEST/SLEEP" "$DEST/BOOKS" "$DEST/AUDIO" "$DEST/READER/CACHE" "$DEST/APPS/DICT/DATA"
 
 copy_example() {
   local src="$1"
@@ -33,6 +33,7 @@ copy_example "$SRC/DISPLAY.TXT.example" "$DEST/DISPLAY.TXT"
 copy_example "$SRC/SLEEP/SLEEP.BMP" "$DEST/SLEEP/SLEEP.BMP"
 copy_example "$SRC/SLEEP/SLEEP01.BMP" "$DEST/SLEEP/SLEEP01.BMP"
 copy_example "$SRC/BOOKS/README.TXT.example" "$DEST/BOOKS/README.TXT"
+copy_example "$SRC/AUDIO/README.TXT.example" "$DEST/AUDIO/README.TXT"
 copy_example "$SRC/READER/PREFS.TXT.example" "$DEST/READER/PREFS.TXT"
 
 echo "rustmix-wave-sd-examples-ready=$DEST"
@@ -42,8 +43,6 @@ if find "$DICT_DEST" -mindepth 1 -print -quit | grep -q .; then
   echo "preserved-existing-dictionary-pack=$DICT_DEST"
   echo "dictionary-smoke-pack-install=skipped-existing-use-dedicated-installer"
 else
-  copy_example "$SRC/APPS/DICT/APP.TOM" "$DICT_DEST/APP.TOM"
-  copy_example "$SRC/APPS/DICT/MAIN.LUA" "$DICT_DEST/MAIN.LUA"
   copy_example "$SRC/APPS/DICT/INDEX.TXT" "$DICT_DEST/INDEX.TXT"
   copy_example "$SRC/APPS/DICT/README.TXT" "$DICT_DEST/README.TXT"
   copy_example "$SRC/APPS/DICT/DATA/AA.JSN" "$DICT_DEST/DATA/AA.JSN"

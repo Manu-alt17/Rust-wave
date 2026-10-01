@@ -1,3 +1,7 @@
-# RustMix Wave global UI typography
-font_family=inter
+# Rustmix Wave display and standby (Settings > Schermo writes this file)
+# font_size: compact | standard | large (interface text, not books)
+# sleep_screen: sequential | random | book-cover
+# auto_sleep: minutes before standby, 5 | 10 | 15 | 30 | 60 | never
 font_size=standard
+sleep_screen=sequential
+auto_sleep=10

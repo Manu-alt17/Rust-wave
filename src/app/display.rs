@@ -403,4 +403,11 @@ mod tests {
         assert_eq!(AutoSleep::Never.idle_seconds(), None);
         assert!(DisplayPreferences::parse("auto_sleep=7\n").is_err());
     }
+
+    #[test]
+    fn the_sd_card_example_parses() {
+        let example = include_str!("../../examples/sd-card/RUSTMIX/DISPLAY.TXT.example");
+        let parsed = DisplayPreferences::parse(example).unwrap();
+        assert_eq!(parsed, DisplayPreferences::default());
+    }
 }

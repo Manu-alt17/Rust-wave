@@ -9461,6 +9461,13 @@ mod backward_navigation_tests {
         let page = session.current_cached_page().unwrap();
         assert_eq!(page.byte_offset, body_start);
     }
+
+    #[test]
+    fn the_sd_card_prefs_example_parses() {
+        let example = include_str!("../examples/sd-card/RUSTMIX/READER/PREFS.TXT.example");
+        let prefs = ReaderPreferences::parse(example).unwrap();
+        assert_eq!(prefs, ReaderPreferences::default());
+    }
 }
 
 #[cfg(test)]
