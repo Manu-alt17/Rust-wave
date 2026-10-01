@@ -756,11 +756,19 @@ mod tests {
         // 22:30 UTC on 30 June, logged in June's file, is 00:30 on 1 July in
         // Rome: July's reading there, June's in UTC.
         let root = fixture_root("local-month");
-        append_session(&root, session(1, unix(6, 30, 22, 20), unix(6, 30, 22, 30), 0, 6_000))
-            .unwrap();
+        append_session(
+            &root,
+            session(1, unix(6, 30, 22, 20), unix(6, 30, 22, 30), 0, 6_000),
+        )
+        .unwrap();
         let now = unix(7, 1, 8, 0);
         assert_eq!(compute_snapshot(&root, now, None, ROME).month_seconds, 600);
-        assert_eq!(compute_snapshot(&root, now, None, ROME).books_this_month.len(), 1);
+        assert_eq!(
+            compute_snapshot(&root, now, None, ROME)
+                .books_this_month
+                .len(),
+            1
+        );
         assert_eq!(compute_snapshot(&root, now, None, UTC).month_seconds, 0);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -771,7 +779,11 @@ mod tests {
         // hours earlier is already 28 March: stepping by seconds skipped the
         // 29th.
         let now = unix(3, 29, 22, 30);
-        let daily = [reading_day(20260330), reading_day(20260329), reading_day(20260328)];
+        let daily = [
+            reading_day(20260330),
+            reading_day(20260329),
+            reading_day(20260328),
+        ];
         assert_eq!(current_streak_days(&daily, now, ROME), 3);
         let bars = last_7_days_bars(&daily, now, ROME);
         assert_eq!(

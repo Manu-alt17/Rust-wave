@@ -310,7 +310,13 @@ impl EpubImageCache {
     /// of an image page re-extract and re-decode it from scratch. The full
     /// 64-bit fingerprint is still stored in and checked against the file's
     /// header, so a 32-bit name collision is only a cache miss.
-    fn cache_path(&self, book: &ReaderBook, href: &str, max_width: u16, max_height: u16) -> PathBuf {
+    fn cache_path(
+        &self,
+        book: &ReaderBook,
+        href: &str,
+        max_width: u16,
+        max_height: u16,
+    ) -> PathBuf {
         self.root.join(format!(
             "{:08X}.EPI",
             inline_image_fingerprint(book, href, max_width, max_height) as u32
@@ -330,14 +336,21 @@ impl EpubImageCache {
         max_height: u16,
     ) -> Option<CachedThumbnail> {
         let fingerprint = inline_image_fingerprint(book, href, max_width, max_height);
-        let bytes = crate::sd_io::read_file(self.cache_path(book, href, max_width, max_height)).ok()?;
+        let bytes =
+            crate::sd_io::read_file(self.cache_path(book, href, max_width, max_height)).ok()?;
         parse_inline_image_cache_bytes(&bytes, fingerprint)
     }
 
     /// `true` when [`load_cached_bitmap`] would return `None`, i.e. this
     /// image needs (re)generation.
     #[must_use]
-    pub fn is_missing(&self, book: &ReaderBook, href: &str, max_width: u16, max_height: u16) -> bool {
+    pub fn is_missing(
+        &self,
+        book: &ReaderBook,
+        href: &str,
+        max_width: u16,
+        max_height: u16,
+    ) -> bool {
         self.load_cached_bitmap(book, href, max_width, max_height)
             .is_none()
     }
@@ -513,7 +526,10 @@ fn write_inline_image_cache_bytes(fingerprint: u64, thumbnail: &CachedThumbnail)
     bytes
 }
 
-fn parse_inline_image_cache_bytes(bytes: &[u8], expected_fingerprint: u64) -> Option<CachedThumbnail> {
+fn parse_inline_image_cache_bytes(
+    bytes: &[u8],
+    expected_fingerprint: u64,
+) -> Option<CachedThumbnail> {
     if bytes.len() < INLINE_IMAGE_CACHE_HEADER_BYTES
         || bytes[0..4] != INLINE_IMAGE_CACHE_MAGIC
         || bytes[4] != INLINE_IMAGE_CACHE_VERSION
@@ -582,7 +598,12 @@ struct GrayImage {
 /// the full-screen cover. Stretching a 2:3 cover into the 208x252 cell
 /// widened it by a quarter.
 fn decode_and_dither_cover(bytes: &[u8], media_type: &str) -> Result<CachedThumbnail, String> {
-    decode_and_dither_fill(bytes, media_type, u32::from(THUMB_WIDTH), u32::from(THUMB_HEIGHT))
+    decode_and_dither_fill(
+        bytes,
+        media_type,
+        u32::from(THUMB_WIDTH),
+        u32::from(THUMB_HEIGHT),
+    )
 }
 
 /// Dispatch to the right decoder by sniffed magic bytes (falling back to the
@@ -714,8 +735,8 @@ fn decode_and_dither_fit_within_timed(
 ) -> Result<CachedThumbnail, String> {
     let max_width_u16 =
         u16::try_from(max_width).map_err(|_| format!("max width exceeds u16: {max_width}"))?;
-    let max_height_u16 = u16::try_from(max_height)
-        .map_err(|_| format!("max height exceeds u16: {max_height}"))?;
+    let max_height_u16 =
+        u16::try_from(max_height).map_err(|_| format!("max height exceeds u16: {max_height}"))?;
     let stage = std::time::Instant::now();
     let gray = decode_gray(bytes, media_type, max_width_u16, max_height_u16)?;
     timings.decode_ms = stage.elapsed().as_millis();
@@ -835,7 +856,12 @@ mod esp_jpeg {
     /// target rounded up to the multiple of 8 the scaler requires, never
     /// larger than the source and never below its 1/8 limit. `None` means
     /// decode at full size (no downscale needed, or not allowed).
-    fn scaled_size(source_w: u32, source_h: u32, target_w: u32, target_h: u32) -> Option<(u16, u16)> {
+    fn scaled_size(
+        source_w: u32,
+        source_h: u32,
+        target_w: u32,
+        target_h: u32,
+    ) -> Option<(u16, u16)> {
         let (fit_w, fit_h) = fit_within(source_w, source_h, target_w, target_h);
         // Any real downscale is worth handing to the decoder: its scaler
         // takes arbitrary ratios down to 1/8, and every pixel it drops is one
@@ -852,12 +878,17 @@ mod esp_jpeg {
         Some((u16::try_from(width).ok()?, u16::try_from(height).ok()?))
     }
 
-    pub(super) fn decode_gray(bytes: &[u8], target_w: u32, target_h: u32) -> Result<GrayImage, String> {
+    pub(super) fn decode_gray(
+        bytes: &[u8],
+        target_w: u32,
+        target_h: u32,
+    ) -> Result<GrayImage, String> {
         let (source_w, source_h) = crate::epub::image_header_size(bytes)
             .ok_or_else(|| "JPEG header not found".to_string())?;
         match scaled_size(source_w, source_h, target_w, target_h) {
-            Some(scale) => decode_with_scale(bytes, Some(scale))
-                .or_else(|_| decode_with_scale(bytes, None)),
+            Some(scale) => {
+                decode_with_scale(bytes, Some(scale)).or_else(|_| decode_with_scale(bytes, None))
+            }
             None => decode_with_scale(bytes, None),
         }
     }
@@ -898,7 +929,10 @@ mod esp_jpeg {
                 width: scale.map_or(0, |value| value.0),
                 height: scale.map_or(0, |value| value.1),
             },
-            clipper: ffi::jpeg_resolution_t { width: 0, height: 0 },
+            clipper: ffi::jpeg_resolution_t {
+                width: 0,
+                height: 0,
+            },
             rotate: ffi::jpeg_rotate_t_JPEG_ROTATE_0D,
             block_enable: false,
         };
@@ -906,7 +940,10 @@ mod esp_jpeg {
             handle: core::ptr::null_mut(),
             outbuf: core::ptr::null_mut(),
         };
-        check(unsafe { ffi::jpeg_dec_open(&mut config, &mut decoder.handle) }, "open")?;
+        check(
+            unsafe { ffi::jpeg_dec_open(&mut config, &mut decoder.handle) },
+            "open",
+        )?;
         // The decoder only reads `inbuf`; the C API just is not const-correct.
         let mut io = ffi::jpeg_dec_io_t {
             inbuf: bytes.as_ptr().cast_mut(),
@@ -915,7 +952,10 @@ mod esp_jpeg {
             outbuf: core::ptr::null_mut(),
             out_size: 0,
         };
-        let mut info = ffi::jpeg_dec_header_info_t { width: 0, height: 0 };
+        let mut info = ffi::jpeg_dec_header_info_t {
+            width: 0,
+            height: 0,
+        };
         check(
             unsafe { ffi::jpeg_dec_parse_header(decoder.handle, &mut io, &mut info) },
             "parse header",
@@ -928,17 +968,24 @@ mod esp_jpeg {
         let outbuf_len = usize::try_from(outbuf_len).map_err(|_| "bad output size".to_string())?;
         decoder.outbuf = unsafe { ffi::jpeg_calloc_align(outbuf_len, 16) }.cast();
         if decoder.outbuf.is_null() {
-            return Err(format!("output buffer allocation of {outbuf_len} bytes failed"));
+            return Err(format!(
+                "output buffer allocation of {outbuf_len} bytes failed"
+            ));
         }
         io.outbuf = decoder.outbuf;
-        check(unsafe { ffi::jpeg_dec_process(decoder.handle, &mut io) }, "decode")?;
+        check(
+            unsafe { ffi::jpeg_dec_process(decoder.handle, &mut io) },
+            "decode",
+        )?;
         let (width, height) = match scale {
             Some((width, height)) => (u32::from(width), u32::from(height)),
             None => (u32::from(info.width), u32::from(info.height)),
         };
         let rgb_len = (width * height) as usize * 3;
         if width == 0 || height == 0 || rgb_len > outbuf_len {
-            return Err(format!("unexpected output {width}x{height} for {outbuf_len} bytes"));
+            return Err(format!(
+                "unexpected output {width}x{height} for {outbuf_len} bytes"
+            ));
         }
         let pixels = rgb_to_gray(unsafe { core::slice::from_raw_parts(decoder.outbuf, rgb_len) });
         Ok(GrayImage {
@@ -1008,7 +1055,9 @@ fn jpeg_frame(bytes: &[u8]) -> Option<JpegFrame> {
             let valid = width > 0
                 && height > 0
                 && !sampling.is_empty()
-                && sampling.iter().all(|&(h, v)| (1..=4).contains(&h) && (1..=4).contains(&v));
+                && sampling
+                    .iter()
+                    .all(|&(h, v)| (1..=4).contains(&h) && (1..=4).contains(&v));
             return valid.then_some(JpegFrame {
                 width,
                 height,
@@ -1055,7 +1104,11 @@ fn jpeg_decoder_peak_bytes(frame: &JpegFrame, target_width: u16, target_height: 
     let components = frame.sampling.len() as u64;
     let output = output_pixels * components;
     let gray = if components > 1 { output_pixels } else { 0 };
-    let coefficients = if frame.progressive { blocks * 64 * 2 } else { 0 };
+    let coefficients = if frame.progressive {
+        blocks * 64 * 2
+    } else {
+        0
+    };
     coefficients + planes + output + gray
 }
 
@@ -1065,7 +1118,11 @@ fn jpeg_decoder_peak_bytes(frame: &JpegFrame, target_width: u16, target_height: 
 /// near the target resolution instead of at full size before being thrown
 /// away by resize. Refused when that would take more than
 /// [`JPEG_DECODER_BUDGET_BYTES`].
-fn decode_jpeg_scaled(bytes: &[u8], target_width: u16, target_height: u16) -> Result<GrayImage, String> {
+fn decode_jpeg_scaled(
+    bytes: &[u8],
+    target_width: u16,
+    target_height: u16,
+) -> Result<GrayImage, String> {
     let frame = jpeg_frame(bytes).ok_or_else(|| "JPEG frame header not found".to_string())?;
     let peak_bytes = jpeg_decoder_peak_bytes(&frame, target_width, target_height);
     if peak_bytes > JPEG_DECODER_BUDGET_BYTES {
@@ -1223,7 +1280,10 @@ fn resize_area_average(src: &GrayImage, target_width: u32, target_height: u32) -
         for &(x0, x1) in &columns {
             let mut sum: u32 = 0;
             for row in rows.chunks_exact(source_width) {
-                sum += row[x0..x1].iter().map(|value| u32::from(*value)).sum::<u32>();
+                sum += row[x0..x1]
+                    .iter()
+                    .map(|value| u32::from(*value))
+                    .sum::<u32>();
             }
             let count = (row_count * (x1 - x0)) as u32;
             pixels.push(if count > 0 { (sum / count) as u8 } else { 255 });
@@ -1254,7 +1314,11 @@ fn floyd_steinberg_to_1bpp(gray: GrayImage) -> Vec<u8> {
     }
     let load = |y: usize, row: &mut Vec<i16>| {
         row.clear();
-        row.extend(gray.pixels[y * width..(y + 1) * width].iter().map(|value| i16::from(*value)));
+        row.extend(
+            gray.pixels[y * width..(y + 1) * width]
+                .iter()
+                .map(|value| i16::from(*value)),
+        );
     };
     let diffuse = |value: &mut i16, amount: i32| {
         *value = (i32::from(*value) + amount).clamp(0, 255) as i16;
@@ -1442,11 +1506,11 @@ mod tests {
     };
 
     use super::{
-        decode_and_dither_cover, decode_and_dither_fill, decode_and_dither_fit_within,
-        fit_within, floyd_steinberg_to_1bpp, parse_cache_bytes, parse_inline_image_cache_bytes,
-        placeholder_bitmap, resize_area_average, write_cache_bytes,
-        write_inline_image_cache_bytes, CoverCache, EpubImageCache, GrayImage, CACHE_HEADER_BYTES,
-        MAX_PNG_DECODED_BUFFER_BYTES, THUMB_BITMAP_BYTES, THUMB_HEIGHT, THUMB_WIDTH,
+        decode_and_dither_cover, decode_and_dither_fill, decode_and_dither_fit_within, fit_within,
+        floyd_steinberg_to_1bpp, parse_cache_bytes, parse_inline_image_cache_bytes,
+        placeholder_bitmap, resize_area_average, write_cache_bytes, write_inline_image_cache_bytes,
+        CoverCache, EpubImageCache, GrayImage, CACHE_HEADER_BYTES, MAX_PNG_DECODED_BUFFER_BYTES,
+        THUMB_BITMAP_BYTES, THUMB_HEIGHT, THUMB_WIDTH,
     };
     use crate::reader::{BookFormat, ReaderBook};
 
@@ -1490,7 +1554,10 @@ mod tests {
     fn idct_size_matches_jpeg_decoder_choice() {
         let frame = super::jpeg_frame(&jpeg_header(0xC0, 1165, 1800, &[0x11])).unwrap();
         // 1/8 gives 146x225, short of 208x252 in both axes; 1/4 gives 292.
-        assert_eq!(super::jpeg_decoder_idct_size(&frame, THUMB_WIDTH, THUMB_HEIGHT), 2);
+        assert_eq!(
+            super::jpeg_decoder_idct_size(&frame, THUMB_WIDTH, THUMB_HEIGHT),
+            2
+        );
         assert_eq!(super::jpeg_decoder_idct_size(&frame, 480, 800), 4);
         assert_eq!(super::jpeg_decoder_idct_size(&frame, 140, 2000), 1);
         assert_eq!(super::jpeg_decoder_idct_size(&frame, 2000, 2000), 8);
@@ -1509,7 +1576,8 @@ mod tests {
         assert!(error.contains("budget"), "{error}");
         // The same picture as a baseline JPEG is decoded near the thumbnail
         // size, and a small progressive one still fits.
-        let baseline = super::jpeg_frame(&jpeg_header(0xC0, 1165, 1800, &[0x22, 0x11, 0x11])).unwrap();
+        let baseline =
+            super::jpeg_frame(&jpeg_header(0xC0, 1165, 1800, &[0x22, 0x11, 0x11])).unwrap();
         assert!(
             super::jpeg_decoder_peak_bytes(&baseline, THUMB_WIDTH, THUMB_HEIGHT)
                 < super::JPEG_DECODER_BUDGET_BYTES
@@ -1578,7 +1646,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/jpeg/progressive_420.jpg"
         ));
-        let cmyk = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/jpeg/cmyk.jpg"));
+        let cmyk = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/jpeg/cmyk.jpg"
+        ));
         // The progressive one goes through jpeg_luma, the CMYK one back to
         // jpeg-decoder.
         for bytes in [&progressive[..], &cmyk[..]] {
@@ -1588,7 +1659,10 @@ mod tests {
             // A picture: neither blank paper nor a solid block of ink.
             let ink: u32 = cover.bits.iter().map(|byte| byte.count_ones()).sum();
             let pixels = u32::from(THUMB_WIDTH) * u32::from(THUMB_HEIGHT);
-            assert!(ink > pixels / 10 && ink < pixels * 9 / 10, "ink {ink} of {pixels}");
+            assert!(
+                ink > pixels / 10 && ink < pixels * 9 / 10,
+                "ink {ink} of {pixels}"
+            );
         }
     }
 
@@ -1620,10 +1694,14 @@ mod tests {
         let mut pixels = vec![0u8; (target_width * target_height) as usize];
         for target_y in 0..target_height {
             let y0 = target_y * src.height / target_height;
-            let y1 = ((target_y + 1) * src.height / target_height).max(y0 + 1).min(src.height);
+            let y1 = ((target_y + 1) * src.height / target_height)
+                .max(y0 + 1)
+                .min(src.height);
             for target_x in 0..target_width {
                 let x0 = target_x * src.width / target_width;
-                let x1 = ((target_x + 1) * src.width / target_width).max(x0 + 1).min(src.width);
+                let x1 = ((target_x + 1) * src.width / target_width)
+                    .max(x0 + 1)
+                    .min(src.width);
                 let (mut sum, mut count) = (0u32, 0u32);
                 for y in y0..y1 {
                     for x in x0..x1 {
@@ -1679,21 +1757,38 @@ mod tests {
                 ((index % width) * 255 / width.max(1)) as u8 ^ (state >> 28) as u8
             })
             .collect();
-        GrayImage { width, height, pixels }
+        GrayImage {
+            width,
+            height,
+            pixels,
+        }
     }
 
     #[test]
     fn fast_resize_and_dither_match_the_reference_bit_for_bit() {
-        for (sw, sh, tw, th) in [(800, 1228, 432, 663), (279, 280, 432, 433), (37, 11, 5, 9), (1, 1, 3, 2)] {
+        for (sw, sh, tw, th) in [
+            (800, 1228, 432, 663),
+            (279, 280, 432, 433),
+            (37, 11, 5, 9),
+            (1, 1, 3, 2),
+        ] {
             let src = noisy_gray(sw, sh);
             let resized = resize_area_average(&src, tw, th);
-            assert_eq!(resized.pixels, reference_resize(&src, tw, th), "{sw}x{sh}->{tw}x{th}");
+            assert_eq!(
+                resized.pixels,
+                reference_resize(&src, tw, th),
+                "{sw}x{sh}->{tw}x{th}"
+            );
             let reference = reference_dither(GrayImage {
                 width: resized.width,
                 height: resized.height,
                 pixels: resized.pixels.clone(),
             });
-            assert_eq!(floyd_steinberg_to_1bpp(resized), reference, "{sw}x{sh}->{tw}x{th}");
+            assert_eq!(
+                floyd_steinberg_to_1bpp(resized),
+                reference,
+                "{sw}x{sh}->{tw}x{th}"
+            );
         }
     }
 
@@ -1955,8 +2050,7 @@ mod tests {
         // exactly 100x25, not cropped to fill the full 100x50 box the way
         // `decode_and_dither_fill` deliberately would.
         let png_bytes = encode_flat_rgba_png(400, 100);
-        let thumbnail =
-            decode_and_dither_fit_within(&png_bytes, "image/png", 100, 50).unwrap();
+        let thumbnail = decode_and_dither_fit_within(&png_bytes, "image/png", 100, 50).unwrap();
         assert_eq!((thumbnail.width, thumbnail.height), (100, 25));
         assert_eq!(
             thumbnail.bits.len(),
@@ -1967,7 +2061,9 @@ mod tests {
 
     #[test]
     fn inline_image_cache_round_trips_through_binary_header() {
-        let thumbnail = decode_and_dither_fit_within(&encode_flat_rgba_png(40, 20), "image/png", 100, 100).unwrap();
+        let thumbnail =
+            decode_and_dither_fit_within(&encode_flat_rgba_png(40, 20), "image/png", 100, 100)
+                .unwrap();
         let bytes = write_inline_image_cache_bytes(0xABCD_EF01_2345_6789, &thumbnail);
         let parsed = parse_inline_image_cache_bytes(&bytes, 0xABCD_EF01_2345_6789).unwrap();
         assert_eq!(parsed, thumbnail);
@@ -1975,7 +2071,9 @@ mod tests {
 
     #[test]
     fn inline_image_cache_rejects_a_stale_fingerprint() {
-        let thumbnail = decode_and_dither_fit_within(&encode_flat_rgba_png(40, 20), "image/png", 100, 100).unwrap();
+        let thumbnail =
+            decode_and_dither_fit_within(&encode_flat_rgba_png(40, 20), "image/png", 100, 100)
+                .unwrap();
         let bytes = write_inline_image_cache_bytes(1, &thumbnail);
         assert!(parse_inline_image_cache_bytes(&bytes, 2).is_none());
     }
@@ -1999,7 +2097,10 @@ mod tests {
         // hit -- the expensive (here: doomed-to-fail) worker is not run
         // again on every subsequent page visit.
         assert!(!cache.is_missing(&book, &href, 100, 100));
-        assert_eq!(cache.load_cached_bitmap(&book, &href, 100, 100), Some(generated));
+        assert_eq!(
+            cache.load_cached_bitmap(&book, &href, 100, 100),
+            Some(generated)
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

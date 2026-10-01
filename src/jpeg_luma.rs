@@ -27,9 +27,9 @@
 
 /// Zigzag position of a coefficient -> its natural (row-major) index.
 const ZIGZAG: [u8; 64] = [
-    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27,
-    20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58,
-    59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
 const MAX_COMPONENTS: usize = 4;
@@ -122,7 +122,8 @@ pub fn decode(
             0xDB => decoder.parse_dqt(segment)?,
             0xC4 => decoder.parse_dht(segment)?,
             0xDD if segment.len() >= 2 => {
-                decoder.restart_interval = usize::from(u16::from_be_bytes([segment[0], segment[1]]));
+                decoder.restart_interval =
+                    usize::from(u16::from_be_bytes([segment[0], segment[1]]));
             }
             0xEE if segment.len() >= 12 && segment.starts_with(b"Adobe") => {
                 decoder.adobe_transform = Some(segment[11]);
@@ -131,7 +132,13 @@ pub fn decode(
                 if decoder.frame.is_some() {
                     return Err("second frame header".into());
                 }
-                decoder.parse_sof(segment, marker == 0xC2, target_width, target_height, budget_bytes)?;
+                decoder.parse_sof(
+                    segment,
+                    marker == 0xC2,
+                    target_width,
+                    target_height,
+                    budget_bytes,
+                )?;
             }
             0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => {
                 return Err(format!("unsupported JPEG process (SOF 0x{marker:02X})"));
@@ -576,7 +583,11 @@ impl Decoder<'_> {
             if total > 256 || p + 17 + total > segment.len() {
                 return Err("bad Huffman table".into());
             }
-            let table = if class == 1 { &mut self.ac[id] } else { &mut self.dc[id] };
+            let table = if class == 1 {
+                &mut self.ac[id]
+            } else {
+                &mut self.dc[id]
+            };
             table.symbols[..total].copy_from_slice(&segment[p + 17..p + 17 + total]);
             let mut code = 0_i32;
             let mut k = 0_u16;
@@ -683,7 +694,11 @@ impl Decoder<'_> {
                 .position(|c| c.id == id)
                 .ok_or("scan names an unknown component")?;
             let tables = segment[2 + 2 * i];
-            members.push((component, usize::from(tables >> 4) & 3, usize::from(tables & 15) & 3));
+            members.push((
+                component,
+                usize::from(tables >> 4) & 3,
+                usize::from(tables & 15) & 3,
+            ));
         }
         let scan = Scan {
             ss: usize::from(segment[1 + 2 * count]),
@@ -697,7 +712,12 @@ impl Decoder<'_> {
         Ok(self.decode_scan(data_start, &members, scan))
     }
 
-    fn decode_scan(&mut self, start: usize, members: &[(usize, usize, usize)], scan: Scan) -> usize {
+    fn decode_scan(
+        &mut self,
+        start: usize,
+        members: &[(usize, usize, usize)],
+        scan: Scan,
+    ) -> usize {
         let Decoder {
             bits,
             dc,
@@ -723,7 +743,10 @@ impl Decoder<'_> {
 
         let interval = *restart_interval;
         let mut count = 0_usize;
-        let restart_if_due = |bits: &mut BitReader<'_>, count: usize, preds: &mut [i32; MAX_COMPONENTS], eobrun: &mut u32| {
+        let restart_if_due = |bits: &mut BitReader<'_>,
+                              count: usize,
+                              preds: &mut [i32; MAX_COMPONENTS],
+                              eobrun: &mut u32| {
             if interval > 0 && count > 0 && count % interval == 0 {
                 bits.restart();
                 *preds = [0; MAX_COMPONENTS];
@@ -803,7 +826,8 @@ fn pick_scale(frame: &Frame, target_width: u32, target_height: u32) -> usize {
     [1, 2, 4]
         .into_iter()
         .find(|&n| {
-            (frame.y_w * n).div_ceil(8) >= target_width && (frame.y_h * n).div_ceil(8) >= target_height
+            (frame.y_w * n).div_ceil(8) >= target_width
+                && (frame.y_h * n).div_ceil(8) >= target_height
         })
         .unwrap_or(8)
 }
@@ -811,7 +835,12 @@ fn pick_scale(frame: &Frame, target_width: u32, target_height: u32) -> usize {
 /// Working memory for `frame`: the chosen scale, or the largest smaller one
 /// that fits in `budget_bytes` and can actually be allocated. Allocation
 /// failures are reported, never fatal.
-fn allocate(frame: &Frame, target_width: u32, target_height: u32, budget_bytes: usize) -> Result<Blocks, String> {
+fn allocate(
+    frame: &Frame,
+    target_width: u32,
+    target_height: u32,
+    budget_bytes: usize,
+) -> Result<Blocks, String> {
     // In u64: on the ESP32-S3 `usize` is 32 bits, and a 65535x65535 frame
     // header would overflow it.
     let blocks = frame.bw as u64 * frame.bh as u64;
@@ -825,7 +854,9 @@ fn allocate(frame: &Frame, target_width: u32, target_height: u32, budget_bytes: 
             let (block_count, coef_count) = (blocks as usize, blocks as usize * keep);
             let mut coef = Vec::new();
             let mut nz = Vec::new();
-            if coef.try_reserve_exact(coef_count).is_ok() && nz.try_reserve_exact(block_count).is_ok() {
+            if coef.try_reserve_exact(coef_count).is_ok()
+                && nz.try_reserve_exact(block_count).is_ok()
+            {
                 coef.resize(coef_count, 0);
                 nz.resize(block_count, 0);
                 return Ok(Blocks { n, keep, coef, nz });
@@ -857,8 +888,13 @@ fn reconstruct(frame: &Frame, blocks: &Blocks, quant: &[u16; 64]) -> Result<Luma
     let mut cosines = [[0_f32; 8]; 8];
     for (x, row) in cosines.iter_mut().enumerate().take(n) {
         for (u, cosine) in row.iter_mut().enumerate().take(n) {
-            let scale = if u == 0 { std::f32::consts::FRAC_1_SQRT_2 } else { 1.0 };
-            *cosine = scale * (((2 * x + 1) * u) as f32 * std::f32::consts::PI / (2 * n) as f32).cos();
+            let scale = if u == 0 {
+                std::f32::consts::FRAC_1_SQRT_2
+            } else {
+                1.0
+            };
+            *cosine =
+                scale * (((2 * x + 1) * u) as f32 * std::f32::consts::PI / (2 * n) as f32).cos();
         }
     }
 
@@ -892,7 +928,8 @@ fn reconstruct(frame: &Frame, blocks: &Blocks, quant: &[u16; 64]) -> Result<Luma
                         break;
                     }
                     let sample: f32 = (0..n).map(|v| cosines[y][v] * rows[v][x]).sum();
-                    pixels[py * out_w + px] = (sample / 4.0 + 128.0).round().clamp(0.0, 255.0) as u8;
+                    pixels[py * out_w + px] =
+                        (sample / 4.0 + 128.0).round().clamp(0.0, 255.0) as u8;
                 }
             }
         }
@@ -916,7 +953,12 @@ mod tests {
         ($name:literal) => {
             (
                 $name,
-                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/jpeg/", $name)).as_slice(),
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/testdata/jpeg/",
+                    $name
+                ))
+                .as_slice(),
             )
         };
     }
@@ -970,7 +1012,10 @@ mod tests {
             .zip(reference)
             .filter_map(|(&a, &b)| b.map(|b| (a, b)))
             .collect();
-        assert!(pairs.len() * 10 >= ours.pixels.len() * 7, "too few comparable pixels");
+        assert!(
+            pairs.len() * 10 >= ours.pixels.len() * 7,
+            "too few comparable pixels"
+        );
         let total: u64 = pairs.iter().map(|&(a, b)| u64::from(a.abs_diff(b))).sum();
         let max = pairs.iter().map(|&(a, b)| a.abs_diff(b)).max().unwrap_or(0);
         (total as f64 / pairs.len() as f64, max)
@@ -993,9 +1038,18 @@ mod tests {
             for n in [4_u16, 2, 1] {
                 let (width, height, expected) = reference(bytes, n);
                 let ours = decode(bytes, width, height, UNLIMITED).unwrap();
-                assert_eq!((ours.width, ours.height), (width, height), "{name} 1/{}", 8 / n);
+                assert_eq!(
+                    (ours.width, ours.height),
+                    (width, height),
+                    "{name} 1/{}",
+                    8 / n
+                );
                 let (mean, max) = differences(&ours, &expected);
-                assert!(mean < 1.0 && max <= 3, "{name} 1/{}: mean {mean:.3} max {max}", 8 / n);
+                assert!(
+                    mean < 1.0 && max <= 3,
+                    "{name} 1/{}: mean {mean:.3} max {max}",
+                    8 / n
+                );
             }
         }
     }
@@ -1024,11 +1078,17 @@ mod tests {
     #[test]
     fn cmyk_and_rgb_files_are_left_to_jpeg_decoder() {
         let (_, cmyk) = fixture!("cmyk.jpg");
-        assert_eq!(decode(cmyk, 100, 100, UNLIMITED).err().unwrap(), "CMYK JPEG");
+        assert_eq!(
+            decode(cmyk, 100, 100, UNLIMITED).err().unwrap(),
+            "CMYK JPEG"
+        );
         // The same YCbCr file with its components renamed R, G and B: the
         // first one would then be red, not luma.
         let (_, bytes) = fixture!("progressive_420.jpg");
-        let sof = bytes.windows(2).position(|pair| pair == [0xFF, 0xC2]).unwrap();
+        let sof = bytes
+            .windows(2)
+            .position(|pair| pair == [0xFF, 0xC2])
+            .unwrap();
         let mut rgb = bytes.to_vec();
         for (i, id) in b"RGB".iter().enumerate() {
             rgb[sof + 10 + 3 * i] = *id;
@@ -1049,13 +1109,20 @@ mod tests {
                     corrupt[i] ^= 0x5A;
                 }
                 if let Ok(image) = decode(&corrupt, 100, 100, UNLIMITED) {
-                    assert_eq!(image.pixels.len(), (image.width * image.height) as usize, "{name}");
+                    assert_eq!(
+                        image.pixels.len(),
+                        (image.width * image.height) as usize,
+                        "{name}"
+                    );
                 }
             }
         }
         // A frame header announcing 65535x65535 is refused, not allocated.
         let (_, bytes) = fixture!("progressive_420.jpg");
-        let sof = bytes.windows(2).position(|pair| pair == [0xFF, 0xC2]).unwrap();
+        let sof = bytes
+            .windows(2)
+            .position(|pair| pair == [0xFF, 0xC2])
+            .unwrap();
         let mut huge = bytes.to_vec();
         huge[sof + 5..sof + 9].copy_from_slice(&[0xFF; 4]);
         assert!(decode(&huge, 480, 800, 4 * 1024 * 1024).is_err());

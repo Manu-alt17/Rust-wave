@@ -14,9 +14,7 @@ use std::{
 
 use crate::{
     buttons::ButtonEvent,
-    dictionary::{
-        compact_error, lookup_dictionary_explained, DictionaryIndex, DICTIONARY_ROOT,
-    },
+    dictionary::{compact_error, lookup_dictionary_explained, DictionaryIndex, DICTIONARY_ROOT},
     epub::{
         open_epub_on_worker, read_epub_title_on_worker, EpubChapter, EpubDocument, EpubImage,
         EpubTocEntry, EPUB_IMAGE_LIMIT, EPUB_IMAGE_SENTINEL, EPUB_REFLOW_TEXT_LIMIT,
@@ -1025,8 +1023,8 @@ fn inline_image_slots(
         height = page_height;
         width = (source_w * height / source_h).max(1);
     }
-    let span = ((height as i32 + 2 + line_step - 1) / line_step)
-        .clamp(1, lines_per_page as i32) as usize;
+    let span =
+        ((height as i32 + 2 + line_step - 1) / line_step).clamp(1, lines_per_page as i32) as usize;
     (span, clamp_u16(width as u32), clamp_u16(height as u32))
 }
 
@@ -2112,7 +2110,11 @@ impl ReaderUiState {
         // it drops out of Recent.
         let mut restored = 0_usize;
         for location in &self.recent {
-            if !self.positions.iter().any(|entry| entry.path == location.path) {
+            if !self
+                .positions
+                .iter()
+                .any(|entry| entry.path == location.path)
+            {
                 self.positions.push(location.clone());
                 restored += 1;
             }
@@ -3118,7 +3120,9 @@ impl ReaderUiState {
         if session.book.format != BookFormat::Epub {
             return;
         }
-        let current = session.page_number_base.saturating_add(session.current_page);
+        let current = session
+            .page_number_base
+            .saturating_add(session.current_page);
         let book_path = session.book.path.clone();
         let pending = session
             .cache
@@ -3127,19 +3131,27 @@ impl ReaderUiState {
             .flat_map(|page| page.lines.iter())
             .filter_map(|line| line.image.as_ref())
             .find(|image| {
-                !self.prewarmed_images.iter().any(|(path, href, width, height)| {
-                    *path == book_path
-                        && *href == image.href
-                        && *width == image.box_width
-                        && *height == image.box_height
-                })
+                !self
+                    .prewarmed_images
+                    .iter()
+                    .any(|(path, href, width, height)| {
+                        *path == book_path
+                            && *href == image.href
+                            && *width == image.box_width
+                            && *height == image.box_height
+                    })
             })
             .cloned();
         let Some(image) = pending else {
             return;
         };
         let cache = crate::cover_cache::EpubImageCache::new(self.cache_directory());
-        if cache.is_missing(&session.book, &image.href, image.box_width, image.box_height) {
+        if cache.is_missing(
+            &session.book,
+            &image.href,
+            image.box_width,
+            image.box_height,
+        ) {
             let _ = cache.generate_bitmap(
                 &session.book,
                 &image.href,
@@ -3406,11 +3418,13 @@ impl ReaderUiState {
             return;
         };
         let message = match self.cached_dictionary_index() {
-            Ok(index) => match lookup_dictionary_explained(Path::new(DICTIONARY_ROOT), index, &word) {
-                Ok(Some(entry)) => entry.definition,
-                Ok(None) => "Word not found in dictionary.".to_string(),
-                Err(error) => format!("Dictionary: {}", compact_error(&error.to_string())),
-            },
+            Ok(index) => {
+                match lookup_dictionary_explained(Path::new(DICTIONARY_ROOT), index, &word) {
+                    Ok(Some(entry)) => entry.definition,
+                    Ok(None) => "Word not found in dictionary.".to_string(),
+                    Err(error) => format!("Dictionary: {}", compact_error(&error.to_string())),
+                }
+            }
             Err(error) => format!("Dictionary: {}", compact_error(&error)),
         };
         self.dictionary_mode = ReaderDictionaryMode::Definition {
@@ -5326,8 +5340,7 @@ fn paginate_decoded_window(
                     break;
                 }
             }
-            let sentinel_offset =
-                next_offset.saturating_sub(EPUB_IMAGE_SENTINEL.len_utf8() as u64);
+            let sentinel_offset = next_offset.saturating_sub(EPUB_IMAGE_SENTINEL.len_utf8() as u64);
             let Some(matched_image) = images
                 .iter()
                 .find(|image| image.text_offset == sentinel_offset)
@@ -5794,9 +5807,7 @@ fn read_epub_cache_header(path: &Path) -> Result<String, String> {
     let mut buffer = Vec::with_capacity(EPUB_CACHE_HEADER_READ_CHUNK_BYTES);
     let mut chunk = vec![0_u8; EPUB_CACHE_HEADER_READ_CHUNK_BYTES];
     while buffer.len() < EPUB_CACHE_HEADER_MAX_BYTES {
-        let want = chunk
-            .len()
-            .min(EPUB_CACHE_HEADER_MAX_BYTES - buffer.len());
+        let want = chunk.len().min(EPUB_CACHE_HEADER_MAX_BYTES - buffer.len());
         let read = file
             .read(&mut chunk[..want])
             .map_err(|error| format!("EPUB cache read failed: {error}"))?;
@@ -6334,7 +6345,9 @@ fn atomic_replace_text_with_durability(path: &Path, text: &str, fsync: bool) -> 
     if crate::boot_profile::is_active() {
         span.detail(format_args!(
             "{} fsync={fsync} bytes={}",
-            path.file_name().and_then(|name| name.to_str()).unwrap_or("?"),
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("?"),
             text.len()
         ));
     }
@@ -6561,7 +6574,11 @@ mod tests {
             .collect();
 
         let visible = reader.visible_entries();
-        assert_eq!(visible[0].book.path, book(0).path, "21% book sorts as in progress");
+        assert_eq!(
+            visible[0].book.path,
+            book(0).path,
+            "21% book sorts as in progress"
+        );
         assert_eq!(
             visible.last().unwrap().book.path,
             book(1).path,
@@ -7065,8 +7082,7 @@ mod tests {
     #[test]
     fn a_word_longer_than_one_line_hard_breaks_without_dropping_characters() {
         let decoded = decoded_from("supercalifragilistic word");
-        let (lines, _) =
-            paginate_decoded(&decoded, word_wrap_layout(6, 10), &[], &monospace_width);
+        let (lines, _) = paginate_decoded(&decoded, word_wrap_layout(6, 10), &[], &monospace_width);
         let rebuilt: String = lines
             .iter()
             .map(|line| line.text.as_str())
@@ -7212,8 +7228,12 @@ mod tests {
         let text = format!("{EPUB_IMAGE_SENTINEL}\n");
         let images = image_fixture(&text, 600, 900);
         let layout = word_wrap_layout(400, 20);
-        let (lines, _) =
-            paginate_decoded(&decoded_from_bytes(&text), layout, &images, &monospace_width);
+        let (lines, _) = paginate_decoded(
+            &decoded_from_bytes(&text),
+            layout,
+            &images,
+            &monospace_width,
+        );
         let image = lines[0].image.as_ref().expect("image on first line");
         assert_eq!(image.slot_span, 20);
         assert_eq!(i32::from(image.box_width), layout.available_width_px);
@@ -7248,7 +7268,10 @@ mod tests {
             paginate_decoded(&decoded_from_bytes(&text), layout, &wide, &monospace_width);
         let image = lines.iter().find_map(|line| line.image.as_ref()).unwrap();
         assert_eq!((image.box_width, image.box_height), (400, 50));
-        assert_eq!(image.slot_span, ((50 + 2 + line_step - 1) / line_step) as usize);
+        assert_eq!(
+            image.slot_span,
+            ((50 + 2 + line_step - 1) / line_step) as usize
+        );
 
         // A small ornament is upscaled at most READER_INLINE_IMAGE_MAX_UPSCALE
         // times instead of being blown up to the full column width.
@@ -7271,7 +7294,8 @@ mod tests {
 
     #[test]
     fn invisible_and_typographic_characters_do_not_become_question_marks() {
-        let source = "pa\u{00AD}ro\u{200B}la\u{FEFF} e\u{0301} \u{FB01}ne \u{2022} \u{2009}x\u{2011}y";
+        let source =
+            "pa\u{00AD}ro\u{200B}la\u{FEFF} e\u{0301} \u{FB01}ne \u{2022} \u{2009}x\u{2011}y";
         let decoded: Vec<(char, u64)> = source
             .chars()
             .enumerate()
@@ -7325,7 +7349,10 @@ mod tests {
         assert_eq!(BookFont::default(), BookFont::Literata);
         assert_eq!(BookFont::Literata.next(), BookFont::AtkinsonHyperlegible);
         assert_eq!(BookFont::AtkinsonHyperlegible.next(), BookFont::Literata);
-        assert_eq!(BookFont::Literata.previous(), BookFont::AtkinsonHyperlegible);
+        assert_eq!(
+            BookFont::Literata.previous(),
+            BookFont::AtkinsonHyperlegible
+        );
         assert_eq!(BookFont::parse("literata").unwrap(), BookFont::Literata);
         // Families older firmware offered load as their nearest family.
         assert_eq!(BookFont::parse("serif").unwrap(), BookFont::Literata);
@@ -7896,9 +7923,15 @@ mod tests {
         };
 
         let mut reader = open_reader();
-        assert!(!reader.pending_open_has_warm_cache(), "first open has no .EPX yet");
+        assert!(
+            !reader.pending_open_has_warm_cache(),
+            "first open has no .EPX yet"
+        );
         while reader.tick() != ReaderTickOutcome::FirstPageReady {}
-        assert!(!reader.pending_open_has_warm_cache(), "nothing pending once open");
+        assert!(
+            !reader.pending_open_has_warm_cache(),
+            "nothing pending once open"
+        );
         reader.tick(); // deferred .EPX write
 
         let reader = open_reader();
@@ -9388,9 +9421,11 @@ mod backward_navigation_tests {
     fn paging_back_from_a_resumed_chapter_shows_the_cover_page() {
         let cover = EPUB_IMAGE_SENTINEL.to_string();
         let body = "Parola ".repeat(400);
-        let text = format!("{cover}
+        let text = format!(
+            "{cover}
 
-{body}");
+{body}"
+        );
         let cover_end = cover.len() as u64;
         let body_start = cover_end + 2;
         let document = EpubDocument::from_resident_for_test(

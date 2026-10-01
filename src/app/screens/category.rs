@@ -400,7 +400,10 @@ struct TileGridMetrics {
 fn tile_grid_metrics(state: &AppState) -> TileGridMetrics {
     let heading_line = i32::from(state.display.heading_style().line_height());
     TileGridMetrics {
-        header_height: heading_line + TILE_GRID_HEADER_UNDERLINE_GAP + 1 + TILE_GRID_HEADER_BELOW_GAP,
+        header_height: heading_line
+            + TILE_GRID_HEADER_UNDERLINE_GAP
+            + 1
+            + TILE_GRID_HEADER_BELOW_GAP,
         row_height: COMPACT_TILE_SIZE.height as i32 + TILE_GAP_Y,
     }
 }
@@ -437,7 +440,10 @@ fn push_tile_grid_rows(blocks: &mut Vec<TileGridBlock>, start: usize, end: usize
     let mut index = start;
     while index < end {
         let count = (end - index).min(TILE_GRID_COLUMNS);
-        blocks.push(TileGridBlock::Row { start: index, count });
+        blocks.push(TileGridBlock::Row {
+            start: index,
+            count,
+        });
         index += count;
     }
 }
@@ -518,7 +524,10 @@ fn render_tile_grid(
 
     draw_header(display, state, &title)?;
 
-    let primary_count = state.category_usage.most_used_count(route).min(entries.len());
+    let primary_count = state
+        .category_usage
+        .most_used_count(route)
+        .min(entries.len());
     let blocks = tile_grid_blocks(entries.len(), primary_count);
     let metrics = tile_grid_metrics(state);
     let available = TILE_GRID_BOTTOM - TILE_GRID_TOP;

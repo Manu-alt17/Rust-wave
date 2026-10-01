@@ -266,8 +266,8 @@ impl RegionalPreferences {
                 .ok_or_else(|| anyhow::anyhow!("malformed line {line:?}"))?;
             match key.trim() {
                 "timezone" => {
-                    preferences.timezone = TimeZoneProfile::parse(value.trim())
-                        .context("invalid timezone value")?;
+                    preferences.timezone =
+                        TimeZoneProfile::parse(value.trim()).context("invalid timezone value")?;
                 }
                 "locale" => {
                     preferences.locale =

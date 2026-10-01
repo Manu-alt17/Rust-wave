@@ -382,7 +382,10 @@ mod tests {
                 preferences
             );
         }
-        assert_eq!(SleepScreenMode::BookCover.next(), SleepScreenMode::Sequential);
+        assert_eq!(
+            SleepScreenMode::BookCover.next(),
+            SleepScreenMode::Sequential
+        );
     }
 
     #[test]

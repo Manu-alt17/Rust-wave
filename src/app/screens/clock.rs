@@ -109,11 +109,7 @@ pub fn render_clock_set_time(
     let heading = state.display.heading_style();
     let body = state.display.body_style();
 
-    draw_header(
-        display,
-        state,
-        t(locale, "DATE & TIME", "DATA E ORA"),
-    )?;
+    draw_header(display, state, t(locale, "DATE & TIME", "DATA E ORA"))?;
 
     let Some(editor) = state.clock_time_editor.as_ref() else {
         Text::new(

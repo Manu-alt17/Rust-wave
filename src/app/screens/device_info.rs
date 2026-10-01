@@ -28,7 +28,10 @@ pub fn render_device_info(
     let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
-    let partials = format!("{} / {PANEL_PARTIAL_REFRESH_LIMIT}", state.partial_refreshes);
+    let partials = format!(
+        "{} / {PANEL_PARTIAL_REFRESH_LIMIT}",
+        state.partial_refreshes
+    );
 
     // "Info" reads the same in English and Italian chrome, so this header
     // does not need a locale-branched `t()` call.

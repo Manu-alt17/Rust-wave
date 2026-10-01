@@ -98,7 +98,9 @@ mod tests {
 
     #[test]
     fn large_reads_arrive_whole_and_in_order() {
-        let data: Vec<u8> = (0..BOUNCE_BYTES * 3 + 123).map(|i| (i * 7 % 251) as u8).collect();
+        let data: Vec<u8> = (0..BOUNCE_BYTES * 3 + 123)
+            .map(|i| (i * 7 % 251) as u8)
+            .collect();
         for step in [1_000, BOUNCE_BYTES, 100_000] {
             let mut buffer = vec![0_u8; data.len()];
             let read = read_full(&mut Trickle { data: &data, step }, &mut buffer).unwrap();

@@ -72,7 +72,10 @@ mod tests {
         // A second rotation replaces the previous .OLD.
         append_with_limit(&log, "fourth, long enough\n", 10).unwrap();
         append_with_limit(&log, "fifth\n", 10).unwrap();
-        assert_eq!(fs::read_to_string(&old).unwrap(), "third\nfourth, long enough\n");
+        assert_eq!(
+            fs::read_to_string(&old).unwrap(),
+            "third\nfourth, long enough\n"
+        );
         assert_eq!(fs::read_to_string(&log).unwrap(), "fifth\n");
         fs::remove_dir_all(&dir).unwrap();
     }

@@ -92,12 +92,7 @@ pub fn render_files(
             StorageEntryKind::RetryScan => t(locale, "Retry SD scan", "Rileggi la scheda SD"),
             _ => entry.name.as_str(),
         };
-        Text::new(
-            &truncate_label(name, 29),
-            Point::new(62, top + 23),
-            heading,
-        )
-        .draw(display)?;
+        Text::new(&truncate_label(name, 29), Point::new(62, top + 23), heading).draw(display)?;
         Text::new(
             entry.kind.badge_i18n(locale),
             Point::new(62, top + 43),

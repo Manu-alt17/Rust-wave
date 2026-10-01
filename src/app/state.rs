@@ -1155,7 +1155,10 @@ mod tests {
     fn home_categories_wrap_and_open() {
         let mut state = AppState::default();
         // Continue Reading starts pre-selected (see `AppState::default`).
-        assert_eq!(state.home_selected, home_index(ScreenRoute::ContinueReading));
+        assert_eq!(
+            state.home_selected,
+            home_index(ScreenRoute::ContinueReading)
+        );
         state.apply(ButtonEvent::Down);
         assert_eq!(state.home_selected, 0); // wraps to the first grid tile (Library).
         state.apply(ButtonEvent::Select);
@@ -1555,7 +1558,10 @@ mod tests {
         // immediately instead of stopping on the old intermediate Reader
         // category / summary screen, neither of which exists any more.
         let mut state = AppState::default();
-        assert_eq!(state.home_selected, home_index(ScreenRoute::ContinueReading));
+        assert_eq!(
+            state.home_selected,
+            home_index(ScreenRoute::ContinueReading)
+        );
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Library);
         state.back();
@@ -1568,7 +1574,10 @@ mod tests {
         // static `parent()`), whatever screen the book was opened from.
         let mut state = AppState::default();
         state.reader.session = Some(reader_session_with_lines(&["Line"]));
-        assert_eq!(state.home_selected, home_index(ScreenRoute::ContinueReading));
+        assert_eq!(
+            state.home_selected,
+            home_index(ScreenRoute::ContinueReading)
+        );
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::ReaderPage);
         state.back();
@@ -1676,10 +1685,7 @@ mod tests {
         state.router.navigate_to(ScreenRoute::Library);
         state.open_power_key_menu();
         assert_eq!(state.active_route(), ScreenRoute::PowerKeyMenu);
-        assert_eq!(
-            state.power_key_sleep_restore_route(),
-            ScreenRoute::Library
-        );
+        assert_eq!(state.power_key_sleep_restore_route(), ScreenRoute::Library);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Library);
         assert!(state.take_power_key_manual_refresh_request());

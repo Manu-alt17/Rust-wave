@@ -1199,7 +1199,12 @@ tryAutoUnlock();
     }
 
     impl SharedStatus {
-        fn new(url: String, code: String, ap_ssid: Option<String>, ap_password: Option<String>) -> Self {
+        fn new(
+            url: String,
+            code: String,
+            ap_ssid: Option<String>,
+            ap_password: Option<String>,
+        ) -> Self {
             Self {
                 snapshot: WifiTransferSnapshot {
                     state: WifiTransferState::Ready,

@@ -301,11 +301,10 @@ mod tests {
 
     #[test]
     fn spawned_psram_worker_falls_back_to_the_normal_spawn_off_device() {
-        let receiver =
-            spawn_named_worker_in_psram("unit-worker-spawn-psram", 16 * 1024, || {
-                Ok::<_, String>(13)
-            })
-            .unwrap();
+        let receiver = spawn_named_worker_in_psram("unit-worker-spawn-psram", 16 * 1024, || {
+            Ok::<_, String>(13)
+        })
+        .unwrap();
         let value = loop {
             if let Some(result) = poll_named_worker("unit-worker-spawn-psram", &receiver) {
                 break result.unwrap();
@@ -328,10 +327,11 @@ mod tests {
 
     #[test]
     fn spawned_worker_reports_a_panic_as_a_disconnected_channel() {
-        let receiver = spawn_named_worker("unit-worker-panic", 16 * 1024, || -> Result<(), String> {
-            panic!("deliberate unit-test panic")
-        })
-        .unwrap();
+        let receiver =
+            spawn_named_worker("unit-worker-panic", 16 * 1024, || -> Result<(), String> {
+                panic!("deliberate unit-test panic")
+            })
+            .unwrap();
         let error = loop {
             if let Some(result) = poll_named_worker("unit-worker-panic", &receiver) {
                 break result.unwrap_err();

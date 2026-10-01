@@ -202,9 +202,9 @@ pub fn parse_sleep_timestamp(text: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_sleep_timestamp, wake_uses_fast_waveform, PanelGlobalReason,
-        PanelRefreshCoordinator, PanelRefreshPlan, PanelRefreshRequest,
-        FAST_WAKE_MAX_SLEEP_SECONDS, PANEL_PARTIAL_REFRESH_LIMIT,
+        parse_sleep_timestamp, wake_uses_fast_waveform, PanelGlobalReason, PanelRefreshCoordinator,
+        PanelRefreshPlan, PanelRefreshRequest, FAST_WAKE_MAX_SLEEP_SECONDS,
+        PANEL_PARTIAL_REFRESH_LIMIT,
     };
 
     #[test]
@@ -219,8 +219,14 @@ mod tests {
             Some(slept),
             Some(slept + FAST_WAKE_MAX_SLEEP_SECONDS)
         ));
-        assert!(!wake_uses_fast_waveform(Some(slept), Some(slept - 1)), "clock went back");
-        assert!(!wake_uses_fast_waveform(None, Some(slept)), "no sleep record");
+        assert!(
+            !wake_uses_fast_waveform(Some(slept), Some(slept - 1)),
+            "clock went back"
+        );
+        assert!(
+            !wake_uses_fast_waveform(None, Some(slept)),
+            "no sleep record"
+        );
         assert!(!wake_uses_fast_waveform(Some(slept), None), "no clock");
     }
 
@@ -285,7 +291,10 @@ mod tests {
             PanelRefreshPlan::PartialFullscreen { partial_count: 1 }
         );
         // Entering the cover.
-        assert_eq!(coordinator.plan_for_frame(PanelRefreshRequest::Normal, true, false), transition);
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, true, false),
+            transition
+        );
         assert_eq!(coordinator.partial_count(), 0);
         // Redrawing the cover itself (clock tick, overlay) stays partial.
         assert_eq!(
@@ -293,7 +302,10 @@ mod tests {
             PanelRefreshPlan::PartialFullscreen { partial_count: 1 }
         );
         // Leaving the cover.
-        assert_eq!(coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, false), transition);
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, false),
+            transition
+        );
         assert!(PanelGlobalReason::FullPageImageTransition.uses_fast_waveform());
     }
 

@@ -36,7 +36,9 @@ static KEPT_TEXT_FILE: Mutex<Option<(PathBuf, File)>> = Mutex::new(None);
 /// or replaced files since), so a read never goes through a handle on a file
 /// that has been replaced.
 pub fn release_kept_text_file() {
-    *KEPT_TEXT_FILE.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    *KEPT_TEXT_FILE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
 }
 
 /// Fill `buffer` from `offset`, stopping early only at the end of the file.
@@ -44,7 +46,8 @@ pub fn release_kept_text_file() {
 fn read_at(file: &mut File, offset: u64, buffer: &mut [u8]) -> Result<usize, String> {
     file.seek(SeekFrom::Start(offset))
         .map_err(|error| format!("EPUB cache seek failed: {error}"))?;
-    crate::sd_io::read_full(file, buffer).map_err(|error| format!("EPUB cache read failed: {error}"))
+    crate::sd_io::read_full(file, buffer)
+        .map_err(|error| format!("EPUB cache read failed: {error}"))
 }
 
 /// Maximum EPUB archive bytes accepted from removable storage.
@@ -235,7 +238,9 @@ impl EpubDocument {
         match &self.text {
             EpubTextStore::Resident(text) => Ok(Cow::Borrowed(&text.as_bytes()[start..end])),
             EpubTextStore::OnDisk { path, body_offset } => {
-                let mut kept = KEPT_TEXT_FILE.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut kept = KEPT_TEXT_FILE
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 if !matches!(kept.as_ref(), Some((kept_path, _)) if kept_path == path) {
                     let file = File::open(path)
                         .map_err(|error| format!("EPUB cache read failed: {error}"))?;
@@ -566,14 +571,11 @@ fn parse_central_entries(
 
 /// Exact-name lookup first, then an ASCII case-insensitive fallback.
 fn find_entry<'a>(entries: &'a [ZipEntry], name: &str) -> Option<&'a ZipEntry> {
-    entries
-        .iter()
-        .find(|entry| entry.name == name)
-        .or_else(|| {
-            entries
-                .iter()
-                .find(|entry| entry.name.eq_ignore_ascii_case(name))
-        })
+    entries.iter().find(|entry| entry.name == name).or_else(|| {
+        entries
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(name))
+    })
 }
 
 fn check_entry_limits(entry: &ZipEntry) -> Result<(), String> {
@@ -906,8 +908,7 @@ pub fn extract_member(path: impl AsRef<Path>, href: &str) -> Result<Vec<u8>, Str
         read_file_range(&mut file, central_offset, central_size)?
     };
     let entries = parse_central_entries(&directory, 0, directory.len(), entry_count)?;
-    let entry =
-        find_entry(&entries, href).ok_or_else(|| format!("EPUB member missing: {href}"))?;
+    let entry = find_entry(&entries, href).ok_or_else(|| format!("EPUB member missing: {href}"))?;
     check_entry_limits(entry)?;
     if entry.compressed_size > EPUB_COVER_BYTES_LIMIT {
         return Err(format!(
@@ -1798,8 +1799,8 @@ const LATIN1_ENTITIES: [&str; 96] = [
     "Ocirc", "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute",
     "THORN", "szlig", "agrave", "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil",
     "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml", "eth", "ntilde",
-    "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute",
-    "ucirc", "uuml", "yacute", "thorn", "yuml",
+    "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc",
+    "uuml", "yacute", "thorn", "yuml",
 ];
 
 /// Decode one character reference (the text between `&` and `;`): numeric
@@ -1879,10 +1880,10 @@ mod tests {
     };
 
     use super::{
-        attribute, extract_cover, extract_member, image_header_size, extract_cover_on_worker, first_open_tag, html_to_text,
-        html_to_text_with_images, open_epub, open_epub_on_worker, read_epub_title_on_worker,
-        EPUB_IMAGE_LIMIT, EPUB_IMAGE_SENTINEL, EPUB_PARSER_WORKER_STACK_BYTES,
-        EPUB_REFLOW_TEXT_LIMIT, EPUB_TITLE_WORKER_STACK_BYTES,
+        attribute, extract_cover, extract_cover_on_worker, extract_member, first_open_tag,
+        html_to_text, html_to_text_with_images, image_header_size, open_epub, open_epub_on_worker,
+        read_epub_title_on_worker, EPUB_IMAGE_LIMIT, EPUB_IMAGE_SENTINEL,
+        EPUB_PARSER_WORKER_STACK_BYTES, EPUB_REFLOW_TEXT_LIMIT, EPUB_TITLE_WORKER_STACK_BYTES,
     };
 
     fn temp_epub(name: &str) -> PathBuf {
@@ -2055,7 +2056,10 @@ mod tests {
         let offsets = offsets_for(&["p1.xhtml", "c1.xhtml", "c2.xhtml", "p2.xhtml"]);
         let toc = super::ncx_to_toc(ncx, "OEBPS", &offsets);
         let labels: Vec<&str> = toc.iter().map(|entry| entry.label.as_str()).collect();
-        assert_eq!(labels, ["Parte prima", "Capitolo 1", "Capitolo 2", "Parte seconda"]);
+        assert_eq!(
+            labels,
+            ["Parte prima", "Capitolo 1", "Capitolo 2", "Parte seconda"]
+        );
     }
 
     #[test]
@@ -2072,7 +2076,10 @@ mod tests {
         let labels: Vec<&str> = toc.iter().map(|entry| entry.label.as_str()).collect();
         assert_eq!(labels, ["Uno", "Due"]);
         // No marked toc nav: every link, as before.
-        assert_eq!(super::toc_nav_region("<a href=\"x\">x</a>"), "<a href=\"x\">x</a>");
+        assert_eq!(
+            super::toc_nav_region("<a href=\"x\">x</a>"),
+            "<a href=\"x\">x</a>"
+        );
     }
 
     #[test]

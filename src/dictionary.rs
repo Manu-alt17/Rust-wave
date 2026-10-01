@@ -292,7 +292,9 @@ fn validate_relative_shard_path(path: &str) -> Result<()> {
             !file.is_empty()
                 && !sub.is_empty()
                 && sub.len() <= 8
-                && sub.chars().all(|character| character.is_ascii_alphanumeric())
+                && sub
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
         }
         _ => false,
     };
@@ -562,8 +564,8 @@ fn exact_shard_bases(query: &str) -> Vec<String> {
 fn read_bounded_shard(root: &Path, row: &DictionaryIndexRow) -> Result<String> {
     let path = root.join(PathBuf::from(&row.relative_path));
     // One open per shard: every FAT open walks the containing directory.
-    let mut file =
-        File::open(&path).with_context(|| format!("dictionary pack incomplete: missing {}", row.name))?;
+    let mut file = File::open(&path)
+        .with_context(|| format!("dictionary pack incomplete: missing {}", row.name))?;
     let length = file.metadata()?.len();
     if length > DICTIONARY_SHARD_MAX_BYTES as u64 {
         bail!("{} shard too large: {} bytes", row.name, length);
@@ -895,8 +897,16 @@ mod tests {
             "DATA/BA/BABBE2.JSN",
             r#"{"BABBEO":[{"def":"persona sciocca e credulona"}],"BABBEX":[{"def":"plurale di babbex"}]}"#,
         );
-        write_shard(root, "DATA/BA/BABBU.JSN", r#"{"BABBUINO":[{"def":"scimmia"}]}"#);
-        write_shard(root, "DATA/CI/CITT.JSN", r#"{"CITTà":[{"def":"centro abitato…"}]}"#);
+        write_shard(
+            root,
+            "DATA/BA/BABBU.JSN",
+            r#"{"BABBUINO":[{"def":"scimmia"}]}"#,
+        );
+        write_shard(
+            root,
+            "DATA/CI/CITT.JSN",
+            r#"{"CITTà":[{"def":"centro abitato…"}]}"#,
+        );
         write_shard(
             root,
             "DATA/CI/CITTA.JSN",
@@ -951,7 +961,10 @@ mod tests {
         assert_eq!(exact("A").as_deref(), Some("preposizione"));
         assert_eq!(exact("ZZZ").as_deref(), Some("sonno"));
         // BABBEO lives in the numbered overflow shard BABBE2.
-        assert_eq!(exact("BABBEO").as_deref(), Some("persona sciocca e credulona"));
+        assert_eq!(
+            exact("BABBEO").as_deref(),
+            Some("persona sciocca e credulona")
+        );
         assert_eq!(exact("CITTà").as_deref(), Some("centro abitato..."));
         assert_eq!(exact("QUASI"), None);
         assert_eq!(exact("ZZZZ"), None);
@@ -963,7 +976,10 @@ mod tests {
 
     #[test]
     fn detects_only_pure_form_of_definitions() {
-        assert_eq!(form_of_lemma("plurale di babbea").as_deref(), Some("babbea"));
+        assert_eq!(
+            form_of_lemma("plurale di babbea").as_deref(),
+            Some("babbea")
+        );
         assert_eq!(
             form_of_lemma("prima persona singolare del passato remoto indicativo di andare")
                 .as_deref(),
@@ -973,7 +989,10 @@ mod tests {
             form_of_lemma("plurale di cittadino / che sono abitanti di una città").as_deref(),
             Some("cittadino")
         );
-        assert_eq!(form_of_lemma("sinonimo di bacheròzzolo").as_deref(), Some("bacheròzzolo"));
+        assert_eq!(
+            form_of_lemma("sinonimo di bacheròzzolo").as_deref(),
+            Some("bacheròzzolo")
+        );
         assert_eq!(
             form_of_lemma("targa automobilistica e sigla utilizzata in ambito burocratico di Bari"),
             None
@@ -1054,7 +1073,14 @@ mod tests {
     fn real_pack_smoke() {
         let root = std::path::PathBuf::from(std::env::var("RUSTMIX_DICT_PACK").unwrap());
         let index = DictionaryIndex::open(&root).unwrap();
-        for word in ["CASA", "ANDAI", "CITTADINE", "BABBEE", "CITTà", "L'IMPERTURBABILE"] {
+        for word in [
+            "CASA",
+            "ANDAI",
+            "CITTADINE",
+            "BABBEE",
+            "CITTà",
+            "L'IMPERTURBABILE",
+        ] {
             let started = std::time::Instant::now();
             let entry = lookup_dictionary_explained(&root, &index, word).unwrap();
             println!(
@@ -1065,4 +1091,3 @@ mod tests {
         }
     }
 }
-

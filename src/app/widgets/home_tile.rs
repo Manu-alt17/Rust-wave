@@ -7,7 +7,7 @@ use core::convert::Infallible;
 use embedded_graphics::{
     image::{Image, ImageDrawable},
     pixelcolor::BinaryColor,
-    prelude::{Drawable, DrawTarget, OriginDimensions, Pixel, Point, Primitive, Size},
+    prelude::{DrawTarget, Drawable, OriginDimensions, Pixel, Point, Primitive, Size},
     primitives::{CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle},
 };
 use embedded_iconoir::{
@@ -15,11 +15,11 @@ use embedded_iconoir::{
         actions::{InfoEmpty as CompactInfoEmpty, RefreshDouble as CompactRefreshDouble},
         activities::{BookStack as CompactBookStack, StatsReport as CompactStatsReport},
         audio::SoundLow as CompactSoundLow,
-        music::Headset as CompactHeadset,
         connectivity::Wifi as CompactWifi,
         devices::Laptop as CompactLaptop,
         docs::Folder as CompactFolder,
         editor::TextSize as CompactTextSize,
+        music::Headset as CompactHeadset,
         other::{Clock as CompactClock, Import as CompactImport, Language as CompactLanguage},
         system::Settings as CompactSettingsIcon,
     },
@@ -80,7 +80,8 @@ const COMPACT_LABEL_BASELINE_INSET: i32 = COMPACT_ICON_TOP_INSET + COMPACT_ICON_
 /// 48px glyph would have occupied, so the tile box and title stay put.
 const COMPACT_ICON_SCALE_NUM: i32 = 4;
 const COMPACT_ICON_SCALE_DEN: i32 = 3;
-const COMPACT_ICON_DRAW_SIZE: i32 = COMPACT_ICON_SIZE * COMPACT_ICON_SCALE_NUM / COMPACT_ICON_SCALE_DEN;
+const COMPACT_ICON_DRAW_SIZE: i32 =
+    COMPACT_ICON_SIZE * COMPACT_ICON_SCALE_NUM / COMPACT_ICON_SCALE_DEN;
 
 /// Compact icon + title tile shared by the Home dashboard's grid (which also
 /// carries a Continue Reading card and an Oggi/Streak row above it, hence the
@@ -256,9 +257,11 @@ fn draw_route_icon_compact(
         ScreenRoute::Network => {
             draw_iconoir_icon_scaled(display, top_left, &CompactWifi::new(BinaryColor::On))
         }
-        ScreenRoute::OtaUpdate => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactRefreshDouble::new(BinaryColor::On))
-        }
+        ScreenRoute::OtaUpdate => draw_iconoir_icon_scaled(
+            display,
+            top_left,
+            &CompactRefreshDouble::new(BinaryColor::On),
+        ),
         ScreenRoute::UsbDisk => {
             draw_iconoir_icon_scaled(display, top_left, &CompactLaptop::new(BinaryColor::On))
         }
@@ -374,7 +377,10 @@ mod tests {
         let mut next_expected_start = 0;
         for index in 0..COMPACT_ICON_SIZE {
             let (start, end) = scaled_block_range(index);
-            assert_eq!(start, next_expected_start, "gap/overlap before index {index}");
+            assert_eq!(
+                start, next_expected_start,
+                "gap/overlap before index {index}"
+            );
             assert!(end >= start, "empty block at index {index}");
             next_expected_start = end + 1;
         }

@@ -299,16 +299,16 @@ pub fn render_wifi_transfer(
     } else {
         match transfer.url.as_deref() {
             Some(url) => {
-                let (module_px, qr_inner_left) =
-                    match crate::app::widgets::qr::qr_modules_wide(url) {
-                        Some(modules) if modules > 0 => {
-                            let module_px = (PORTAL_QR_BOX / modules as i32).clamp(2, 7);
-                            let qr_inner_left = qr_left
-                                + ((PORTAL_QR_BOX - modules as i32 * module_px) / 2).max(0);
-                            (module_px, qr_inner_left)
-                        }
-                        _ => (3, qr_left),
-                    };
+                let (module_px, qr_inner_left) = match crate::app::widgets::qr::qr_modules_wide(url)
+                {
+                    Some(modules) if modules > 0 => {
+                        let module_px = (PORTAL_QR_BOX / modules as i32).clamp(2, 7);
+                        let qr_inner_left =
+                            qr_left + ((PORTAL_QR_BOX - modules as i32 * module_px) / 2).max(0);
+                        (module_px, qr_inner_left)
+                    }
+                    _ => (3, qr_left),
+                };
                 let qr_top = card_top + (card_height - PORTAL_QR_BOX) / 2;
                 draw_qr(display, Point::new(qr_inner_left, qr_top), module_px, url)?;
             }
@@ -543,11 +543,7 @@ pub fn render_network_details(
         .as_deref()
         .unwrap_or(t(locale, "none", "nessuno"));
 
-    draw_header(
-        display,
-        state,
-        t(locale, "NETWORK INFO", "INFO RETE"),
-    )?;
+    draw_header(display, state, t(locale, "NETWORK INFO", "INFO RETE"))?;
 
     Text::new(
         t(locale, "Configuration file", "File di configurazione"),
@@ -670,7 +666,9 @@ fn draw_action(
 
 #[cfg(test)]
 mod tests {
-    use super::{render_network, render_network_details, render_network_saved, render_wifi_transfer};
+    use super::{
+        render_network, render_network_details, render_network_saved, render_wifi_transfer,
+    };
     use crate::{app::AppState, framebuffer::FrameBuffer, orientation::OrientedFrameBuffer};
 
     #[test]

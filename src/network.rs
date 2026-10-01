@@ -967,8 +967,7 @@ pub mod espidf {
             // into `Connected` doesn't immediately re-read RSSI a second
             // time: `advance_boot_phase`'s `Connecting` arm already sampled
             // it once for that same transition.
-            if was_connected && matches!(self.snapshot.wifi_state, WifiConnectionState::Connected)
-            {
+            if was_connected && matches!(self.snapshot.wifi_state, WifiConnectionState::Connected) {
                 self.snapshot.rssi_dbm = read_rssi_dbm();
             }
             if self.ntp_reported || self.sntp.is_none() {
@@ -1081,9 +1080,7 @@ pub mod espidf {
                         Ok(()) => {
                             self.boot_phase = Some(WifiBootPhase::Connecting);
                             advanced = true;
-                            crate::runtime_memory::log_runtime_memory(
-                                "wifi-association-requested",
-                            );
+                            crate::runtime_memory::log_runtime_memory("wifi-association-requested");
                         }
                         Err(error) => failure = Some(format!("{error:?}")),
                     },
@@ -1402,7 +1399,10 @@ pub mod espidf {
             let scan = vec![seen("Far", -80), seen("Near", -30), seen("Medium", -55)];
             let reordered = reorder_candidates_by_scan(candidates, &scan);
             assert_eq!(
-                reordered.iter().map(|n| n.ssid.as_str()).collect::<Vec<_>>(),
+                reordered
+                    .iter()
+                    .map(|n| n.ssid.as_str())
+                    .collect::<Vec<_>>(),
                 vec!["Near", "Medium", "Far"]
             );
         }
@@ -1413,7 +1413,10 @@ pub mod espidf {
             let scan = vec![seen("Home", -50)];
             let reordered = reorder_candidates_by_scan(candidates, &scan);
             assert_eq!(
-                reordered.iter().map(|n| n.ssid.as_str()).collect::<Vec<_>>(),
+                reordered
+                    .iter()
+                    .map(|n| n.ssid.as_str())
+                    .collect::<Vec<_>>(),
                 vec!["Home", "Unseen", "AlsoUnseen"]
             );
         }
@@ -1428,7 +1431,10 @@ pub mod espidf {
             ];
             let reordered = reorder_candidates_by_scan(candidates, &scan);
             assert_eq!(
-                reordered.iter().map(|n| n.ssid.as_str()).collect::<Vec<_>>(),
+                reordered
+                    .iter()
+                    .map(|n| n.ssid.as_str())
+                    .collect::<Vec<_>>(),
                 vec!["MultiChannel", "Weak"]
             );
         }

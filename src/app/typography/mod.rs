@@ -413,13 +413,11 @@ mod tests {
     #[test]
     fn every_strike_has_sorted_accent_and_typography_glyphs() {
         for font in all_strikes() {
-            assert!(font
-                .extra
-                .windows(2)
-                .all(|pair| pair[0].0 < pair[1].0));
+            assert!(font.extra.windows(2).all(|pair| pair[0].0 < pair[1].0));
             // Italian, French, German letters and the curly apostrophe,
             // guillemets, dashes, ellipsis and euro that books use.
-            for character in "àèéìòùÀÈÉÌÒÙçÇñüößœ’‘“”«»–—…€".chars() {
+            for character in "àèéìòùÀÈÉÌÒÙçÇñüößœ’‘“”«»–—…€".chars()
+            {
                 let glyph = font.glyph(character);
                 assert_ne!(glyph, font.glyph('?'), "missing {character}");
             }

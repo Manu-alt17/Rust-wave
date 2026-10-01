@@ -389,17 +389,18 @@ mod tests {
                     size_bytes: 900_000,
                     modified_seconds: 0,
                 };
-                let location = |path: &str, title: &str, percent: u8| crate::reader::ReaderLocation {
-                    path: path.into(),
-                    title: title.into(),
-                    format: crate::reader::BookFormat::Epub,
-                    size_bytes: 900_000,
-                    modified_seconds: 0,
-                    page_index: 10,
-                    byte_offset: 9_000 * u64::from(percent),
-                    epub_chapter: None,
-                    reading_percent: Some(percent),
-                };
+                let location =
+                    |path: &str, title: &str, percent: u8| crate::reader::ReaderLocation {
+                        path: path.into(),
+                        title: title.into(),
+                        format: crate::reader::BookFormat::Epub,
+                        size_bytes: 900_000,
+                        modified_seconds: 0,
+                        page_index: 10,
+                        byte_offset: 9_000 * u64::from(percent),
+                        epub_chapter: None,
+                        reading_percent: Some(percent),
+                    };
                 state.reader.books = vec![
                     book("MONDO1.EPUB", "Mondo Emerso"),
                     book("DUNGEON.EPUB", "Dungeon Crawler Carl"),
@@ -432,17 +433,18 @@ mod tests {
                     size_bytes: 900_000,
                     modified_seconds: 0,
                 };
-                let location = |path: &str, title: &str, percent: u8| crate::reader::ReaderLocation {
-                    path: path.into(),
-                    title: title.into(),
-                    format: crate::reader::BookFormat::Epub,
-                    size_bytes: 900_000,
-                    modified_seconds: 0,
-                    page_index: 0,
-                    byte_offset: 9_000 * u64::from(percent),
-                    epub_chapter: None,
-                    reading_percent: Some(percent),
-                };
+                let location =
+                    |path: &str, title: &str, percent: u8| crate::reader::ReaderLocation {
+                        path: path.into(),
+                        title: title.into(),
+                        format: crate::reader::BookFormat::Epub,
+                        size_bytes: 900_000,
+                        modified_seconds: 0,
+                        page_index: 0,
+                        byte_offset: 9_000 * u64::from(percent),
+                        epub_chapter: None,
+                        reading_percent: Some(percent),
+                    };
                 state.reader.books = vec![
                     book("MONDO1.EPUB", "Mondo Emerso"),
                     book("DUNGEON.EPUB", "Dungeon Crawler Carl"),
@@ -574,7 +576,9 @@ mod tests {
                 seed_audiobooks(state);
                 state.router.navigate_to(ScreenRoute::AudiobookPlayer);
                 state.audiobooks.open_menu();
-                state.audiobooks.apply_player(crate::buttons::ButtonEvent::Down);
+                state
+                    .audiobooks
+                    .apply_player(crate::buttons::ButtonEvent::Down);
             }),
             ("statistics-empty", |state| {
                 state.home_selected = home_index(ScreenRoute::ReadingStats);

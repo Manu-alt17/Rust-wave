@@ -34,7 +34,9 @@ use crate::{
         widgets::{
             footer::draw_footer,
             header::draw_header,
-            home_tile::{draw_icon_tile, draw_iconoir_icon, COMPACT_TILE_SIZE, TILE_GAP_X, TILE_GAP_Y},
+            home_tile::{
+                draw_icon_tile, draw_iconoir_icon, COMPACT_TILE_SIZE, TILE_GAP_X, TILE_GAP_Y,
+            },
             status_glyphs::{draw_battery_icon, BATTERY_SIZE},
         },
     },
@@ -53,11 +55,7 @@ pub fn render_continue_reading(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    draw_header(
-        display,
-        state,
-        t(locale, "CONTINUE", "CONTINUA"),
-    )?;
+    draw_header(display, state, t(locale, "CONTINUE", "CONTINUA"))?;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
     if let Some(session) = state.reader.session.as_ref() {
@@ -320,7 +318,10 @@ fn push_library_rows(blocks: &mut Vec<LibraryBlock>, start: usize, end: usize) {
     let mut index = start;
     while index < end {
         let count = (end - index).min(LIBRARY_GRID_COLUMNS);
-        blocks.push(LibraryBlock::Row { start: index, count });
+        blocks.push(LibraryBlock::Row {
+            start: index,
+            count,
+        });
         index += count;
     }
 }
@@ -445,14 +446,19 @@ pub fn library_visible_books(state: &AppState) -> Vec<ReaderBook> {
     let blocks = library_blocks(entries.len(), in_progress_count);
     let metrics = library_metrics(state);
     let available = LIBRARY_GRID_BOTTOM - LIBRARY_GRID_TOP;
-    let (first_block, last_block) = library_window(&blocks, reader.library_selected, &metrics, available);
+    let (first_block, last_block) =
+        library_window(&blocks, reader.library_selected, &metrics, available);
     blocks[first_block..last_block]
         .iter()
         .filter_map(|block| match *block {
             LibraryBlock::Row { start, count } => Some((start, count)),
             LibraryBlock::Header { .. } => None,
         })
-        .flat_map(|(start, count)| entries[start..start + count].iter().map(|entry| entry.book.clone()))
+        .flat_map(|(start, count)| {
+            entries[start..start + count]
+                .iter()
+                .map(|entry| entry.book.clone())
+        })
         .collect()
 }
 
@@ -479,7 +485,8 @@ pub fn render_library(
     let blocks = library_blocks(entries.len(), in_progress_count);
     let metrics = library_metrics(state);
     let available = LIBRARY_GRID_BOTTOM - LIBRARY_GRID_TOP;
-    let (first_block, last_block) = library_window(&blocks, reader.library_selected, &metrics, available);
+    let (first_block, last_block) =
+        library_window(&blocks, reader.library_selected, &metrics, available);
 
     let mut cursor_y = LIBRARY_GRID_TOP;
     for block in &blocks[first_block..last_block] {
@@ -497,7 +504,8 @@ pub fn render_library(
                     let index = start + offset;
                     let entry = &entries[index];
                     let top_left = Point::new(
-                        LIBRARY_GRID_LEFT + offset as i32 * (LIBRARY_CELL_WIDTH + LIBRARY_GRID_GAP_X),
+                        LIBRARY_GRID_LEFT
+                            + offset as i32 * (LIBRARY_CELL_WIDTH + LIBRARY_GRID_GAP_X),
                         cursor_y,
                     );
                     let thumbnail = reader.library_thumbnails.get(&entry.book.path);
@@ -549,7 +557,10 @@ pub fn render_library(
 /// "Opzioni"/"Options" — the only way to reach the per-book actions overlay
 /// (mark completed / bookmarks) is a long SELECT press on a cover, which
 /// nothing else on this screen hints at.
-fn draw_library_footer(display: &mut OrientedFrameBuffer<'_>, state: &AppState) -> Result<(), Infallible> {
+fn draw_library_footer(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+) -> Result<(), Infallible> {
     let locale = state.regional.locale;
     let style = state.display.footer_style();
     let color = BinaryColor::On;
@@ -559,7 +570,8 @@ fn draw_library_footer(display: &mut OrientedFrameBuffer<'_>, state: &AppState) 
         .into_styled(PrimitiveStyle::with_fill(color))
         .draw(display)?;
 
-    let cursor = Text::new(t(locale, "Hold", "Tieni"), Point::new(18, baseline), style).draw(display)?;
+    let cursor =
+        Text::new(t(locale, "Hold", "Tieni"), Point::new(18, baseline), style).draw(display)?;
     let dot_left = cursor.x + ICON_TEXT_GAP;
     draw_dot(display, dot_left, baseline, color)?;
     let text_left = dot_left + DOT_SIZE + ICON_TEXT_GAP;
@@ -682,7 +694,8 @@ fn draw_library_cell(
     let text_left = top_left.x + LIBRARY_COVER_PAD;
     let text_right = top_left.x + LIBRARY_CELL_WIDTH - LIBRARY_COVER_PAD;
     let bar_row_top = top_left.y + LIBRARY_COVER_BLOCK_HEIGHT + LIBRARY_BAR_GAP;
-    let bar_row_height = cell_height - LIBRARY_COVER_BLOCK_HEIGHT - LIBRARY_BAR_GAP - LIBRARY_CELL_BOTTOM_PAD;
+    let bar_row_height =
+        cell_height - LIBRARY_COVER_BLOCK_HEIGHT - LIBRARY_BAR_GAP - LIBRARY_CELL_BOTTOM_PAD;
     draw_library_status_row(
         display,
         state,
@@ -841,8 +854,7 @@ fn draw_library_status_row(
     // on the left and crowding the label on the right once the bar got
     // pill-shaped rounded ends — see `LIBRARY_BAR_INSET`.
     let bar_left = left + LIBRARY_BAR_INSET;
-    let bar_right =
-        (right - label_width - LIBRARY_BAR_LABEL_GAP - LIBRARY_BAR_INSET).max(bar_left);
+    let bar_right = (right - label_width - LIBRARY_BAR_LABEL_GAP - LIBRARY_BAR_INSET).max(bar_left);
     let bar_width = (bar_right - bar_left).max(0);
     // Pill-shaped ends, matching Home's Continue Reading progress bar
     // (`category::draw_continue_reading_progress_bar`) so the two screens'
@@ -889,11 +901,22 @@ fn draw_library_status_row(
             .draw(display)?;
         }
         LibraryCellStatus::New => {
-            draw_dashed_rect(display, bar_left, bar_top, bar_right, bar_top + LIBRARY_BAR_HEIGHT)?;
+            draw_dashed_rect(
+                display,
+                bar_left,
+                bar_top,
+                bar_right,
+                bar_top + LIBRARY_BAR_HEIGHT,
+            )?;
         }
     }
 
-    Text::new(&label, Point::new(right - label_width, baseline), label_style).draw(display)?;
+    Text::new(
+        &label,
+        Point::new(right - label_width, baseline),
+        label_style,
+    )
+    .draw(display)?;
     Ok(())
 }
 
@@ -995,7 +1018,10 @@ fn draw_library_scrollbar(
 
     RoundedRectangle::new(
         Rectangle::new(
-            Point::new(LIBRARY_SCROLLBAR_X - LIBRARY_SCROLLBAR_THUMB_WIDTH / 2, thumb_top),
+            Point::new(
+                LIBRARY_SCROLLBAR_X - LIBRARY_SCROLLBAR_THUMB_WIDTH / 2,
+                thumb_top,
+            ),
             Size::new(LIBRARY_SCROLLBAR_THUMB_WIDTH as u32, thumb_height as u32),
         ),
         CornerRadii::new(Size::new(
@@ -1107,11 +1133,10 @@ pub fn render_bookmarks(
 /// in this app's input loop can reach either route without it set first).
 fn book_actions_target_title(state: &AppState) -> String {
     let locale = state.regional.locale;
-    state
-        .reader
-        .book_actions_target
-        .as_ref()
-        .map_or_else(|| t(locale, "Book", "Libro").to_string(), |book| book.title.clone())
+    state.reader.book_actions_target.as_ref().map_or_else(
+        || t(locale, "Book", "Libro").to_string(),
+        |book| book.title.clone(),
+    )
 }
 
 /// Library long-press overlay (`ScreenRoute::LibraryBookActions`): two
@@ -1298,7 +1323,14 @@ pub fn render_page(
                 let slot_top = baseline - i32::from(body_style.line_height());
                 let slot_height = image.slot_span as i32 * line_step;
                 draw_reader_inline_image(
-                    display, state, session, image, &body, body_style, slot_top, slot_height,
+                    display,
+                    state,
+                    session,
+                    image,
+                    &body,
+                    body_style,
+                    slot_top,
+                    slot_height,
                 )?;
                 continue;
             }
@@ -1401,7 +1433,12 @@ fn draw_reader_inline_image(
 
     if bitmap.placeholder {
         return draw_inline_image_placeholder(
-            display, body, body_style, slot_top, slot_height, &image.alt,
+            display,
+            body,
+            body_style,
+            slot_top,
+            slot_height,
+            &image.alt,
         );
     }
 
@@ -1450,7 +1487,8 @@ fn draw_inline_image_placeholder(
         let label_width = body_style.text_width(&label);
         let left = box_bounds.left + (box_bounds.right - box_bounds.left - label_width).max(0) / 2;
         let baseline = slot_top + slot_height / 2 + i32::from(body_style.line_height()) / 2;
-        Text::new(&label, Point::new(left, baseline), body_style).draw_clipped(display, box_bounds)?;
+        Text::new(&label, Point::new(left, baseline), body_style)
+            .draw_clipped(display, box_bounds)?;
     }
     Ok(())
 }
@@ -1811,10 +1849,9 @@ fn draw_reader_footer(
             t(locale, "Pick line", "Scegli riga"),
             t(locale, "Exit", "Esci"),
         ),
-        ReaderDictionaryMode::WordSelect { .. } => (
-            t(locale, "Look up", "Cerca"),
-            t(locale, "Exit", "Esci"),
-        ),
+        ReaderDictionaryMode::WordSelect { .. } => {
+            (t(locale, "Look up", "Cerca"), t(locale, "Exit", "Esci"))
+        }
         ReaderDictionaryMode::Definition { .. } => (
             t(locale, "Next word", "Prossima parola"),
             t(locale, "Exit", "Esci"),
@@ -1893,7 +1930,10 @@ fn draw_hold_pill(
     let top = baseline - DOT_SIZE;
     let radius = DOT_SIZE as u32 / 2;
     RoundedRectangle::new(
-        Rectangle::new(Point::new(left, top), Size::new(width as u32, DOT_SIZE as u32)),
+        Rectangle::new(
+            Point::new(left, top),
+            Size::new(width as u32, DOT_SIZE as u32),
+        ),
         CornerRadii::new(Size::new(radius, radius)),
     )
     .into_styled(PrimitiveStyle::with_fill(color))
@@ -1923,14 +1963,20 @@ const FULL_SCREEN_TEXT_BOTTOM_GAP: i32 = 20;
 fn reader_body_geometry(width: i32, height: i32, full_screen: bool) -> (ReaderBodyGeometry, i32) {
     let (content_top, footer_line) = if full_screen {
         // `ReaderBodyGeometry::new` keeps the text 12px above `footer_line`.
-        (FULL_SCREEN_TEXT_TOP, height - FULL_SCREEN_TEXT_BOTTOM_GAP + 12)
+        (
+            FULL_SCREEN_TEXT_TOP,
+            height - FULL_SCREEN_TEXT_BOTTOM_GAP + 12,
+        )
     } else {
         (
             PROGRESS_TOP + PROGRESS_HEIGHT + PROGRESS_TO_CONTENT_GAP,
             height - 54,
         )
     };
-    (ReaderBodyGeometry::new(width, content_top, footer_line), footer_line)
+    (
+        ReaderBodyGeometry::new(width, content_top, footer_line),
+        footer_line,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2010,19 +2056,39 @@ pub fn render_options(
         let preferences = state.display;
         match option {
             ReaderOption::TableOfContents => draw_icon_tile(
-                display, top_left, OPTIONS_TILE_SIZE, label, &List::new(color), selected,
+                display,
+                top_left,
+                OPTIONS_TILE_SIZE,
+                label,
+                &List::new(color),
+                selected,
                 preferences,
             )?,
             ReaderOption::Bookmarks => draw_icon_tile(
-                display, top_left, OPTIONS_TILE_SIZE, label, &BookmarkBook::new(color), selected,
+                display,
+                top_left,
+                OPTIONS_TILE_SIZE,
+                label,
+                &BookmarkBook::new(color),
+                selected,
                 preferences,
             )?,
             ReaderOption::Bookmark => draw_icon_tile(
-                display, top_left, OPTIONS_TILE_SIZE, label, &BookmarkEmpty::new(color), selected,
+                display,
+                top_left,
+                OPTIONS_TILE_SIZE,
+                label,
+                &BookmarkEmpty::new(color),
+                selected,
                 preferences,
             )?,
             ReaderOption::ReadingPreferences => draw_icon_tile(
-                display, top_left, OPTIONS_TILE_SIZE, label, &SettingsIcon::new(color), selected,
+                display,
+                top_left,
+                OPTIONS_TILE_SIZE,
+                label,
+                &SettingsIcon::new(color),
+                selected,
                 preferences,
             )?,
         }
@@ -2051,11 +2117,7 @@ fn render_preference_list(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    draw_header(
-        display,
-        state,
-        t(locale, "PREFERENCES", "PREFERENZE"),
-    )?;
+    draw_header(display, state, t(locale, "PREFERENCES", "PREFERENZE"))?;
     for (index, preference) in ReadingPreference::ALL.iter().copied().enumerate() {
         let badge = match preference {
             ReadingPreference::ReadingTheme => state.reader.preferences.theme.label_i18n(locale),
@@ -2416,10 +2478,8 @@ fn render_theme_editor(
         // Same inversion `render_page` applies for HighContrast, limited to
         // the inside of the row's selection border so the preview matches.
         if theme == ReadingTheme::HighContrast {
-            display.invert_logical_rect(&Rectangle::new(
-                Point::new(24, top + 4),
-                Size::new(432, 56),
-            ));
+            display
+                .invert_logical_rect(&Rectangle::new(Point::new(24, top + 4), Size::new(432, 56)));
         }
     }
     Ok(())
@@ -2588,12 +2648,12 @@ fn truncate(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        aligned_reader_line, bookmark_entry_columns, library_grid_entries, library_visible_books,
-        reader_body_style, render_bookmarks, render_continue_reading, render_library,
-        render_library_book_actions, render_library_book_bookmarks, render_loading,
-        definition_panel_layout, render_options, render_preferences, render_toc,
-        LibraryCellStatus, ReaderBodyGeometry, DEFINITION_PANEL_LINE_GAP,
-        DEFINITION_PANEL_PADDING, PROGRESS_HEIGHT, PROGRESS_TOP, PROGRESS_TO_CONTENT_GAP,
+        aligned_reader_line, bookmark_entry_columns, definition_panel_layout, library_grid_entries,
+        library_visible_books, reader_body_style, render_bookmarks, render_continue_reading,
+        render_library, render_library_book_actions, render_library_book_bookmarks, render_loading,
+        render_options, render_preferences, render_toc, LibraryCellStatus, ReaderBodyGeometry,
+        DEFINITION_PANEL_LINE_GAP, DEFINITION_PANEL_PADDING, PROGRESS_HEIGHT, PROGRESS_TOP,
+        PROGRESS_TO_CONTENT_GAP,
     };
     use crate::{
         app::AppState,
@@ -2641,9 +2701,15 @@ mod tests {
                 );
                 let max_width = body.frame.width() - 2 * DEFINITION_PANEL_PADDING;
                 for line in &layout.lines {
-                    assert!(layout.text.text_width(line) <= max_width, "{context}: {line}");
+                    assert!(
+                        layout.text.text_width(line) <= max_width,
+                        "{context}: {line}"
+                    );
                 }
-                assert!(layout.height <= body.text.bottom - body.frame.top, "{context}");
+                assert!(
+                    layout.height <= body.text.bottom - body.frame.top,
+                    "{context}"
+                );
                 // The larger body strike is used, not the old detail one.
                 assert_eq!(
                     layout.line_step,
@@ -2909,38 +2975,39 @@ mod tests {
 
         let mut failures = Vec::new();
         for full_screen in [false, true] {
-        for &orientation in &orientations {
-            for &font_size in &sizes {
-                for &book_font in &fonts {
-                    let preferences = ReaderPreferences {
-                        theme: ReadingTheme::Classic,
-                        orientation,
-                        font_size,
-                        book_font,
-                        paragraph_alignment: ParagraphAlignment::Left,
-                        show_progress: true,
-                        full_screen,
-                    };
-                    let layout = preferences.layout();
-                    let display_orientation = match orientation {
-                        ReaderOrientation::Portrait => {
-                            crate::orientation::DisplayOrientation::Portrait
-                        }
-                        ReaderOrientation::Landscape => {
-                            crate::orientation::DisplayOrientation::Landscape
-                        }
-                    };
-                    let size = display_orientation.logical_size();
-                    let width = size.width as i32;
-                    let height = size.height as i32;
-                    let (body, _) = super::reader_body_geometry(width, height, full_screen);
-                    let body_style = reader_body_style(book_font, font_size, ReadingTheme::Classic);
-                    let line_step = i32::from(body_style.line_height()) + 2;
-                    let first_baseline = body.text.top + i32::from(body_style.line_height());
-                    let last_index = layout.lines_per_page - 1;
-                    let last_baseline = first_baseline + last_index as i32 * line_step;
-                    if last_baseline >= body.text.bottom {
-                        failures.push(format!(
+            for &orientation in &orientations {
+                for &font_size in &sizes {
+                    for &book_font in &fonts {
+                        let preferences = ReaderPreferences {
+                            theme: ReadingTheme::Classic,
+                            orientation,
+                            font_size,
+                            book_font,
+                            paragraph_alignment: ParagraphAlignment::Left,
+                            show_progress: true,
+                            full_screen,
+                        };
+                        let layout = preferences.layout();
+                        let display_orientation = match orientation {
+                            ReaderOrientation::Portrait => {
+                                crate::orientation::DisplayOrientation::Portrait
+                            }
+                            ReaderOrientation::Landscape => {
+                                crate::orientation::DisplayOrientation::Landscape
+                            }
+                        };
+                        let size = display_orientation.logical_size();
+                        let width = size.width as i32;
+                        let height = size.height as i32;
+                        let (body, _) = super::reader_body_geometry(width, height, full_screen);
+                        let body_style =
+                            reader_body_style(book_font, font_size, ReadingTheme::Classic);
+                        let line_step = i32::from(body_style.line_height()) + 2;
+                        let first_baseline = body.text.top + i32::from(body_style.line_height());
+                        let last_index = layout.lines_per_page - 1;
+                        let last_baseline = first_baseline + last_index as i32 * line_step;
+                        if last_baseline >= body.text.bottom {
+                            failures.push(format!(
                             "full_screen={full_screen} orientation={orientation:?} font_size={font_size:?} book_font={book_font:?}: \
                              lines_per_page={} last_baseline={last_baseline} body.text.bottom={} \
                              (line_height={})",
@@ -2948,10 +3015,10 @@ mod tests {
                             body.text.bottom,
                             body_style.line_height(),
                         ));
+                        }
                     }
                 }
             }
-        }
         }
         assert!(
             failures.is_empty(),

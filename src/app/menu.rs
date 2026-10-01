@@ -418,10 +418,7 @@ mod tests {
         assert!(usage.record(ScreenRoute::Settings, ScreenRoute::Audio));
         assert!(usage.record(ScreenRoute::Settings, ScreenRoute::Display));
         assert!(usage.record(ScreenRoute::Settings, ScreenRoute::Clock));
-        assert_eq!(
-            usage.most_used_count(ScreenRoute::Settings),
-            MOST_USED_MAX
-        );
+        assert_eq!(usage.most_used_count(ScreenRoute::Settings), MOST_USED_MAX);
         // Re-opening the newest entry is a no-op; re-opening an older one
         // moves it back to the front.
         assert!(!usage.record(ScreenRoute::Settings, ScreenRoute::Clock));

@@ -450,7 +450,10 @@ where
     /// does not decode individual source bits since their layout was not
     /// confirmed against a real datasheet copy.
     pub fn read_power_on_off_source(&mut self) -> Result<(u8, u8)> {
-        Ok((self.read_register(PWRON_STATUS)?, self.read_register(PWROFF_STATUS)?))
+        Ok((
+            self.read_register(PWRON_STATUS)?,
+            self.read_register(PWROFF_STATUS)?,
+        ))
     }
 
     /// Raw `(PWROFF_EN, IRQ_OFF_ON_LEVEL_CTRL)` bytes for boot-time logging
@@ -458,7 +461,10 @@ where
     /// [`IRQ_OFF_ON_LEVEL_CTRL`] for why this driver does not decode or
     /// rewrite the individual timing sub-fields yet.
     pub fn read_power_key_timing_config(&mut self) -> Result<(u8, u8)> {
-        Ok((self.read_register(PWROFF_EN)?, self.read_register(IRQ_OFF_ON_LEVEL_CTRL)?))
+        Ok((
+            self.read_register(PWROFF_EN)?,
+            self.read_register(IRQ_OFF_ON_LEVEL_CTRL)?,
+        ))
     }
 
     /// Read battery and VBUS state using the same AXP2101 register meanings as
@@ -546,13 +552,12 @@ fn encode_aldo3_voltage_mv(millivolts: u16) -> Result<u8> {
 mod tests {
     use super::{
         decode_battery_voltage_mv, encode_aldo3_voltage_mv, is_actively_charging,
-        is_vbus_insert_power_on,
-        BatteryPercentFilter, ALDO1_ENABLE_BIT, ALDO2_ENABLE_BIT, ALDO3_ENABLE_BIT,
-        ALDO4_ENABLE_BIT, BLDO1_ENABLE_BIT, BLDO2_ENABLE_BIT, CPUSLDO_ENABLE_BIT,
-        DCDC2_ENABLE_BIT, DCDC3_ENABLE_BIT, DCDC4_ENABLE_BIT, DLDO1_ENABLE_BIT, DLDO2_ENABLE_BIT,
-        UNUSED_DC_ONOFF_DVM_CTRL_BITS, UNUSED_LDO_ONOFF_CTRL0_BITS, COMMON_CONFIG, DATA_BUFFER1,
-        IRQ_OFF_ON_LEVEL_CTRL, PMIC_SHUTDOWN_MARKER, PWROFF_EN, PWROFF_STATUS, PWRON_STATUS,
-        SOFT_POWER_OFF_BIT,
+        is_vbus_insert_power_on, BatteryPercentFilter, ALDO1_ENABLE_BIT, ALDO2_ENABLE_BIT,
+        ALDO3_ENABLE_BIT, ALDO4_ENABLE_BIT, BLDO1_ENABLE_BIT, BLDO2_ENABLE_BIT, COMMON_CONFIG,
+        CPUSLDO_ENABLE_BIT, DATA_BUFFER1, DCDC2_ENABLE_BIT, DCDC3_ENABLE_BIT, DCDC4_ENABLE_BIT,
+        DLDO1_ENABLE_BIT, DLDO2_ENABLE_BIT, IRQ_OFF_ON_LEVEL_CTRL, PMIC_SHUTDOWN_MARKER, PWROFF_EN,
+        PWROFF_STATUS, PWRON_STATUS, SOFT_POWER_OFF_BIT, UNUSED_DC_ONOFF_DVM_CTRL_BITS,
+        UNUSED_LDO_ONOFF_CTRL0_BITS,
     };
 
     #[test]

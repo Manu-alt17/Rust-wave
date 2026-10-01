@@ -551,7 +551,11 @@ mod render_perf_tests {
     fn draw_sample_screen(frame: &mut FrameBuffer, orientation: DisplayOrientation) {
         frame.clear_white();
         let mut display = OrientedFrameBuffer::new(frame, orientation);
-        let style = reader_body_style(BookFont::Literata, BookFontSize::Large, ReadingTheme::Classic);
+        let style = reader_body_style(
+            BookFont::Literata,
+            BookFontSize::Large,
+            ReadingTheme::Classic,
+        );
         let bounds = TextBounds::new(24, 40, 456, 740);
         for line in 0..23 {
             Text::new(

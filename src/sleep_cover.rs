@@ -162,7 +162,12 @@ fn draw_resume_tab(
     let text_end =
         Text::new(resume_label, Point::new(label_x, baseline), percent_style).draw(display)?;
     let center_y = baseline + (ink_top + ink_bottom) / 2;
-    draw_right_arrow(display, text_end.x.max(label_x) + ARROW_GAP, center_y, arrow_length)?;
+    draw_right_arrow(
+        display,
+        text_end.x.max(label_x) + ARROW_GAP,
+        center_y,
+        arrow_length,
+    )?;
 
     Ok(ResumeTabBounds { left, top, bottom })
 }
@@ -209,10 +214,7 @@ mod tests {
         compose_cover_sleep_frame, compose_with_band, RESUME_TAB_BAND, SCREEN_WIDTH,
         SLEEP_COVER_HEIGHT, SLEEP_COVER_WIDTH,
     };
-    use crate::{
-        cover_cache::CachedThumbnail,
-        orientation::DisplayOrientation, regional::Locale,
-    };
+    use crate::{cover_cache::CachedThumbnail, orientation::DisplayOrientation, regional::Locale};
 
     fn black_cover() -> CachedThumbnail {
         let row_bytes = usize::from(SLEEP_COVER_WIDTH) / 8;
@@ -232,30 +234,34 @@ mod tests {
 
     #[test]
     fn tab_spans_the_band_touches_the_right_edge_and_leaves_the_cover() {
-        for (percent, locale) in [(0, Locale::Italian), (42, Locale::English), (100, Locale::Italian)] {
+        for (percent, locale) in [
+            (0, Locale::Italian),
+            (42, Locale::English),
+            (100, Locale::Italian),
+        ] {
             let band = RESUME_TAB_BAND;
-            let (frame, tab) =
-                compose_cover_sleep_frame(&black_cover(), percent, locale);
+            let (frame, tab) = compose_cover_sleep_frame(&black_cover(), percent, locale);
             assert_eq!((tab.top, tab.bottom), band);
             assert!(tab.left > SCREEN_WIDTH / 4 && tab.left < SCREEN_WIDTH - 120);
             // Cover survives outside the tab.
             assert_eq!(frame.is_black(native(4, 400)), Some(true));
-            assert_eq!(frame.is_black(native(SCREEN_WIDTH - 1, band.1 + 10)), Some(true));
+            assert_eq!(
+                frame.is_black(native(SCREEN_WIDTH - 1, band.1 + 10)),
+                Some(true)
+            );
             // Tab's top stroke reaches the very last column (cut, not rounded).
             assert_eq!(frame.is_black(native(SCREEN_WIDTH - 1, band.0)), Some(true));
             // Just inside the stroke at the right edge the tab is white fill.
-            assert_eq!(frame.is_black(native(SCREEN_WIDTH - 1, band.0 + 4)), Some(false));
+            assert_eq!(
+                frame.is_black(native(SCREEN_WIDTH - 1, band.0 + 4)),
+                Some(false)
+            );
         }
     }
 
     #[test]
     fn tiny_band_grows_the_tab_downward_instead_of_clipping_text() {
-        let (_, tab) = compose_with_band(
-            &black_cover(),
-            100,
-            Locale::Italian,
-            (60, 70),
-        );
+        let (_, tab) = compose_with_band(&black_cover(), 100, Locale::Italian, (60, 70));
         assert_eq!(tab.top, 60);
         assert!(tab.bottom > 70);
     }

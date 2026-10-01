@@ -1,8 +1,6 @@
 #[cfg(target_os = "espidf")]
 mod firmware {
-    use std::{
-        time::{Duration, Instant},
-    };
+    use std::time::{Duration, Instant};
 
     use anyhow::Result;
     use embedded_hal::delay::DelayNs;
@@ -30,16 +28,14 @@ mod firmware {
     };
     use log::{debug, info, warn};
     use waveshare_epd397_rust_app::{
-        boot_profile,
-        sd_log,
         app::{
             display::{DisplayPreferences, SleepScreenMode, DISPLAY_CONFIG_PATH},
             menu::{CategoryUsage, MENU_USAGE_CONFIG_PATH},
             render_current_screen,
             screens::reader::library_visible_books,
-            AppState, ScreenRoute, AUTO_DEEP_SLEEP_ENABLED,
-            DEV_BENCH_BUILD, CHARGING_STATUS_POLL_SECONDS, LIBRARY_THUMBNAIL_REFRESH_SECONDS,
-            NETWORK_LIVE_REFRESH_SECONDS, NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
+            AppState, ScreenRoute, AUTO_DEEP_SLEEP_ENABLED, CHARGING_STATUS_POLL_SECONDS,
+            DEV_BENCH_BUILD, LIBRARY_THUMBNAIL_REFRESH_SECONDS, NETWORK_LIVE_REFRESH_SECONDS,
+            NETWORK_LOG_HEARTBEAT_SECONDS, PANEL_IDLE_SLEEP_SECONDS,
             READER_POWER_SAVE_GRACE_SECONDS, SAMPLE_LIVE_REFRESH_SECONDS,
         },
         audio::{
@@ -49,14 +45,15 @@ mod firmware {
             DEFAULT_AUDIO_VOLUME_PERCENT,
         },
         audiobook::{
-            scan_audiobooks, AudiobookPositions, PlayerRequest, PlayerState, AUDIOBOOK_POSITIONS_PATH,
-            AUDIOBOOK_ROOT,
+            scan_audiobooks, AudiobookPositions, PlayerRequest, PlayerState,
+            AUDIOBOOK_POSITIONS_PATH, AUDIOBOOK_ROOT,
         },
         board_services::{BoardServices, BoardSnapshot},
+        boot_profile,
         build_info::{FIRMWARE_VERSION, PRODUCT_SLUG},
         buttons::{
-            BootBackButton, ButtonEvent, Buttons, SelectHoldButton, SelectPressEvent,
-            set_select_long_press_ms, READER_SELECT_LONG_PRESS_MS, SELECT_LONG_PRESS_MS,
+            set_select_long_press_ms, BootBackButton, ButtonEvent, Buttons, SelectHoldButton,
+            SelectPressEvent, READER_SELECT_LONG_PRESS_MS, SELECT_LONG_PRESS_MS,
         },
         cover_cache::CoverCache,
         epaper::{self, Epaper397},
@@ -75,8 +72,8 @@ mod firmware {
                 install_update_on_main_task, mark_running_slot_valid, poll_latest_release_check,
                 spawn_latest_release_check,
             },
-            OtaCheckState, OtaUiRequest, ReleaseCheckError, ReleaseInfo,
-            OTA_AUTO_CHECK_ENABLED, OTA_CHECK_INTERVAL_SECONDS,
+            OtaCheckState, OtaUiRequest, ReleaseCheckError, ReleaseInfo, OTA_AUTO_CHECK_ENABLED,
+            OTA_CHECK_INTERVAL_SECONDS,
         },
         panel_refresh::{
             parse_sleep_timestamp, wake_uses_fast_waveform, PanelGlobalReason,
@@ -88,14 +85,15 @@ mod firmware {
             BootPowerKeyGuard, PowerKeyEvent, SleepWakeGuard, SleepWakeGuardDecision,
             POWER_KEY_BOOT_GUARD_QUIET_MS, POWER_KEY_POLL_MS, POWER_KEY_WAKE_GUARD_QUIET_MS,
         },
+        power_profile::{self, PowerProfileTracker, POWER_PROFILE_LOG_SECONDS},
         reader::{ReaderDictionaryMode, ReaderTickOutcome, ReadingTheme},
         reading_stats::{
             book_id_for, compute_snapshot, resolve_unix_timestamp, ReadingStatsSnapshot,
             ReadingStatsTracker, STATS_DIRECTORY,
         },
         regional::{Locale, RegionalPreferences, CLOCK_CONFIG_PATH},
-        power_profile::{self, PowerProfileTracker, POWER_PROFILE_LOG_SECONDS},
         runtime_memory::{debug_runtime_memory, log_runtime_memory},
+        sd_log,
         shared_i2c::SharedI2cBus,
         sleep_cover::{compose_cover_sleep_frame, SLEEP_COVER_HEIGHT, SLEEP_COVER_WIDTH},
         sleep_images::{SleepImageCatalog, SleepImageSelection, SLEEP_IMAGE_DIRECTORY},
@@ -292,7 +290,6 @@ mod firmware {
         early_span.end();
         let peripherals = Peripherals::take()?;
 
-
         // The uploaded Waveshare sample uses SDMMC in 4-bit mode:
         // CMD GPIO17, CLK GPIO16, D0 GPIO15, D1 GPIO7, D2 GPIO8, D3 GPIO18.
         // Mount failure is non-fatal so the verified product shell still boots
@@ -480,9 +477,9 @@ mod firmware {
                     )),
                 );
             }
-            Err(error) => warn!(
-                "rustmix-wave=pmic-power-key-timing status=read-failed error={error:#}"
-            ),
+            Err(error) => {
+                warn!("rustmix-wave=pmic-power-key-timing status=read-failed error={error:#}")
+            }
         }
         info!(
             "rustmix-wave=boot-cause status=classified-final cause={} wake-gpio={} shutdown=pmic fallback=deep-sleep",
@@ -1042,36 +1039,37 @@ mod firmware {
         // One attempt per boot, the first time audio is needed: the
         // amplifier pin is spent by it either way, so a codec that failed to
         // answer stays reported as unavailable instead of being re-probed.
-        let mut ensure_audio_engine = move |audio_engine: &mut Option<AudioEngine>,
-                                            state: &mut AppState,
-                                            misc_power: &mut Axp2101<_>| {
-            if audio_engine.is_some() {
-                return;
-            }
-            let Some(amplifier_pin) = audio_amplifier_pin.take() else {
-                return;
-            };
-            if let Err(error) = misc_power.enable_audio_rail() {
-                warn!("rustmix-wave=pmic-audio-rail status=enable-failed error={error:#}");
-            }
-            info!(
+        let mut ensure_audio_engine =
+            move |audio_engine: &mut Option<AudioEngine>,
+                  state: &mut AppState,
+                  misc_power: &mut Axp2101<_>| {
+                if audio_engine.is_some() {
+                    return;
+                }
+                let Some(amplifier_pin) = audio_amplifier_pin.take() else {
+                    return;
+                };
+                if let Err(error) = misc_power.enable_audio_rail() {
+                    warn!("rustmix-wave=pmic-audio-rail status=enable-failed error={error:#}");
+                }
+                info!(
                 "rustmix-wave=audio-init status=starting codec=es8311 address=0x18 wire-write=0x30"
             );
-            let attempt = (|| -> Result<AudioEngine> {
-                let amplifier = PinDriver::output(amplifier_pin)?;
-                let runtime = AudioRuntime::initialize(
-                    shared_i2c_for_audio.clone(),
-                    amplifier,
-                    &mut FreeRtosDelay,
-                )?;
-                let snapshot = runtime.snapshot();
-                info!(
+                let attempt = (|| -> Result<AudioEngine> {
+                    let amplifier = PinDriver::output(amplifier_pin)?;
+                    let runtime = AudioRuntime::initialize(
+                        shared_i2c_for_audio.clone(),
+                        amplifier,
+                        &mut FreeRtosDelay,
+                    )?;
+                    let snapshot = runtime.snapshot();
+                    info!(
                     "rustmix-wave=audio-codec status=ready codec=es8311 address={} wire-write={} mclk-multiple={AUDIO_MCLK_MULTIPLE}",
                     snapshot.codec_address_label(),
                     snapshot.codec_address.map_or_else(|| "--".into(), |address| format!("0x{:02X}", address << 1))
                 );
-                let profile = runtime.profile();
-                info!(
+                    let profile = runtime.profile();
+                    info!(
                     "rustmix-wave=audio-codec-profile status=ready source=waveshare-esp-codec-dev-parity gpio44=0x{:02X} dac-reference=ready system14=0x{:02X} adc15=0x{:02X} adc17=0x{:02X} gp45=0x{:02X}",
                     profile.gpio44,
                     profile.system14,
@@ -1079,21 +1077,23 @@ mod firmware {
                     profile.adc17,
                     profile.gp45
                 );
-                AudioEngine::start(runtime)
-            })();
-            match attempt {
-                Ok(engine) => {
-                    info!("rustmix-wave=audio-subsystem-ready mute=true volume={DEFAULT_AUDIO_VOLUME_PERCENT}");
-                    state.update_audio_snapshot(engine.current().audio);
-                    *audio_engine = Some(engine);
+                    AudioEngine::start(runtime)
+                })();
+                match attempt {
+                    Ok(engine) => {
+                        info!("rustmix-wave=audio-subsystem-ready mute=true volume={DEFAULT_AUDIO_VOLUME_PERCENT}");
+                        state.update_audio_snapshot(engine.current().audio);
+                        *audio_engine = Some(engine);
+                    }
+                    Err(error) => {
+                        warn!("rustmix-wave=audio-init status=unavailable codec=es8311 error={error:#}");
+                        state.update_audio_snapshot(AudioSnapshot::unavailable(format!(
+                            "{error:#}"
+                        )));
+                    }
                 }
-                Err(error) => {
-                    warn!("rustmix-wave=audio-init status=unavailable codec=es8311 error={error:#}");
-                    state.update_audio_snapshot(AudioSnapshot::unavailable(format!("{error:#}")));
-                }
-            }
-            log_audio_snapshot(&state.audio);
-        };
+                log_audio_snapshot(&state.audio);
+            };
 
         // Start optional networking only after the first e-paper frame is
         // visible. A missing config or failed association never blocks shell
@@ -1265,12 +1265,15 @@ mod firmware {
                         "rustmix-wave=power-key-boot-guard event=boot-latched-press-discarded press={}",
                         event.marker()
                     );
-                    boot_profile::mark_with("power-key-boot-latched-discarded", Some(event.marker()));
+                    boot_profile::mark_with(
+                        "power-key-boot-latched-discarded",
+                        Some(event.marker()),
+                    );
                 }
                 Ok(None) => {}
-                Err(error) => warn!(
-                    "rustmix-wave=power-key-boot-guard status=read-failed error={error:#}"
-                ),
+                Err(error) => {
+                    warn!("rustmix-wave=power-key-boot-guard status=read-failed error={error:#}")
+                }
             }
         }
         let power_key_polling_started = Instant::now();
@@ -1374,8 +1377,7 @@ mod firmware {
                 // current page into the render-side map (no-op once synced,
                 // since a HashMap lookup skips the read for anything already
                 // present).
-                let frames_rendered =
-                    FRAMES_RENDERED.load(std::sync::atomic::Ordering::Relaxed);
+                let frames_rendered = FRAMES_RENDERED.load(std::sync::atomic::Ordering::Relaxed);
                 if library_visible.0 != frames_rendered {
                     library_visible = (frames_rendered, library_visible_books(&state));
                 }
@@ -1478,7 +1480,8 @@ mod firmware {
                     let player_changed = state.audiobooks.update_now_playing(status.now_playing);
                     let now_state = state.audiobooks.now_playing.state;
                     if now_state != previous_state
-                        || audiobook_positions_saved_at.elapsed() >= AUDIOBOOK_POSITION_SAVE_INTERVAL
+                        || audiobook_positions_saved_at.elapsed()
+                            >= AUDIOBOOK_POSITION_SAVE_INTERVAL
                     {
                         save_audiobook_positions(&state);
                         audiobook_positions_saved_at = Instant::now();
@@ -2135,13 +2138,11 @@ mod firmware {
 
             // The Reader page uses a longer SELECT hold (options) than every
             // other route; publish the threshold for the input thread.
-            set_select_long_press_ms(
-                if state.active_route() == ScreenRoute::ReaderPage {
-                    READER_SELECT_LONG_PRESS_MS
-                } else {
-                    SELECT_LONG_PRESS_MS
-                },
-            );
+            set_select_long_press_ms(if state.active_route() == ScreenRoute::ReaderPage {
+                READER_SELECT_LONG_PRESS_MS
+            } else {
+                SELECT_LONG_PRESS_MS
+            });
             if let Some(input_event) = input_queue.pop() {
                 // Whole handling of one key, including the refresh it causes:
                 // any gap between this span's start and its nested
@@ -2361,7 +2362,11 @@ mod firmware {
                             }
                             if let Some(request) = state.audiobooks.take_request() {
                                 if matches!(request, PlayerRequest::Open { .. }) {
-                                    ensure_audio_engine(&mut audio_engine, &mut state, &mut misc_power);
+                                    ensure_audio_engine(
+                                        &mut audio_engine,
+                                        &mut state,
+                                        &mut misc_power,
+                                    );
                                 }
                                 apply_player_request(audio_engine.as_ref(), &mut state, request);
                             }
@@ -2442,10 +2447,7 @@ mod firmware {
                             &mut portal_lan_recovering,
                             &mut storage_browser,
                         );
-                        apply_clock_set_time_ui_request(
-                            &mut board_services,
-                            &mut state,
-                        );
+                        apply_clock_set_time_ui_request(&mut board_services, &mut state);
                         apply_clock_set_timezone_ui_request(&mut network_config, &mut state);
                         log_reader_persistence_event(&mut state);
                         if state.display != previous_display {
@@ -2544,14 +2546,13 @@ mod firmware {
             }
 
             let needs_fast_tick = !matches!(
-                    state.audio.playback_state,
-                    AudioPlaybackState::Muted
-                        | AudioPlaybackState::Ready
-                        | AudioPlaybackState::Unavailable
-                        | AudioPlaybackState::Error
-                )
-                || state.wifi_transfer.state
-                    != waveshare_epd397_rust_app::wifi_transfer::WifiTransferState::Off
+                state.audio.playback_state,
+                AudioPlaybackState::Muted
+                    | AudioPlaybackState::Ready
+                    | AudioPlaybackState::Unavailable
+                    | AudioPlaybackState::Error
+            ) || state.wifi_transfer.state
+                != waveshare_epd397_rust_app::wifi_transfer::WifiTransferState::Off
                 || state.reader.loading.is_some()
                 || state.active_route() == ScreenRoute::ReaderLoading
                 || portal_via_hotspot;
@@ -3353,8 +3354,12 @@ mod firmware {
         let battery = match misc_power.read_power_snapshot() {
             Ok(snapshot) => format!(
                 "battery-mv={} battery-pct={} vbus={} charging={}",
-                snapshot.battery_voltage_mv.map_or("none".to_string(), |mv| mv.to_string()),
-                snapshot.battery_percent.map_or("none".to_string(), |pct| pct.to_string()),
+                snapshot
+                    .battery_voltage_mv
+                    .map_or("none".to_string(), |mv| mv.to_string()),
+                snapshot
+                    .battery_percent
+                    .map_or("none".to_string(), |pct| pct.to_string()),
                 snapshot.vbus_present,
                 snapshot.charging
             ),
@@ -3452,8 +3457,10 @@ mod firmware {
     /// releases its power-management lock, so light sleep can engage --
     /// and only then does the codec chip lose power, the same rail the
     /// sleep-image path disables before deep sleep.
-    fn suspend_audio_for_reading<I2C>(audio_engine: Option<&AudioEngine>, misc_power: &mut Axp2101<I2C>)
-    where
+    fn suspend_audio_for_reading<I2C>(
+        audio_engine: Option<&AudioEngine>,
+        misc_power: &mut Axp2101<I2C>,
+    ) where
         I2C: embedded_hal::i2c::I2c,
         I2C::Error: core::fmt::Debug,
     {
@@ -3635,7 +3642,10 @@ mod firmware {
         }
         let scan = scan_audiobooks(root).map_err(|error| error.to_string());
         match &scan {
-            Ok(books) => info!("rustmix-wave=audiobook-library status=scanned titles={}", books.len()),
+            Ok(books) => info!(
+                "rustmix-wave=audiobook-library status=scanned titles={}",
+                books.len()
+            ),
             Err(error) => warn!("rustmix-wave=audiobook-library status=scan-failed error={error}"),
         }
         state.audiobooks.set_library(scan);
@@ -3938,14 +3948,15 @@ mod firmware {
             if let Some(book) = state.reader.continue_reading_book() {
                 let started = Instant::now();
                 let cover = CoverCache::new(state.reader.cache_directory())
-                    .load_or_generate_fullscreen_cover(&book, SLEEP_COVER_WIDTH, SLEEP_COVER_HEIGHT);
+                    .load_or_generate_fullscreen_cover(
+                        &book,
+                        SLEEP_COVER_WIDTH,
+                        SLEEP_COVER_HEIGHT,
+                    );
                 if let Some(cover) = cover {
                     let percent = state.reader.continue_reading_percent().unwrap_or(0);
-                    let (frame, tab) = compose_cover_sleep_frame(
-                        &cover,
-                        percent,
-                        state.regional.locale,
-                    );
+                    let (frame, tab) =
+                        compose_cover_sleep_frame(&cover, percent, state.regional.locale);
                     info!(
                         "rustmix-wave=sleep-cover status=ready path={} percent={percent} tab-left={} tab-top={} tab-bottom={} elapsed-ms={}",
                         book.path,
@@ -3956,7 +3967,10 @@ mod firmware {
                     );
                     return (frame, format!("cover:{}", book.title));
                 }
-                info!("rustmix-wave=sleep-cover status=fallback reason=no-usable-cover path={}", book.path);
+                info!(
+                    "rustmix-wave=sleep-cover status=fallback reason=no-usable-cover path={}",
+                    book.path
+                );
             } else {
                 info!("rustmix-wave=sleep-cover status=fallback reason=no-book");
             }
