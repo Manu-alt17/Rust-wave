@@ -112,3 +112,15 @@ dist/waveshare-epd397-rust-app-v<VERSION>-github-ready.zip.sha256
 
 The source package excludes Git metadata, build outputs, generated release
 artifacts, local caches, patch scratch files, and extracted overlay directories.
+
+## Version and OTA updates
+
+Before a release, set the version in `Cargo.toml` and `CONFIG_APP_PROJECT_VER` in `sdkconfig.defaults`: a unit test (`build_info::tests::app_descriptor_version_matches_cargo`) fails while the two differ.
+
+The device updates itself only when asked (Settings → Update): it compares its `Cargo.toml` version with the latest GitHub release of `build_info::OTA_REPO_OWNER` / `OTA_REPO_NAME` and installs that release's `.bin` asset. Build the asset with:
+
+```bash
+./scripts/build-ota-image.sh
+```
+
+`OTA_REPO_OWNER` / `OTA_REPO_NAME` still point at the `Manu-alt17/Rust-wave` test fork: set them to the repository that will publish this firmware's releases before relying on the update.

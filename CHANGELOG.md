@@ -1,6 +1,41 @@
 # Changelog
 
-## Unreleased — PMIC Power-Off Shutdown
+## Unreleased — E-ink merge (`feature/merge-eink`)
+
+Rustmix Wave v1.4.8 merged with the E-ink firmware, a C / ESP-IDF e-reader for the same board. Each item below is one commit or a few.
+
+Removed:
+
+- Weather, the SD Lua app runtime and native games, Magic Tokens, the Rustmix Remote BLE build, the Calendar, RTC alarms, the environment and motion sensors (tap page-turn included; both chips are put to sleep at boot), the standalone Dictionary app (the in-reader lookup stays), Voice Notes, the Unit Converter and the Tools category (Files moves to Home).
+- Most fonts: the interface uses Inter, books Literata or Atkinson Hyperlegible, all with Latin-1 and Windows-1252 typography.
+- The automatic OTA check; updates run only from Settings → Update.
+
+Added:
+
+- Audiobooks: MP3 files or folders of tracks from `RUSTMIX/AUDIO`, played by a dedicated audio engine thread through libhelix, with pause, 30 s skips, track changes, volume and saved positions.
+- Connect to PC: the microSD as a USB disk (`components/usbdisk` over esp_tinyusb), with the USB PHY reset at every boot and any format of the card refused.
+- Long file names on the microSD.
+- The automatic standby timeout as a Display setting.
+- Progressive JPEG covers, through a luma-only decoder (`src/jpeg_luma.rs`, ported from E-ink).
+- The title written on placeholder covers.
+- Italian and Europe/Rome by default.
+
+Fixed:
+
+- Wi-Fi portal: protected files are checked by their resolved path, so `./WIFI.TXT`, `WIFI.TXT/` or `%2557IFI.TXT` no longer reach them.
+- EPUB: no silent truncation of long spines, manifests or archives; nested NCX entries and the EPUB3 `toc` nav only; named entities decoded.
+- Covers are centre-cropped instead of stretched, and JPEGs that would not fit in memory are refused instead of aborting.
+- Panel: waking from the idle sleep no longer flashes; the frame on the glass is reloaded silently.
+- Reading statistics count days in local time.
+- SD logs move to `.OLD` at 64 KB; release builds log warnings only, from the bootloader on; the app descriptor version follows `Cargo.toml`.
+- The fallback-sleep log line no longer says `wake=select-only` when the PMIC watchdog will power the board off.
+
+Faster:
+
+- SD at 20 MHz again, and large reads into PSRAM through an internal buffer (2.3 times faster).
+- The library visible set, sleep-image checks, the kept `.EPX` handle, and no Wi-Fi scan with a single saved network.
+
+## v1.4.x — PMIC Power-Off Shutdown
 
 - Replace the Reader's two smallest Book Font Size options (`Small`, `Medium`) with two new larger tiers above the old `XLarge` ceiling; the size picker now reads `Little` / `Medium` / `Large` / `XLarge` on screen (internally still the `Large` / `XLarge` / `XXLarge` / `XXXLarge` variants and persisted markers, to keep old preference files loading correctly), with the internal `XLarge` tier (on-screen "Medium") as the new default. Adds matching generated bitmap strikes (Atkinson Hyperlegible Next Medium, DejaVu Serif, Literata Medium) and recalibrated `lines_per_page` pagination for both new sizes. Saved preference files from older firmware that still say `small` or `medium` load as the smallest tier instead of failing to parse.
 - Replace MCU deep sleep with a real AXP2101 PMIC software power-off as the primary Power short-press shutdown path; real MCU deep sleep is now the automatic fallback if the PMIC power-off cannot be armed, and the pre-existing software-only sleep loop remains the last-resort fallback.

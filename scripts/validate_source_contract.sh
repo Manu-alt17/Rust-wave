@@ -20,16 +20,27 @@ contains() {
   local pattern="$2"
   grep -Fq -- "$pattern" "$path"
 }
-not_contains() {
-  local path="$1"
-  local pattern="$2"
-  ! grep -Fq -- "$pattern" "$path"
+
+# One version everywhere: Cargo.toml, Cargo.lock and the ESP-IDF app
+# descriptor (a unit test in src/build_info.rs checks the last pair too).
+version_contract() {
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+cargo = Path('Cargo.toml').read_text()
+version = re.search(r'^version = "([^"]+)"$', cargo, re.M).group(1)
+lock = Path('Cargo.lock').read_text()
+entry = re.search(r'name = "waveshare-epd397-rust-app"\nversion = "([^"]+)"', lock)
+assert entry and entry.group(1) == version, f'Cargo.lock version differs from {version}'
+sdkconfig = Path('sdkconfig.defaults').read_text()
+assert f'CONFIG_APP_PROJECT_VER="{version}"' in sdkconfig, f'sdkconfig.defaults app version differs from {version}'
+PY
 }
 
 clean_repository_contract() {
   python3 - <<'PY'
 from pathlib import Path
-import re
 
 root = Path('.')
 
@@ -58,96 +69,64 @@ expected = {
 }
 actual = {p.name for p in Path('docs').iterdir() if p.is_file()}
 assert actual == expected, f'durable docs mismatch: actual={sorted(actual)} expected={sorted(expected)}'
-assert not list(Path('docs').glob('V0.*')), 'historical milestone docs must be removed'
-assert not list(Path('docs').glob('*REPAIR*')), 'repair docs must be removed'
 
-# README and architecture are the durable entry points.
 readme = Path('README.md').read_text()
 arch = Path('docs/ARCHITECTURE.md').read_text()
 for fragment in (
-    'Current release: **v1.0.0**',
-    'scripts/build-release-firmware.sh',
-    'scripts/flash-release.sh',
-    'scripts/test-release-flash-workflow.sh',
-    'Power short',
-    'Power long',
-    'Dictionary',
-    'Calendar',
-    'Voice Notes',
     'docs/USER_GUIDE.md',
     'screenshots/',
-    'Sensor-driven utilities and motion games',
-    'Main-task safety and worker isolation',
+    'scripts/build-release-firmware.sh',
+    'scripts/flash-release.sh',
+    'RUSTMIX_DEV_BENCH',
+    'THIRD_PARTY_NOTICES.md',
 ):
     assert fragment in readme, f'README missing: {fragment}'
 for fragment in (
     'Design rules',
     'Display and refresh ownership',
-    'Voice Notes boundary',
-    'Dictionary boundary',
-    'Calendar boundary',
-    'Wi-Fi transfer boundary',
-    'Validation boundary',
-    'Board-service and sensor ownership',
-    'Native IMU event pipeline',
-    'Main-task safety and worker boundary',
-    'Screenshot-driven user documentation',
+    'Power key and standby',
+    'Reader',
+    'Images',
+    'Audio engine',
+    'Connect to PC',
+    'Wi-Fi transfer and network',
+    'Main task and workers',
+    'Storage',
+    'Validation',
 ):
     assert fragment in arch, f'architecture missing: {fragment}'
+
+# Documentation of removed features must not come back.
+for path in [Path('README.md'), *Path('docs').glob('*.md')]:
+    text = path.read_text()
+    for removed in ('Voice Notes boundary', 'Calendar boundary', 'Games and Lua boundary', 'Native IMU event pipeline', 'RRBP'):
+        assert removed not in text, f'{path} still documents removed feature: {removed}'
 PY
 }
-
 
 screenshot_user_guide_contract() {
   python3 - <<'PY'
 from pathlib import Path
+import re
 
 screenshots = Path('screenshots')
 guide = Path('docs/USER_GUIDE.md').read_text()
-readme = Path('README.md').read_text()
-architecture = Path('docs/ARCHITECTURE.md').read_text()
-
-assert screenshots.is_dir(), 'screenshots directory missing'
 assert (screenshots / 'README.md').is_file(), 'screenshots/README.md missing'
 
-expected = {
-    'alarm-details.jpg', 'alarms.jpg', 'audio-details.jpg', 'audio.jpg',
-    'calendar-create-note.jpg', 'calendar-current-day.jpg', 'calendar-date-details.jpg',
-    'calendar-us-events.jpg', 'clock.jpg', 'continue-reading1.jpg', 'device-info.jpg',
-    'device-info1.jpg', 'device-info2.jpg', 'dictionary-result.jpg', 'dictionary.jpg',
-    'directory-listing.jpg', 'display.jpg', 'environment.jpg', 'environment1.jpg',
-    'epub-reader-options.jpg', 'epub-reader.jpg', 'files-listing.jpg', 'games-listing.jpg',
-    'games.jpg', 'hello-grid.jpg', 'homepage.jpg', 'library-bookmarks.jpg',
-    'library-books.jpg', 'library-files.jpg', 'library-recent.jpg', 'minesweeper.jpg',
-    'motion-events.jpg', 'motion.jpg', 'motion20248.jpg', 'network-details.jpg',
-    'network.jpg', 'opening_book.jpg', 'productivity.jpg', 'reader-bookmarks-list.jpg',
-    'reader-bookmarks.jpg', 'reader-main.jpg', 'reader-reading-prefs.jpg', 'reader-toc.jpg',
-    'rtc-details.jpg', 'settings.jpg', 'settings1.jpg', 'sleep.jpg', 'sobokan-tilt.jpg',
-    'sudoku.jpg', 'tilt-maze.jpg', 'tools.jpg', 'txt-reader-options.jpg', 'txt-reader.jpg',
-    'unit-converter.jpg', 'unit-converter1.jpg', 'voice_note_detail.jpg',
-    'voice_note_edit.jpg', 'voice_notes.jpg', 'voice_notes_record.jpg', 'weather-1.jpg',
-    'weather.png', 'wifi-transfer.jpg',
-}
-actual = {path.name for path in screenshots.iterdir() if path.is_file() and path.name != 'README.md'}
-assert actual == expected, f'screenshot set mismatch: missing={sorted(expected-actual)} extra={sorted(actual-expected)}'
-for filename in sorted(expected):
-    assert f'../screenshots/{filename}' in guide, f'user guide does not reference screenshot: {filename}'
+images = {path.name for path in screenshots.iterdir() if path.is_file() and path.name != 'README.md'}
+referenced = set(re.findall(r'\.\./screenshots/([A-Za-z0-9_.-]+\.(?:jpg|png))', guide))
+assert images == referenced, f'screenshots and user guide disagree: unreferenced={sorted(images - referenced)} missing={sorted(referenced - images)}'
 for fragment in (
     '# Rustmix Wave user guide',
     '## Physical controls',
-    '## 2. Reader',
-    '## 3. Productivity',
-    '## 4. Games',
-    '## 5. Tools',
-    '## 6. Settings',
-    '## 7. Power-key maintenance and sleep',
-    '## 8. Screenshot index',
-    'NAV H', 'NAV V', 'Tilt Maze', 'Motion 2048', 'Sokoban Tilt',
+    '## 1. Home',
+    '## 2. Library',
+    '## 3. Reader',
+    '## 4. Audiobooks',
+    '## 9. Connect to PC',
+    '## 11. Screenshot index',
 ):
     assert fragment in guide, f'user guide missing: {fragment}'
-for content, label in ((readme, 'README'), (architecture, 'architecture')):
-    assert 'USER_GUIDE.md' in content, f'{label} missing user guide link'
-    assert 'screenshots/' in content or '/screenshots' in content, f'{label} missing screenshots link'
 PY
 }
 
@@ -259,99 +238,48 @@ from pathlib import Path
 lib = Path('src/lib.rs').read_text()
 main = Path('src/main.rs').read_text()
 state = Path('src/app/state.rs').read_text()
-calendar = Path('src/calendar.rs').read_text()
-dictionary = Path('src/dictionary.rs').read_text()
-keyboard = Path('src/keyboard_navigation.rs').read_text()
-voice = Path('src/voice_notes.rs').read_text()
-wifi = Path('src/wifi_transfer.rs').read_text()
 power = Path('src/power_key.rs').read_text()
+wifi = Path('src/wifi_transfer.rs').read_text()
 
 for module in (
-    'calendar', 'dictionary', 'keyboard_navigation', 'power_key', 'power_key_menu',
-    'reader', 'epub', 'voice_notes', 'voice_note_metadata', 'wifi_transfer',
-    'alarm', 'sleep_mode', 'sleep_images', 'sleep_network', 'lua_runtime', 'games',
+    'reader', 'epub', 'dictionary', 'reading_stats', 'cover_cache', 'jpeg_luma',
+    'audio', 'audiobook', 'usb_disk', 'wifi_transfer', 'power_key', 'power_key_menu',
+    'sleep_mode', 'sleep_images', 'sleep_network', 'sd_io', 'sd_log',
 ):
     assert f'pub mod {module};' in lib, f'library module missing: {module}'
-
-for marker in (
-    'rustmix-wave=release-flash-workflow-safety-ready',
-    'rustmix-wave=power-key-short-sleep-long-menu-ready',
-    'rustmix-wave=calendar-personal-event-editor-ready',
-    'rustmix-wave=calendar-us-events-daily-agenda-ready',
-    'rustmix-wave=offline-dictionary-x4-pack-native-foundation-ready',
-    'rustmix-wave=voice-notes-organizer-controls-export-ready',
-    'rustmix-wave=wifi-transfer-web-portal-ready',
+for removed in (
+    'calendar', 'voice_notes', 'voice_note_metadata', 'keyboard_navigation', 'alarm',
+    'lua_runtime', 'games', 'weather', 'weather_config', 'unit_converter', 'imu_events',
+    'imu_tap_diagnostics', 'magic_tokens', 'rtc_alarm_interrupt', 'rustmix_remote',
 ):
-    assert marker in main, f'runtime readiness marker missing: {marker}'
+    assert f'pub mod {removed};' not in lib, f'removed module is back: {removed}'
+    assert not Path(f'src/{removed}.rs').exists() and not Path(f'src/{removed}').exists(), f'removed module source is back: {removed}'
 
-# Power-key behavior: short sleep, long menu, manual global refresh, non-const helper.
+# Power key: short press standby, long press display-maintenance menu.
 assert 'pub fn power_key_sleep_restore_route(&self) -> ScreenRoute {' in state
-assert 'pub const fn power_key_sleep_restore_route(&self) -> ScreenRoute {' not in state
 assert 'state.open_power_key_menu();' in main
 assert 'event == PowerKeyEvent::LongPress' in main
-assert 'power_key_event_from_irq_status' in power
 assert 'power_key_clear_ghost' in main
-assert 'POWER_KEY_LONG_PRESS_MASK' in power
-assert 'POWER_KEY_SHORT_PRESS_MASK' in power
+for fragment in ('power_key_event_from_irq_status', 'POWER_KEY_LONG_PRESS_MASK', 'POWER_KEY_SHORT_PRESS_MASK'):
+    assert fragment in power, f'power key decoder missing: {fragment}'
 
-# Shared keyboard H/V behavior is the default for keyboard-like screens.
-for fragment in ('KeyboardGridNavigation', 'toggle_axis', 'Horizontal', 'Vertical'):
-    assert fragment in keyboard, f'keyboard helper missing: {fragment}'
-assert 'keyboard_navigation: KeyboardGridNavigation' in dictionary
-assert 'toggle_navigation_axis' in dictionary
-assert 'NAV H' in keyboard and 'NAV V' in keyboard
-assert 'KeyboardGridNavigation' in calendar
-assert 'title_edit_navigation: KeyboardGridNavigation' in voice
-assert 'toggle_title_editor_navigation_axis' in voice
+# Connect to PC: the PHY is released first thing at boot, and no format ever.
+assert 'usb_disk::espidf::release_phy();' in main
+assert '-Wl,--wrap=f_mkfs' in Path('components/usbdisk/CMakeLists.txt').read_text()
 
-# Dictionary reuses the bounded X4 pack.
+# The in-reader lookup reuses the bounded X4 dictionary pack.
+dictionary = Path('src/dictionary.rs').read_text()
 for fragment in (
     'DICTIONARY_ROOT: &str = "/sdcard/RUSTMIX/APPS/DICT"',
     'DICTIONARY_INDEX_FILE: &str = "INDEX.TXT"',
     'DICTIONARY_SHARD_MAX_BYTES: usize = 16 * 1024',
-    'DATA/', '.JSN', 'lookup_dictionary_with_index',
 ):
     assert fragment in dictionary, f'dictionary contract missing: {fragment}'
 
-# Calendar personal rows are writable, U.S. rows read-only, Hindu pack excluded.
-for fragment in (
-    'CALENDAR_ROOT: &str = "/sdcard/RUSTMIX/APPS/CALENDAR"',
-    'CALENDAR_EVENTS_FILE: &str = "EVENTS.TXT"',
-    'CALENDAR_US_EVENTS_FILE: &str = "US2026.TXT"',
-    'CALENDAR_EVENTS_TEMP_FILE: &str = "EVENTS.TMP"',
-    'CALENDAR_EVENTS_BACKUP_FILE: &str = "EVENTS.BAK"',
-    'HINDU26.TXT',
-):
-    assert fragment in calendar, f'calendar contract missing: {fragment}'
-
-# Voice Notes keep FAT-safe WAV files, bounded stream finalization, and native telemetry.
-for fragment in (
-    'VOICE_NOTES_ROOT', 'VOICE_PCM_MONO_CHUNK_BYTES', 'VOICE001.WAV',
-    'META.TXT', 'SETTINGS.TXT', 'VoicePlaybackSession', 'cleanup_stale_voice_tmp',
-):
-    assert fragment in voice or fragment in Path('src/voice_note_metadata.rs').read_text(), f'voice notes contract missing: {fragment}'
-assert 'sys::esp_vfs_fat_info' in main
-assert 'sys::statvfs' not in main
-voice_screen = Path('src/app/screens/voice_notes.rs').read_text()
-calendar_screen = Path('src/app/screens/calendar.rs').read_text()
-for fragment in (
-    'VOICE NOTE TITLE', 'EDIT FRIENDLY TITLE', 'VOICE_TITLE_EDITOR_KEY_ROWS',
-    'MOVE  HOLD H/V  SELECT KEY  BOOT BACK',
-):
-    assert fragment in voice_screen, f'voice title editor layout missing: {fragment}'
-for fragment in (
-    'calendar_editor_status_date_label', 'CALENDAR_EDITOR_FOOTER_HINT',
-    'MOVE  HOLD H/V  SELECT KEY  BOOT BACK',
-):
-    assert fragment in calendar_screen, f'calendar editor compact layout missing: {fragment}'
-
-# Wi-Fi portal protects configuration and internal sidecars.
-for protected in (
-    'WIFI.TXT', 'CLOCK.TXT', 'ALARMS.TXT', 'DISPLAY.TXT', 'WEATHER.TXT',
-    'VOICE/META.TXT', 'VOICE/SETTINGS.TXT',
-    'APPS/CALENDAR/EVENTS.TMP', 'APPS/CALENDAR/EVENTS.BAK',
-):
+# Wi-Fi portal protects the configuration files by their resolved path.
+for protected in ('WIFI.TXT', 'CLOCK.TXT', 'DISPLAY.TXT'):
     assert f'"{protected}"' in wifi, f'protected portal path missing: {protected}'
+assert 'fn resolve_portal_path' in wifi
 PY
 }
 
@@ -360,23 +288,18 @@ sd_examples_contract() {
 from pathlib import Path
 required = (
     'examples/sd-card/RUSTMIX/WIFI.TXT.example',
-    'examples/sd-card/RUSTMIX/WEATHER.TXT.example',
-    'examples/sd-card/RUSTMIX/ALARMS.TXT.example',
     'examples/sd-card/RUSTMIX/DISPLAY.TXT.example',
+    'examples/sd-card/RUSTMIX/READER/PREFS.TXT.example',
+    'examples/sd-card/RUSTMIX/BOOKS/README.TXT.example',
+    'examples/sd-card/RUSTMIX/AUDIO/README.TXT.example',
     'examples/sd-card/RUSTMIX/SLEEP/SLEEP.BMP',
     'examples/sd-card/RUSTMIX/APPS/DICT/INDEX.TXT',
     'examples/sd-card/RUSTMIX/APPS/DICT/DATA/AA.JSN',
-    'examples/sd-card/RUSTMIX/APPS/CALENDAR/EVENTS.TXT',
-    'examples/sd-card/RUSTMIX/APPS/CALENDAR/US2026.TXT',
-    'examples/sd-card/RUSTMIX/APPS/SUDOKU/MAIN.LUA',
-    'examples/sd-card/RUSTMIX/APPS/MINES/MAIN.LUA',
-    'examples/sd-card/RUSTMIX/APPS/TILTMAZE/MAIN.LUA',
-    'examples/sd-card/RUSTMIX/APPS/M2048/MAIN.LUA',
-    'examples/sd-card/RUSTMIX/APPS/SOKOBAN/MAIN.LUA',
 )
 for path in required:
     assert Path(path).is_file(), f'SD example missing: {path}'
-assert not Path('examples/sd-card/RUSTMIX/APPS/CALENDAR/HINDU26.TXT').exists()
+for removed in ('APPS/DICT/MAIN.LUA', 'APPS/DICT/APP.TOM', 'APPS/CALENDAR', 'WEATHER.TXT.example', 'ALARMS.TXT.example'):
+    assert not Path('examples/sd-card/RUSTMIX', removed).exists(), f'example of a removed feature present: {removed}'
 PY
 }
 
@@ -395,6 +318,18 @@ for path in sorted(Path('src').rglob('*.rs')):
         ch = text[i]
         nxt = text[i + 1] if i + 1 < len(text) else ''
         if state == 'code':
+            # Raw strings (r"...", r#"..."#, br#"..."#) hold the portal's
+            # HTML and JavaScript: skip them whole.
+            prev = text[i - 1] if i else ''
+            if ch == 'r' and (not (prev.isalnum() or prev == '_') or (prev == 'b' and not (text[i - 2: i - 1].isalnum() or text[i - 2: i - 1] == '_'))):
+                j = i + 1
+                while j < len(text) and text[j] == '#':
+                    j += 1
+                if j < len(text) and text[j] == '"':
+                    hashes = j - i - 1
+                    end = text.find('"' + '#' * hashes, j + 1)
+                    if end != -1:
+                        i = end + 1 + hashes; continue
             if ch == '/' and nxt == '/':
                 state = 'line_comment'; i += 2; continue
             if ch == '/' and nxt == '*':
@@ -426,10 +361,7 @@ for path in sorted(Path('src').rglob('*.rs')):
 PY
 }
 
-check cargo-version-v1.0.0 grep -Eq '^version = "1\.0\.0"$' Cargo.toml
-check cargo-lock-version-v1.0.0 bash -c "grep -A2 'name = \"waveshare-epd397-rust-app\"' Cargo.lock | grep -q 'version = \"1.0.0\"'"
-check sdkconfig-version-v1.0.0 contains sdkconfig.defaults 'CONFIG_APP_PROJECT_VER="1.0.0"'
-check build-info-milestone contains src/build_info.rs 'UI_SHELL_MILESTONE: &str = "text-editor-layout-alignment"'
+check version-consistency version_contract
 check cleaned-repository-contract clean_repository_contract
 check screenshot-user-guide-contract screenshot_user_guide_contract
 check ci-workflow-contract ci_workflow_contract
@@ -439,10 +371,13 @@ check package-release-contract package_release_contract
 check host-test-native-target-isolation host_test_native_target_contract
 check runtime-contract runtime_contract
 check sd-examples-contract sd_examples_contract
-check font-notice-serif contains docs/licenses/FONT_NOTICES.md 'DejaVu Serif'
-check font-notice-atkinson contains docs/licenses/FONT_NOTICES.md 'Atkinson Hyperlegible Next Medium'
-check font-notice-literata contains docs/licenses/FONT_NOTICES.md 'Literata Medium'
-check no-raw-font-files bash -c '! find . -type f \( -iname "*.ttf" -o -iname "*.otf" -o -iname "*.woff" -o -iname "*.woff2" \) -print -quit | grep -q .'
+check font-notice-inter contains docs/licenses/FONT_NOTICES.md 'Inter'
+check font-notice-literata contains docs/licenses/FONT_NOTICES.md 'Literata'
+check font-notice-atkinson contains docs/licenses/FONT_NOTICES.md 'Atkinson Hyperlegible Next'
+check third-party-notice-helix contains docs/licenses/THIRD_PARTY_NOTICES.md 'esp-libhelix-mp3'
+check third-party-notice-tinyusb contains docs/licenses/THIRD_PARTY_NOTICES.md 'esp_tinyusb'
+check third-party-notice-jpeg contains docs/licenses/THIRD_PARTY_NOTICES.md 'esp_new_jpeg'
+check no-raw-font-files bash -c '! find . -path ./target -prune -o -type f \( -iname "*.ttf" -o -iname "*.otf" -o -iname "*.woff" -o -iname "*.woff2" \) -print | grep -q .'
 for script in scripts/*.sh; do
   check "bash-syntax-$(basename "$script")" bash -n "$script"
 done

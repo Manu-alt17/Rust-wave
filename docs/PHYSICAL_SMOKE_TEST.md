@@ -2,98 +2,71 @@
 
 For screen names, navigation controls, and reference images, see [`USER_GUIDE.md`](USER_GUIDE.md).
 
-Run this checklist after a release build or any cross-cutting runtime change.
+Run this checklist after a release build or any cross-cutting runtime change. Do not keep a serial monitor attached while testing by hand: reopening the USB serial port resets the board.
 
 ## Build and boot
 
 1. Run `./scripts/validate.sh`.
 2. Run `cargo +esp build --release`.
 3. Flash with `./scripts/flash.sh monitor`.
-4. Confirm boot reaches the Home screen without panic or reset loops.
-5. Confirm the displayed version is `1.0.0` and the repository-cleanup readiness marker appears.
+4. Confirm boot reaches the Home screen without panic or reset loops, and that a release build prints warnings only (no INFO lines from the bootloader or the app).
+5. Confirm Settings → Info shows the version in `Cargo.toml`.
 
 ## Button capture under load
 
-1. Navigate to any menu screen and trigger a global panel refresh (for example, open Library or another route that forces a full refresh).
-2. While the refresh is visibly in progress, rapid-press UP/DOWN 5-10 times in quick succession.
-3. Confirm every press is eventually reflected once the refresh completes and subsequent refreshes catch up — the final selection position should match the number of presses issued, not fewer, and each press should still produce its own visible step (no presses collapsed or skipped).
-4. Repeat holding BOOT (Back) instead of UP/DOWN during a refresh; confirm the Back navigation is still honored afterward, not lost.
-5. Repeat with a long SELECT hold started while a refresh is in progress on a route with a contextual long-press action (for example Sudoku or the Calendar agenda); confirm the contextual action still fires afterward.
-6. Confirm normal single-press responsiveness (no refresh in progress) feels unchanged from before this change.
+1. Trigger a global refresh (for example the display maintenance menu's **Clear ghosting now**).
+2. While it is in progress, rapid-press Up/Down 5-10 times: every press must still be reflected once the refresh completes.
+3. Repeat with BOOT (Back), and with a long SELECT on a page of a book (Reader options).
 
-## Power key and display refresh
+## Panel idle sleep
 
-1. Hold Power and confirm the display-maintenance menu opens.
-2. Select `Clear ghosting now` and confirm a clean global refresh returns to the underlying screen.
-3. Hold Power, select Cancel, and confirm no sleep transition.
-4. Press Power briefly and confirm a random sleep image is shown, network services suspend, and the board actually powers off (no MCU activity, no panel refreshes, current draw drops close to PMIC-only quiescent level if a meter is available -- compare against the current draw measured for plain MCU deep sleep).
-5. Press Power again and confirm the board turns back on, shows the previous screen with a single clean global refresh, and does not power itself back off on its own.
-6. With Reader open on a book, press Power briefly to power off, then press Power again: confirm the same book reopens at the same page.
-7. With no card or a different card inserted, press Power briefly to power off, then hold SELECT (rotary GPIO5) while the board is off: confirm nothing happens (SELECT no longer wakes the board in the PMIC power-off path).
-8. Disconnect and reconnect the battery (or perform a hard reset) while the board is powered off: confirm the next boot is an ordinary cold boot (Home screen, no Reader auto-resume, no residual shutdown-marker log line).
-9. With an alarm active, press Power briefly and confirm the shutdown is rejected the same way the display-maintenance menu is rejected.
-10. With USB connected, press Power briefly to power off; then connect/disconnect USB while the board is off and note whether it powers itself back on. If it does, confirm the resulting boot is classified as an ordinary power-on (no Reader auto-resume), not a PMIC Power-key wake.
-11. If the ESP-IDF deep-sleep fallback is deliberately forced (for example by a temporary code change that fails the PMIC power-off), confirm the board still powers down correctly via GPIO5/SELECT wake, matching pre-existing deep-sleep behavior.
+1. Open a book and leave it for more than a minute.
+2. Turn the page: the new page appears with a partial refresh, no flash, and no trace of the previous page.
+3. Do the same on Home and in the Library, going Back instead of turning a page.
+4. After 50 partial refreshes a fast global refresh cleans the ghosting by itself.
+
+## Power key and standby
+
+1. Hold Power and confirm the display-maintenance menu opens; **Clear ghosting now** returns to the screen with a clean refresh, Cancel returns without one.
+2. Press Power briefly: the sleep screen is drawn, network services suspend, and the board powers off.
+3. Press Power again: the board turns on and shows the previous screen.
+4. With a book open, power off and on again: the same book reopens at the same page.
+5. Set Settings → Schermo → standby to 5 minutes, leave the device: it goes into standby by itself. It must not while an audiobook plays.
+6. Set the sleep screen to the book cover and power off with a book open: its cover is on the glass, including progressive-JPEG covers.
 
 ## Reader
 
-1. Open one TXT book and one EPUB or `.EPU` book.
-2. Confirm staged loading, page navigation, Reader Options, preferences, TOC behavior, and bookmark add/remove.
-3. Reboot and confirm Continue Reading restores the prior book and page.
-4. Confirm `/RUSTMIX/READER/POSITS.TXT` and `CACHE/<8HEX>.CCH` exist.
+1. Open one TXT and one EPUB book: an EPUB with a cover opens on it, Down goes on to the text.
+2. Check page turns, the options (hold SELECT), preferences, table of contents and bookmark add/remove, and the dictionary lookup (SELECT, choose a word).
+3. Reboot and confirm **Continua** on Home restores the book and page.
+4. Confirm `/RUSTMIX/READER/POSITS.TXT` and the `READER/CACHE` files exist.
 
-## Dictionary
+## Library and covers
 
-1. Open `Tools > Dictionary`.
-2. Confirm `CAB`, `BARN`, and `CALENDAR` exact lookup.
-3. Confirm `AAR*` prefix lookup and result cycling.
-4. Hold SELECT and confirm `NAV H` / `NAV V` switches without moving the selected key.
-5. Press BOOT and confirm hierarchical Back.
+1. Open the Library with a few new books: covers appear one by one, then stay on later visits.
+2. A book without a cover (or with a broken one) shows its title on the placeholder.
+3. A book with a progressive JPEG cover shows the cover, after 1 to 2 s the first time.
 
-## Calendar
+## Audiobooks
 
-1. Open `Productivity > Calendar`.
-2. Confirm U.S. event markers and daily agenda rendering.
-3. Create, edit, and delete one personal event.
-4. Confirm U.S. holiday rows remain read-only.
-5. Confirm agenda summary, pagination, first row, and footer do not overlap.
-6. Confirm `EVENTS.TMP` is absent after successful write and `EVENTS.BAK` is retained.
+1. Put one MP3 and one folder of numbered MP3 tracks in `/RUSTMIX/AUDIO`.
+2. Play each: sound on the speaker, no clicks, the track order follows the numbers.
+3. Pause and resume, change the volume, use the player menu (30 s back and forward, previous and next track, stop).
+4. Go Back to the list while playing: playback goes on.
+5. Reboot and play again: playback resumes where it was.
 
-## Voice Notes
+## Connect to PC
 
-1. Record a note, pause, resume, and save.
-2. Confirm a new `VOICE###.WAV` file persists after reboot.
-3. Confirm gain selection persists, metadata is readable, playback works, and delete confirmation works.
-4. Confirm LAN export displays a path and protected sidecars are not exposed.
+1. Settings → Al PC, connect the cable, press SELECT: the computer sees the microSD as a disk, and the serial port disappears.
+2. Copy a book and an audiobook, eject the disk on the computer, press a key on the device (not BOOT): it restarts, the serial port is back, and the new book and audiobook are listed.
+3. Repeat, pulling the cable without ejecting: the card must not be formatted.
 
-## Network, alarms, and settings
+## Network
 
-1. Confirm Wi-Fi connection and SNTP status.
-2. With no Wi-Fi configured (or after a `WIFI.TXT` wipe), open Home ▸ Upload (or Settings ▸ Network ▸ Configure via phone — same portal). Confirm the hotspot SSID/password and the single QR code render. Scan it with a phone camera, confirm it offers to join the hotspot, and confirm the phone then opens the portal page on its own (a "Sign in to network" prompt or an auto-launched browser, depending on the OS) without scanning a second code. Enter the six-digit code shown on screen and confirm both the Files tabs and the Wi-Fi tab unlock together.
-3. From the portal's Wi-Fi tab, add a nearby (or manually typed) network with its password and confirm the device reports Connected and returns to the saved-network list; try a wrong password and confirm it reports Failed without saving.
-4. Open Settings ▸ Network ▸ Saved networks, confirm the just-added network appears with a Connected badge, then forget it (SELECT twice) and confirm it disappears and `WIFI.TXT` is rewritten.
-5. With Wi-Fi already configured and connected, open Home ▸ Upload again and confirm the device is reachable at its existing LAN address (no hotspot, no network switch needed on the PC/phone) and the Wi-Fi tab still lists saved networks (scan/add hidden, since that requires the hotspot path).
-6. Confirm an alarm can sound, snooze, and dismiss.
-7. Confirm alarm behavior is not hidden by the Power-key display menu.
-8. Confirm Display settings persist after reboot.
-
-## Games and sensors
-
-1. Open Sudoku and verify rotary movement, held-SELECT axis toggle, edit, and commit.
-2. Open one motion game and verify debounced IMU movement.
-3. Open Environment and Motion diagnostic screens.
-4. Run the audio test chime.
-
-## Text-editor layout alignment
-
-1. Open Voice Notes, select a saved WAV, and choose **Edit friendly title**.
-2. Confirm the header reads **VOICE NOTE TITLE / EDIT FRIENDLY TITLE**.
-3. Confirm the shared grid keyboard is visible and defaults to `NAV H`.
-4. Hold SELECT and confirm `NAV V` appears without moving the selected key.
-5. Use `SAVE` to persist a friendly title and confirm the internal `VOICE###.WAV` filename remains unchanged.
-6. Reopen the title editor, press BOOT, and confirm the edit is cancelled without saving.
-7. Open Calendar, create or edit a personal event, and confirm the status strip shows a compact `YYYY-MM-DD` date plus `NAV H` or `NAV V` without overlap.
-8. Confirm the Calendar editor footer is fully visible.
+1. With no Wi-Fi configured, open Home → Carica: the hotspot and the QR code appear; the phone joins and opens the setup page by itself. Add a network and confirm the device connects.
+2. With Wi-Fi configured, open Home → Carica again: the device is reachable at its LAN address. Upload a book; its cover appears in the Library at once.
+3. Try to download, overwrite, rename or delete `WIFI.TXT`, `CLOCK.TXT` or `DISPLAY.TXT` through the portal, including as `./WIFI.TXT`, `WIFI.TXT/` and `%2557IFI.TXT`: every attempt is refused.
+4. Confirm the clock synchronizes and the statistics count today's reading in local time.
 
 ## Idle power profile (diagnostic build)
 
@@ -105,7 +78,7 @@ Measures whether automatic light sleep is actually entered while the device sits
    - Home, panel asleep (wait past the 60 s panel idle sleep).
    - Reader page, panel asleep, Wi-Fi still connected.
    - Reader page after the reader power-save grace period (`wifi-suspended-for-reading=true`).
-   - Voice note playback (expected to stay awake).
+   - Audiobook playback (expected to stay awake).
 4. `light-sleeps=0` means the chip never actually entered light sleep in that window. `min-freq-pct` is the share of time at the 40 MHz floor where light sleep is permitted (ESP-IDF's `SLEEP` mode), not time spent asleep; the lock rows with a growing `Time(us)` show what keeps it awake or at a raised frequency.
-5. While a PC is attached over USB, automatic light sleep is deliberately blocked (`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`: the USB Serial/JTAG console cannot survive it), and the lock rows show `usb_serial_jtag NO_LIGHT_SLEEP` held. To measure light sleep, confirm the build over USB first, then run the scenarios on battery or a wall charger with no PC attached. Every window is also appended to `/sdcard/RUSTMIX/PMPROF.TXT`, prefixed with `uptime-ms=`; read it afterwards from the card or through the Wi-Fi transfer portal.
+5. While a PC is attached over USB, automatic light sleep is deliberately blocked (`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`: the USB Serial/JTAG console cannot survive it), and the lock rows show `usb_serial_jtag NO_LIGHT_SLEEP` held. To measure light sleep, confirm the build over USB first, then run the scenarios on battery or a wall charger with no PC attached. Every window is also appended to `/sdcard/RUSTMIX/PMPROF.TXT` (moved to `PMPROF.OLD` at 64 KB), prefixed with `uptime-ms=`; read it afterwards from the card or through the Wi-Fi transfer portal.
 6. Rebuild without the overlay before any battery-life measurement.

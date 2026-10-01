@@ -1,39 +1,29 @@
 # SD-card setup
 
-Use a FAT-formatted SD card. Rustmix Wave mounts it at `/sdcard` and expects the following product tree:
+Use a FAT-formatted microSD (FAT32 for cards up to 32 GB; exFAT is not supported). Rustmix Wave mounts it at `/sdcard` with long file names, and keeps everything under `/RUSTMIX`:
 
 ```text
 /RUSTMIX/
-  WIFI.TXT
-  CLOCK.TXT
-  WEATHER.TXT
-  ALARMS.TXT
-  DISPLAY.TXT
-  BOOKS/
-  READER/
-    CACHE/
-  VOICE/
-  SLEEP/
-    *.BMP
-  MAGIC/
+  BOOKS/          books: .txt, .epub (subfolders are not scanned)
+  AUDIO/          audiobooks: one .mp3, or one folder of .mp3 tracks, per book
+  SLEEP/          sleep images: *.BMP
+  APPS/DICT/      dictionary pack for the in-reader lookup (optional)
     INDEX.TXT
-    ACTIVE.TXT
-    *_F.TOK
-    *_H.TOK
-  APPS/
-    HGRID/
-    SUDOKU/
-    MINES/
-    TILTMAZE/
-    M2048/
-    SOKOBAN/
-    DICT/
-      INDEX.TXT
-      DATA/*.JSN
-    CALENDAR/
-      EVENTS.TXT
-      US2026.TXT
+    DATA/*.JSN
+  WIFI.TXT        saved Wi-Fi networks
+  CLOCK.TXT       time zone and interface language
+  DISPLAY.TXT     interface text size, sleep screen, automatic standby
+
+  written by the firmware:
+  READER/         STATE.TXT, POSITS.TXT, RECENT.TXT, MARKS.TXT, PREFS.TXT
+  READER/CACHE/   book text and page indexes, covers, sleep covers, images
+  STATS/          one reading-session log per month (YYYYMM.LOG)
+  AUDIOPOS.TXT    audiobook positions
+  MENU.TXT  SLEEPIDX.TXT  SLEEPAT.TXT
+  BOOTTIME.LOG  RESETS.LOG   diagnostics, moved to .OLD at 64 KB
 ```
+
+Copy files with the Wi-Fi portal (Home → Carica), with Connect to PC (Settings → Al PC), or by moving the card to a computer.
 
 ## Install bundled examples
 
@@ -41,79 +31,77 @@ Use a FAT-formatted SD card. Rustmix Wave mounts it at `/sdcard` and expects the
 ./scripts/install-sd-examples.sh /Volumes/YOUR_SD_CARD
 ```
 
-Existing paths are preserved by default. Use `--force` only when deliberately replacing bundled example files:
+Existing paths are preserved by default. Use `--force` only when deliberately replacing bundled example files.
 
-```bash
-./scripts/install-sd-examples.sh --force /Volumes/YOUR_SD_CARD
+## Books
+
+Copy TXT and EPUB files into `/RUSTMIX/BOOKS`. Text files may be UTF-8 or Windows-1252. Books get their cover and title the first time the Library shows them.
+
+Positions, bookmarks and preferences are written by the Reader with `.TMP` and `.BAK` siblings for recovery. `READER/PREFS.TXT`:
+
+```text
+version=1
+theme=classic|high-contrast
+orientation=portrait|landscape
+font_size=large|xlarge|xxlarge|xxxlarge
+book_font=literata|atkinson-hyperlegible
+paragraph_alignment=justified|left|center|right
+show_progress=true|false
+full_screen=true|false
 ```
 
-The generic installer preserves an existing Dictionary and Calendar tree. Use the dedicated installers for intentional complete-pack replacement.
+The four `font_size` values are the four sizes in the Reader preferences, from the smallest.
+
+## Audiobooks
+
+Copy MP3 files into `/RUSTMIX/AUDIO`. A file is one audiobook; a folder is one audiobook whose tracks play in name order, numbers counted as numbers (`2` before `10`), so `01 - …`, `02 - …` or `Capitolo 1`, `Capitolo 2` both work. MPEG-1 or 2 layer III, mono or stereo, any sample rate up to 48 kHz.
 
 ## Wi-Fi
 
-The normal way to add and manage Wi-Fi networks is on-device: Settings ▸ Network ▸ Configure via phone (same portal as the Home ▸ Upload tile) opens the device's own hotspot and a small web page, reached by scanning a single on-screen QR code to join the hotspot — the page then opens on its own via captive-portal detection. Enter the six-digit code shown on screen, then use the portal's Wi-Fi tab: pick a network the device found nearby (or type one in) and enter its password with your phone's keyboard — no typing on the device itself. Up to 8 networks can be saved; Settings ▸ Network ▸ Saved networks lists them and can forget one. See `docs/USER_GUIDE.md` for the full walkthrough.
+The normal way to add networks is from a phone: Home → Carica (or Settings → Rete) opens the device's own hotspot and shows a QR code to join it; the setup page then opens by itself. Enter the code shown on screen and add networks and passwords with the phone's keyboard. Up to 8 networks are saved.
 
-Editing `/RUSTMIX/WIFI.TXT` by hand remains a supported fallback for headless or bulk provisioning:
+`/RUSTMIX/WIFI.TXT` can also be written by hand:
 
 ```text
 ssid1=YOUR_NETWORK
 password1=YOUR_PASSWORD
 ssid2=ANOTHER_NETWORK
 password2=ANOTHER_PASSWORD
-timezone=America/New_York
+timezone=Europe/Rome
 ntp_server=pool.ntp.org
 ```
 
-Networks are numbered `ssid1=`/`password1=`, `ssid2=`/`password2=`, and so on (up to 8), and are tried in order at boot until one connects. A single unnumbered `ssid=`/`password=` pair is equivalent to `ssid1=`/`password1=`, so an existing single-network file keeps working unchanged.
+Networks are tried in order at boot; with more than one, those in range are tried first. A single unnumbered `ssid=` / `password=` pair works as `ssid1=` / `password1=`. `timezone` is `Europe/Rome` (the default), `America/New_York` or `UTC`. Do not commit real credentials.
 
-Supported `timezone` values: `America/New_York`, `Europe/Rome`, `UTC`. All three apply automatic DST transitions except UTC.
+## Clock and language
 
-The timezone can also be changed on-device from Settings ▸ Clock ▸ Set date & time (first field, cycled with Up/Down). Saving there updates the clock immediately and writes the choice to its own `/RUSTMIX/CLOCK.TXT` file (`timezone=Europe/Rome`), independent of Wi-Fi provisioning, so it survives a reboot — including a real deep-sleep wake, which is a full reboot — even when `WIFI.TXT` does not exist yet. When `WIFI.TXT` is already present, its `timezone=` line is kept in sync too, but `CLOCK.TXT` is the source of truth read at boot.
-
-Do not commit real credentials.
-
-## Weather
-
-Optional `/RUSTMIX/WEATHER.TXT` example:
+Settings → Orologio sets date, time and time zone, and Settings → Lingua the language; both are saved in `/RUSTMIX/CLOCK.TXT`, read at boot:
 
 ```text
-provider=open-meteo
-location=New York, NY
-latitude=40.7128
-longitude=-74.0060
-timezone=America/New_York
-refresh_minutes=30
+timezone=Europe/Rome
+locale=it
 ```
 
-## Alarms
+`locale` is `it` (the default) or `en`.
 
-Optional `/RUSTMIX/ALARMS.TXT` example:
+## Display and standby
 
-```text
-snooze_minutes=10
-alarm=Workday,07:30,weekdays,on,recurring
-alarm=Weekend,09:00,weekends,off,recurring
-alarm=Appointment,16:45,2026-06-10,on,once
-```
-
-Calendar personal events remain separate from alarms.
-
-## Display preferences
-
-`/RUSTMIX/DISPLAY.TXT` supports:
+`/RUSTMIX/DISPLAY.TXT`, written by Settings → Schermo:
 
 ```text
-font_family=inter|atkinson-hyperlegible
 font_size=compact|standard|large
+sleep_screen=sequential|random|book-cover
+auto_sleep=5|10|15|30|60|never
 ```
+
+`font_size` is the interface text, not the books'. `sleep_screen` picks what stays on the glass in standby: the images in `SLEEP` in name order (default), at random, or the cover of the book being read. `auto_sleep` is the idle time in minutes before standby (10 by default).
 
 ## Sleep images
 
-Files below `/RUSTMIX/SLEEP` must be uncompressed monochrome Windows BMP files:
+Files below `/RUSTMIX/SLEEP` must be uncompressed monochrome Windows BMP files of the panel's native size:
 
 ```text
-800 × 480
-1-bpp
+800 × 480, 1-bpp, black and white palette
 ```
 
 Install bundled samples:
@@ -122,48 +110,14 @@ Install bundled samples:
 ./scripts/install-sleep-images.sh /Volumes/YOUR_SD_CARD
 ```
 
-## Reader books and state
+## Dictionary pack
 
-Copy TXT, EPUB, or FAT-friendly `.EPU` books into:
-
-```text
-/RUSTMIX/BOOKS
-```
-
-The device creates Reader state automatically:
-
-```text
-/RUSTMIX/READER/STATE.TXT
-/RUSTMIX/READER/POSITS.TXT
-/RUSTMIX/READER/RECENT.TXT
-/RUSTMIX/READER/MARKS.TXT
-/RUSTMIX/READER/PREFS.TXT
-/RUSTMIX/READER/CACHE/<8HEX>.CCH
-```
-
-Reader writes use `.TMP` and `.BAK` siblings for recovery.
-
-## Voice Notes
-
-The device creates:
-
-```text
-/RUSTMIX/VOICE/VOICE###.WAV
-/RUSTMIX/VOICE/INDEX.TXT
-/RUSTMIX/VOICE/META.TXT
-/RUSTMIX/VOICE/SETTINGS.TXT
-```
-
-Do not hand-edit sidecars while the device is active.
-
-## Complete Dictionary pack
-
-Install from a local `rustmix-x4-firmware` checkout:
+The in-reader lookup reads the Rustmix X4 dictionary pack. Install it from a local `rustmix-x4-firmware` checkout:
 
 ```bash
 ./scripts/install-dictionary-x4-pack.sh \
   --force \
-  --x4-repo /Users/piyushdaiya/Documents/projects/rustmix-x4-firmware \
+  --x4-repo /path/to/rustmix-x4-firmware \
   /Volumes/YOUR_SD_CARD
 ```
 
@@ -184,23 +138,3 @@ A large pack (e.g. the ~28k-shard Italian pack) is slow when every shard lives i
 ```
 
 This moves `DATA/CASA.JSN` to `DATA/CA/CASA.JSN` and rewrites `INDEX.TXT` to match. The firmware reads both layouts.
-
-## U.S.-only Calendar pack
-
-Install from a local X4 checkout:
-
-```bash
-./scripts/install-calendar-x4-pack.sh \
-  --force \
-  --x4-repo /Users/piyushdaiya/Documents/projects/rustmix-x4-firmware \
-  /Volumes/YOUR_SD_CARD
-```
-
-The installer includes `EVENTS.TXT` and `US2026.TXT`, and explicitly excludes `HINDU26.TXT`.
-
-Calendar personal-event writes use:
-
-```text
-EVENTS.TMP -> EVENTS.TXT
-EVENTS.BAK retained for rollback
-```
