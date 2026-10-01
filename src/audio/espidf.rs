@@ -12,8 +12,7 @@ use esp_idf_svc::hal::gpio::{Output, PinDriver};
 use super::{
     board_codec::{BoardEs8311, CodecProfileSnapshot},
     AudioPlaybackState, AudioSnapshot, CODEC_REFERENCE_MCLK_HZ, CODEC_REFERENCE_SAMPLE_RATE_HZ,
-    DEFAULT_AUDIO_VOLUME_PERCENT, ES8311_I2C_ADDRESS_HIGH, ES8311_I2C_ADDRESS_LOW,
-    MAX_AUDIO_VOLUME_PERCENT,
+    ES8311_I2C_ADDRESS_HIGH, ES8311_I2C_ADDRESS_LOW, MAX_AUDIO_VOLUME_PERCENT,
 };
 
 /// Codec and amplifier state. The amplifier is held low unless PCM audio is
@@ -44,10 +43,13 @@ where
     I2C: I2c,
     I2C::Error: core::fmt::Debug,
 {
+    /// Probe and set up the codec, muted, at `volume` (the one saved on the
+    /// SD card, see [`super::load_saved_volume`]).
     pub fn initialize<D>(
         mut bus: I2C,
         mut amplifier: PinDriver<'d, Output>,
         delay: &mut D,
+        volume: u8,
     ) -> Result<Self>
     where
         D: DelayNs,
@@ -80,8 +82,9 @@ where
                 last_error.unwrap_or_else(|| "unknown codec error".into())
             )
         })?;
+        let volume = volume.min(MAX_AUDIO_VOLUME_PERCENT);
         codec
-            .volume_set(&mut bus, DEFAULT_AUDIO_VOLUME_PERCENT, None)
+            .volume_set(&mut bus, volume, None)
             .map_err(|error| anyhow!("failed to set ES8311 volume: {error:?}"))?;
         codec
             .mute(&mut bus, true)
@@ -99,7 +102,7 @@ where
                 i2s_ready: true,
                 amplifier_enabled: false,
                 muted: true,
-                volume_percent: DEFAULT_AUDIO_VOLUME_PERCENT,
+                volume_percent: volume,
                 playback_state: AudioPlaybackState::Muted,
                 error: None,
             },

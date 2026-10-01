@@ -53,7 +53,7 @@ Run this checklist after a release build or any cross-cutting runtime change. Do
 2. Play each: sound on the speaker, no clicks, the track order follows the numbers.
 3. Pause and resume, change the volume, use the player menu (30 s back and forward, previous and next track, stop).
 4. Go Back to the list while playing: playback goes on.
-5. Reboot and play again: playback resumes where it was.
+5. Reboot and play again: playback resumes where it was, at the volume set before.
 
 ## Connect to PC
 

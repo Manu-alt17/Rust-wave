@@ -146,6 +146,48 @@ impl AudioSnapshot {
     }
 }
 
+/// The volume last chosen on the device, from the audiobook player or the
+/// Audio settings. Without it every boot -- and every wake from standby is
+/// one -- started again from [`DEFAULT_AUDIO_VOLUME_PERCENT`].
+pub const AUDIO_VOLUME_PATH: &str = "/sdcard/RUSTMIX/VOLUME.TXT";
+
+/// The `volume=` value of a saved volume file, within the codec's range.
+#[must_use]
+pub fn parse_saved_volume(text: &str) -> Option<u8> {
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix("volume="))
+        .find_map(|value| value.trim().parse::<u8>().ok())
+        .map(|volume| volume.min(MAX_AUDIO_VOLUME_PERCENT))
+}
+
+#[must_use]
+pub fn serialize_saved_volume(volume: u8) -> String {
+    format!(
+        "# RustMix Wave audio volume, 0-{MAX_AUDIO_VOLUME_PERCENT}\nvolume={}\n",
+        volume.min(MAX_AUDIO_VOLUME_PERCENT)
+    )
+}
+
+/// The saved volume, or the default when there is none (first boot, no
+/// card, an unreadable file).
+#[must_use]
+pub fn load_saved_volume(path: &std::path::Path) -> u8 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| parse_saved_volume(&text))
+        .unwrap_or(DEFAULT_AUDIO_VOLUME_PERCENT)
+}
+
+/// Written to a temporary file first, then renamed over the old one, so a
+/// power cut mid-write leaves the previous volume.
+pub fn save_volume(path: &std::path::Path, volume: u8) -> std::io::Result<()> {
+    let temporary = path.with_extension("TMP");
+    std::fs::write(&temporary, serialize_saved_volume(volume))?;
+    // FatFs refuses to rename onto an existing file.
+    let _ = std::fs::remove_file(path);
+    std::fs::rename(&temporary, path)
+}
+
 /// Hardware-independent requests produced by the Audio diagnostics screen.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioUiRequest {
@@ -185,6 +227,36 @@ mod tests {
         assert_eq!(BSP_ES8311_ADC_REG17, 0xBF);
         assert_eq!(BSP_ES8311_GP_REG45, 0x00);
         assert_eq!(DEFAULT_AUDIO_VOLUME_PERCENT, 60);
+    }
+
+    #[test]
+    fn the_volume_survives_a_save_and_a_load() {
+        let dir = std::env::temp_dir().join(format!("rustmix-volume-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("VOLUME.TXT");
+        assert_eq!(
+            super::load_saved_volume(&path),
+            DEFAULT_AUDIO_VOLUME_PERCENT
+        );
+        super::save_volume(&path, 35).unwrap();
+        assert_eq!(super::load_saved_volume(&path), 35);
+        super::save_volume(&path, 0).unwrap();
+        assert_eq!(super::load_saved_volume(&path), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saved_volume_parsing_is_lenient_and_bounded() {
+        assert_eq!(
+            super::parse_saved_volume("# comment\nvolume=45\n"),
+            Some(45)
+        );
+        assert_eq!(super::parse_saved_volume(" volume= 70 "), Some(70));
+        assert_eq!(super::parse_saved_volume("volume=250"), Some(100));
+        assert_eq!(super::parse_saved_volume("volume=loud\n"), None);
+        assert_eq!(super::parse_saved_volume(""), None);
+        let saved = super::serialize_saved_volume(55);
+        assert_eq!(super::parse_saved_volume(&saved), Some(55));
     }
 
     #[test]

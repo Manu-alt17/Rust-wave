@@ -88,7 +88,7 @@ Audiobooks from `RUSTMIX/AUDIO`: a single MP3 file is one audiobook, and a folde
 
 <img src="../screenshots/rendered-audiobook-player-menu.png" width="360" alt="Audiobook player menu">
 
-The position of every audiobook is saved in `RUSTMIX/AUDIOPOS.TXT`. Sound comes from the speaker header on the board. MP3 files (MPEG-1 or 2, layer III) play at their own sample rate, mono or stereo.
+The position of every audiobook is saved in `RUSTMIX/AUDIOPOS.TXT`, and the volume, also set from Settings → Audio, in `RUSTMIX/VOLUME.TXT`: both survive standby and restarts. Sound comes from the speaker header on the board. MP3 files (MPEG-1 or 2, layer III) play at their own sample rate, mono or stereo.
 
 ## 5. Statistics
 

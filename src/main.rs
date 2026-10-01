@@ -41,8 +41,8 @@ mod firmware {
         audio::{
             engine::{AudioCommand, AudioEngine, PlayerCommand},
             espidf::AudioRuntime,
-            AudioPlaybackState, AudioSnapshot, AudioUiRequest, AUDIO_MCLK_MULTIPLE,
-            DEFAULT_AUDIO_VOLUME_PERCENT,
+            load_saved_volume, save_volume, AudioPlaybackState, AudioSnapshot, AudioUiRequest,
+            AUDIO_MCLK_MULTIPLE, AUDIO_VOLUME_PATH,
         },
         audiobook::{
             scan_audiobooks, AudiobookPositions, PlayerRequest, PlayerState,
@@ -721,6 +721,10 @@ mod firmware {
         if let Ok(usage) = CategoryUsage::load_from_path(MENU_USAGE_CONFIG_PATH) {
             state.category_usage = usage;
         }
+        // The volume last chosen: the codec starts at it, and the Audio
+        // screen shows it before audio is first used.
+        state.audio.volume_percent = load_saved_volume(std::path::Path::new(AUDIO_VOLUME_PATH));
+        let mut saved_audio_volume = state.audio.volume_percent;
         // Reader SD catalog scans, and the audio codec
         // bring-up right after them, are deferred until after the first
         // e-paper frame is visible (see below the panel draw). The Home
@@ -1061,6 +1065,7 @@ mod firmware {
                         shared_i2c_for_audio.clone(),
                         amplifier,
                         &mut FreeRtosDelay,
+                        state.audio.volume_percent,
                     )?;
                     let snapshot = runtime.snapshot();
                     info!(
@@ -1081,7 +1086,10 @@ mod firmware {
                 })();
                 match attempt {
                     Ok(engine) => {
-                        info!("rustmix-wave=audio-subsystem-ready mute=true volume={DEFAULT_AUDIO_VOLUME_PERCENT}");
+                        info!(
+                            "rustmix-wave=audio-subsystem-ready mute=true volume={}",
+                            engine.current().audio.volume_percent
+                        );
                         state.update_audio_snapshot(engine.current().audio);
                         *audio_engine = Some(engine);
                     }
@@ -1467,14 +1475,25 @@ mod firmware {
             }
 
             // The audio engine plays on its own thread; here its state is
-            // brought into the UI, positions are saved, and the audio
-            // screens redraw when what they show changed.
+            // brought into the UI, positions and volume are saved, and the
+            // audio screens redraw when what they show changed.
             if let Some(engine) = audio_engine.as_mut() {
                 if let Some(status) = engine.poll() {
                     let audio_changed = status.audio != state.audio;
                     if audio_changed {
                         state.update_audio_snapshot(status.audio);
                         log_audio_snapshot(&state.audio);
+                    }
+                    // Saved at once: a wake from standby is a boot, and a
+                    // flat battery gives no warning. Not retried on failure
+                    // (no card), or every tick would try again.
+                    if state.audio.codec_ready && state.audio.volume_percent != saved_audio_volume {
+                        saved_audio_volume = state.audio.volume_percent;
+                        if let Err(error) =
+                            save_volume(std::path::Path::new(AUDIO_VOLUME_PATH), saved_audio_volume)
+                        {
+                            warn!("rustmix-wave=audio-volume status=save-failed error={error}");
+                        }
                     }
                     let previous_state = state.audiobooks.now_playing.state;
                     let player_changed = state.audiobooks.update_now_playing(status.now_playing);

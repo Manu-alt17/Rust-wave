@@ -19,6 +19,7 @@ Use a FAT-formatted microSD (FAT32 for cards up to 32 GB; exFAT is not supported
   READER/CACHE/   book text and page indexes, covers, sleep covers, images
   STATS/          one reading-session log per month (YYYYMM.LOG)
   AUDIOPOS.TXT    audiobook positions
+  VOLUME.TXT      audio volume (volume=0-100)
   MENU.TXT  SLEEPIDX.TXT  SLEEPAT.TXT
   BOOTTIME.LOG  RESETS.LOG   diagnostics, moved to .OLD at 64 KB
 ```
