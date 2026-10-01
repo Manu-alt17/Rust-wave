@@ -24,7 +24,7 @@ Reflowable text, covers, inline images, table of contents, bookmarks and resume.
 
 ## Covers and images
 
-Progressive JPEGs decode luma only, at up to half size for a 1165×1800 cover, in 1 to 2 s the first time (then cached). PNG has no scaled decode: a large PNG is refused past its decoded-size budget, and its cover stays a placeholder with the title.
+Progressive JPEGs decode luma only, at up to half size for a 1165×1800 cover, in 1 to 2 s the first time (then cached). An interlaced PNG is decoded whole: past 8 MB as a frame it is refused, and its cover stays a placeholder with the title. Plain PNGs are reduced while read, whatever their size.
 
 ## USB disk speed
 

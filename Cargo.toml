@@ -56,11 +56,11 @@ miniz_oxide = "0.8"
 # `default-features = false` drops the optional `rayon` thread pool, which
 # this single-threaded firmware main loop has no use for.
 jpeg-decoder = { version = "0.3", default-features = false }
-# PNG has no native scaled decoding, so covers decode at full resolution and
-# are resized in software. Chosen over the `image` crate (already a
-# dev-dependency for host PNG test export) to avoid pulling its multi-format
-# decoder abstraction into the firmware target; this reuses `miniz_oxide`,
-# already a direct dependency for EPUB's DEFLATE.
+# PNG has no native scaled decoding: images are read row by row and reduced
+# while read (cover_cache::decode_png_reduced). Chosen over the `image`
+# crate (already a dev-dependency for host PNG test export) to avoid pulling
+# its multi-format decoder abstraction into the firmware target; this reuses
+# `miniz_oxide`, already a direct dependency for EPUB's DEFLATE.
 png = "0.17"
 # Wi-Fi provisioning portal: renders the AP-join and portal-URL QR codes on
 # the e-paper screen. `default-features = false` drops the optional `image`

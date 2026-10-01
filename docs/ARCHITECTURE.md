@@ -100,7 +100,7 @@ The in-reader dictionary lookup (`src/dictionary.rs`) reads the bounded Rustmix 
 - baseline JPEG: `esp_new_jpeg`, with its downscale;
 - progressive JPEG, or anything `esp_new_jpeg` rejects: `src/jpeg_luma.rs`, a luma-only decoder that keeps only the coefficients the output scale needs (about 2.2 MB for a 1165×1800 cover at half size, where a general decoder needs 6.3 MB), within a 4 MB budget;
 - CMYK and RGB JPEGs: `jpeg-decoder`, refused beyond an estimated 2 MB;
-- PNG: the `png` crate, within a decoded-size budget.
+- PNG: the `png` crate, read row by row and reduced while read, so a large image never exists at full size in memory; an interlaced PNG needs its whole frame, within an 8 MB budget.
 
 Covers are centre-cropped to the cell's shape, never stretched. The Wi-Fi portal renders the thumbnails of uploaded books in the browser with the same fingerprint, so the device finds them ready.
 

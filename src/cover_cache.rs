@@ -65,26 +65,23 @@ const THUMB_BITMAP_BYTES: usize = THUMB_ROW_BYTES * THUMB_HEIGHT as usize;
 /// PNG decoding is comparable in stack depth to EPUB's own DEFLATE+XHTML
 /// work, and both are kept off the 16 KB main task for the same reason.
 const COVER_WORKER_STACK_BYTES: usize = 64 * 1024;
-/// Upper bound on one PNG member's *decoded* pixel buffer (width * height *
-/// `ColorType::samples()`, i.e. bytes-per-channel for its declared color
-/// type), checked from the IHDR-derived `Info` returned by `read_info()`
-/// before `decode_png_full` allocates the real output buffer. PNG has no
-/// native scaled decode the way
-/// `decode_jpeg_scaled` does (see its own doc comment): without this check, a
-/// large embedded raster -- plausible for an inline illustration, not just a
-/// cover -- gets decoded at full source resolution regardless of how small
-/// the eventual thumbnail or page-width target is. A measured 1240x1754 RGB
-/// synthetic source (roughly a 150dpi A5 scan; see
-/// `cover_cache::tests::inline_image_poc_full_page_width_decode_timing`)
-/// already costs 6.5 MB transiently. This is a conservative starting budget,
-/// not a tuned product limit: matched to the same 8 MB PSRAM figure used
-/// elsewhere as this device's headroom ceiling
-/// (`crate::runtime_worker::run_named_worker_in_psram`'s own doc comment, and
-/// `crate::epub::EPUB_REFLOW_TEXT_LIMIT` for a book's independently-resident
-/// flattened text), on the assumption that one image decode worker call never
-/// runs concurrently with that full text buffer. Revisit once real-hardware
-/// headroom is measured under `docs/PHYSICAL_SMOKE_TEST.md`.
+/// Most a PNG decode may allocate for its pixels, checked from the header
+/// before allocating: the image already reduced for a plain PNG
+/// ([`decode_png_reduced`]), the whole 8-bit frame for an interlaced one
+/// ([`decode_png_full`]). Matched to the 8 MB of PSRAM this device works
+/// within (`crate::runtime_worker::run_named_worker_in_psram`), on the
+/// assumption that one image decode never runs alongside a book's full
+/// flattened text (`crate::epub::EPUB_REFLOW_TEXT_LIMIT`).
 const MAX_PNG_DECODED_BUFFER_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Widest PNG either decode accepts. The `png` crate keeps a few source rows
+/// in memory, allocated where a failure aborts the firmware, before any
+/// budget of ours is checked. No book illustration comes near this.
+const MAX_PNG_WIDTH: u32 = 16_384;
+
+/// Cap on [`png_reduction_factor`], so a block's sum stays within `u32`
+/// (255 x 256 x 256).
+const MAX_PNG_REDUCTION_FACTOR: u32 = 256;
 
 /// Default cache root. Callers that already own a per-book cache directory
 /// (Reader's `.EPX`/`.EPP`/`.CCH` sidecars live under `<state_root>/CACHE`)
@@ -101,10 +98,12 @@ const CACHE_FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 /// Bumped whenever the on-disk format, thumbnail size, or dithering changes
 /// in a way that must invalidate every existing cache entry. `"2"`: covers
 /// centre-cropped instead of stretched. `"3"`: progressive JPEGs decoded
-/// (by `jpeg_luma`) instead of left as placeholders. The Wi-Fi portal
-/// computes the same fingerprint in the browser (`coverFingerprint`), so the
-/// two must match.
-const COVER_CACHE_FORMAT_VERSION: &str = "3";
+/// (by `jpeg_luma`) instead of left as placeholders. `"4"`: PNGs reduced
+/// while read, transparency on white; the covers the full-frame decode
+/// refused, or crashed on, get another try. The Wi-Fi portal computes the
+/// same fingerprint in the browser (`coverFingerprint`), so the two must
+/// match.
+const COVER_CACHE_FORMAT_VERSION: &str = "4";
 
 /// One decoded 1bpp thumbnail, packed MSB-first, bit `1` = ink (black) —
 /// directly usable as the byte slice backing an
@@ -526,8 +525,9 @@ fn inline_image_fingerprint(book: &ReaderBook, href: &str, max_width: u16, max_h
 /// `COVER_CACHE_FORMAT_VERSION`. `"2"`: decoded by `esp_new_jpeg` on the
 /// device, and regenerated once so its decode timing shows up in logs.
 /// `"3"`: decoder-side downscale for any ratio, faster resize/dither.
-/// `"4"`: progressive JPEGs decoded by `jpeg_luma`.
-const INLINE_IMAGE_CACHE_FORMAT_VERSION: &str = "4";
+/// `"4"`: progressive JPEGs decoded by `jpeg_luma`. `"5"`: PNGs reduced
+/// while read, transparency on white.
+const INLINE_IMAGE_CACHE_FORMAT_VERSION: &str = "5";
 const INLINE_IMAGE_CACHE_MAGIC: [u8; 4] = *b"RWIM";
 const INLINE_IMAGE_CACHE_VERSION: u8 = 1;
 const INLINE_IMAGE_CACHE_HEADER_BYTES: usize = 4 + 1 + 1 + 2 + 2 + 8; // magic+version+flags+w+h+fingerprint
@@ -587,9 +587,18 @@ fn build_thumbnail(book: &ReaderBook) -> CachedThumbnail {
     if book.format != BookFormat::Epub {
         return placeholder_bitmap();
     }
+    let started = std::time::Instant::now();
     match crate::epub::extract_cover(&book.path) {
         Ok(Some(cover)) => {
-            decode_and_dither_cover(&cover.bytes, &cover.media_type).unwrap_or_else(|error| {
+            let extract_ms = started.elapsed().as_millis();
+            let result = decode_and_dither_cover(&cover.bytes, &cover.media_type);
+            log::info!(
+                "rustmix-wave=cover-timing path={} cover-bytes={} extract-ms={extract_ms} decode-ms={}",
+                book.path,
+                cover.bytes.len(),
+                started.elapsed().as_millis() - extract_ms
+            );
+            result.unwrap_or_else(|error| {
                 log::warn!(
                     "rustmix-wave=cover-cache status=decode-failed path={} error={error}",
                     book.path
@@ -630,12 +639,10 @@ fn decode_and_dither_cover(bytes: &[u8], media_type: &str) -> Result<CachedThumb
 }
 
 /// Dispatch to the right decoder by sniffed magic bytes (falling back to the
-/// manifest-declared media type, which occasionally lies -- see
-/// [`decode_jpeg_scaled`]/[`decode_png_full`]'s own callers before this
-/// helper existed). `scale_hint_{width,height}` only steers the JPEG path's
-/// native scaled IDCT decode ([`decode_jpeg_scaled`]'s own doc comment);
-/// `decode_png_full` always decodes at full resolution regardless, since PNG
-/// has no equivalent.
+/// manifest-declared media type, which occasionally lies).
+/// `scale_hint_{width,height}` is the size the decoded image must still
+/// cover: the JPEG decoders pick their scale from it, [`decode_png`] its
+/// reduction factor.
 fn decode_gray(
     bytes: &[u8],
     media_type: &str,
@@ -645,11 +652,11 @@ fn decode_gray(
     if is_jpeg(bytes) {
         decode_jpeg_fast_or_fallback(bytes, scale_hint_width, scale_hint_height)
     } else if is_png(bytes) {
-        decode_png_full(bytes)
+        decode_png(bytes, scale_hint_width, scale_hint_height)
     } else if media_type.eq_ignore_ascii_case("image/jpeg") {
         decode_jpeg_fast_or_fallback(bytes, scale_hint_width, scale_hint_height)
     } else if media_type.eq_ignore_ascii_case("image/png") {
-        decode_png_full(bytes)
+        decode_png(bytes, scale_hint_width, scale_hint_height)
     } else {
         Err(format!("unsupported image media type: {media_type}"))
     }
@@ -1182,25 +1189,148 @@ fn decode_jpeg_scaled(
     })
 }
 
-/// Decode via the `png` crate. PNG has no native scaled decoding, so this
-/// always decodes at full resolution; the caller's resize step then does the
-/// same work the JPEG path's scaled decode avoided up front. Covers are
-/// bounded by [`crate::epub::EPUB_COVER_BYTES_LIMIT`] (encoded bytes) and, for
-/// the decoded buffer this function itself allocates, by
-/// [`MAX_PNG_DECODED_BUFFER_BYTES`] to keep this bounded on PSRAM-limited
-/// hardware.
-fn decode_png_full(bytes: &[u8]) -> Result<GrayImage, String> {
+/// PNG via the `png` crate, as gray. A plain image is read one row at a time
+/// and reduced while read ([`decode_png_reduced`]); an interlaced one needs
+/// the whole frame ([`decode_png_full`]).
+fn decode_png(bytes: &[u8], target_width: u16, target_height: u16) -> Result<GrayImage, String> {
     let mut decoder = png::Decoder::new(io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder
+    let reader = decoder
         .read_info()
         .map_err(|error| format!("PNG header decode failed: {error}"))?;
-    // Checked from the IHDR-derived header, before `output_buffer_size()` is
-    // used to allocate the real decode buffer below -- see
-    // `MAX_PNG_DECODED_BUFFER_BYTES`'s doc comment for why this has to run
-    // ahead of the allocation rather than after it.
-    let header = reader.info();
-    let (header_width, header_height) = (header.width, header.height);
+    let (width, height, interlaced) = {
+        let info = reader.info();
+        (info.width, info.height, info.interlaced)
+    };
+    if width == 0 || height == 0 {
+        return Err("PNG has zero dimensions".into());
+    }
+    if width > MAX_PNG_WIDTH {
+        return Err(format!(
+            "PNG {width}x{height} is wider than {MAX_PNG_WIDTH} pixels"
+        ));
+    }
+    if interlaced {
+        decode_png_full(reader)
+    } else {
+        decode_png_reduced(reader, u32::from(target_width), u32::from(target_height))
+    }
+}
+
+/// A plain PNG read one row at a time and shrunk while it is read, by the
+/// largest whole factor that still leaves it covering the target: each
+/// output pixel is the average of a factor x factor block. In memory there
+/// are a few rows and the image already reduced, never the full frame. A
+/// cover at the size stores ask for, 1600x2560, is 12 MB as an RGB frame,
+/// over the budget the full decode refused it on; for the thumbnail this
+/// keeps 229x366 of it. The crop and the area-average resize that follow
+/// work as for any other decode.
+fn decode_png_reduced(
+    mut reader: png::Reader<io::Cursor<&[u8]>>,
+    target_width: u32,
+    target_height: u32,
+) -> Result<GrayImage, String> {
+    let (width, height) = (reader.info().width, reader.info().height);
+    let channels = png_channels(reader.output_color_type().0)?;
+    let factor = png_reduction_factor(width, height, target_width, target_height);
+    let (out_width, out_height) = (width.div_ceil(factor), height.div_ceil(factor));
+    let output_len = out_width as usize * out_height as usize;
+    if output_len as u64 > MAX_PNG_DECODED_BUFFER_BYTES {
+        return Err(format!(
+            "PNG {width}x{height} reduced by {factor} is still {output_len} bytes, over the {MAX_PNG_DECODED_BUFFER_BYTES} byte budget"
+        ));
+    }
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(output_len).map_err(|_| {
+        format!(
+            "no memory for a {out_width}x{out_height} reduced PNG{}",
+            largest_psram_block_note()
+        )
+    })?;
+    let factor = factor as usize;
+    let mut sums = vec![0u32; out_width as usize];
+    let mut band_rows = 0usize;
+    let mut rows_read = 0u32;
+    while let Some(row) = reader
+        .next_row()
+        .map_err(|error| format!("PNG row decode failed: {error}"))?
+    {
+        for (sum, block) in sums.iter_mut().zip(row.data().chunks(factor * channels)) {
+            *sum += block
+                .chunks_exact(channels)
+                .map(|pixel| u32::from(png_pixel_gray(pixel)))
+                .sum::<u32>();
+        }
+        rows_read += 1;
+        band_rows += 1;
+        if band_rows == factor || rows_read == height {
+            // The last column and the last band can be narrower than the
+            // factor: each average counts only the pixels it covers.
+            for (column, sum) in sums.iter_mut().enumerate() {
+                let block_width = (width as usize - column * factor).min(factor);
+                let count = (block_width * band_rows) as u32;
+                pixels.push(((*sum + count / 2) / count) as u8);
+                *sum = 0;
+            }
+            band_rows = 0;
+        }
+    }
+    if rows_read != height {
+        return Err(format!("PNG ended after {rows_read} of {height} rows"));
+    }
+    Ok(GrayImage {
+        width: out_width,
+        height: out_height,
+        pixels,
+    })
+}
+
+/// Largest whole factor the image can be shrunk by and still cover
+/// `target_width x target_height` in both directions, as the JPEG decoders
+/// pick their scale: the centre crop and the resize that follow start from
+/// at least the target size. 1 when the image is smaller already.
+fn png_reduction_factor(width: u32, height: u32, target_width: u32, target_height: u32) -> u32 {
+    if target_width == 0 || target_height == 0 {
+        return 1;
+    }
+    (width / target_width)
+        .min(height / target_height)
+        .clamp(1, MAX_PNG_REDUCTION_FACTOR)
+}
+
+fn png_channels(color_type: png::ColorType) -> Result<usize, String> {
+    match color_type {
+        png::ColorType::Grayscale => Ok(1),
+        png::ColorType::GrayscaleAlpha => Ok(2),
+        png::ColorType::Rgb => Ok(3),
+        png::ColorType::Rgba => Ok(4),
+        png::ColorType::Indexed => Err("PNG used indexed color after normalize_to_color8".into()),
+    }
+}
+
+/// One 8-bit PNG pixel (gray, gray and alpha, RGB, RGBA) as gray, with
+/// transparency drawn on white: the page is white, and the color hidden
+/// under a transparent pixel is often black.
+fn png_pixel_gray(pixel: &[u8]) -> u8 {
+    let (value, alpha) = match *pixel {
+        [] => return 255,
+        [gray] => return gray,
+        [gray, alpha] => (gray, alpha),
+        [r, g, b] => return luma(r, g, b),
+        [r, g, b, alpha, ..] => (luma(r, g, b), alpha),
+    };
+    if alpha == 255 {
+        return value;
+    }
+    let (value, alpha) = (u32::from(value), u32::from(alpha));
+    ((value * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+}
+
+/// An interlaced (Adam7) PNG, whose seven sparse passes only a whole frame
+/// puts back together: decoded at full size within
+/// [`MAX_PNG_DECODED_BUFFER_BYTES`], then turned to gray in place.
+fn decode_png_full(mut reader: png::Reader<io::Cursor<&[u8]>>) -> Result<GrayImage, String> {
+    let (header_width, header_height) = (reader.info().width, reader.info().height);
     // The frame as decoded, after the expansion to 8-bit samples: a palette
     // image comes out RGB, three times the size its header suggests.
     let output_len = reader.output_buffer_size();
@@ -1222,19 +1352,8 @@ fn decode_png_full(bytes: &[u8]) -> Result<GrayImage, String> {
     let info = reader
         .next_frame(&mut buffer)
         .map_err(|error| format!("PNG frame decode failed: {error}"))?;
-    if info.width == 0 || info.height == 0 {
-        return Err("PNG cover has zero dimensions".into());
-    }
-    let channels = match info.color_type {
-        png::ColorType::Grayscale => 1,
-        png::ColorType::GrayscaleAlpha => 2,
-        png::ColorType::Rgb => 3,
-        png::ColorType::Rgba => 4,
-        png::ColorType::Indexed => {
-            return Err("PNG cover used indexed color after normalize_to_color8".into())
-        }
-    };
-    let pixel_count = (info.width * info.height) as usize;
+    let channels = png_channels(info.color_type)?;
+    let pixel_count = info.width as usize * info.height as usize;
     if buffer.len() < pixel_count * channels {
         return Err("PNG frame shorter than its header says".into());
     }
@@ -1242,11 +1361,8 @@ fn decode_png_full(bytes: &[u8]) -> Result<GrayImage, String> {
     // where its own samples start, so no second frame-sized buffer.
     for index in 0..pixel_count {
         let start = index * channels;
-        buffer[index] = if channels >= 3 {
-            luma(buffer[start], buffer[start + 1], buffer[start + 2])
-        } else {
-            buffer[start]
-        };
+        let gray = png_pixel_gray(&buffer[start..start + channels]);
+        buffer[index] = gray;
     }
     buffer.truncate(pixel_count);
     Ok(GrayImage {
@@ -1459,8 +1575,9 @@ fn cover_fingerprint(book: &ReaderBook) -> u64 {
 
 /// Bumped whenever the `.SLC` full-screen sleep cover decode or format
 /// changes in a way that must invalidate every existing entry. `"2"`:
-/// progressive JPEGs decoded by `jpeg_luma`.
-const FULLSCREEN_COVER_FORMAT_VERSION: &str = "2";
+/// progressive JPEGs decoded by `jpeg_luma`. `"3"`: PNGs reduced while
+/// read, transparency on white.
+const FULLSCREEN_COVER_FORMAT_VERSION: &str = "3";
 
 fn fullscreen_cover_fingerprint(book: &ReaderBook, width: u16, height: u16) -> u64 {
     let mut hash = CACHE_FNV_OFFSET;
@@ -1589,11 +1706,11 @@ mod tests {
     };
 
     use super::{
-        decode_and_dither_cover, decode_and_dither_fill, decode_and_dither_fit_within, fit_within,
-        floyd_steinberg_to_1bpp, parse_cache_bytes, parse_inline_image_cache_bytes,
-        placeholder_bitmap, resize_area_average, write_cache_bytes, write_inline_image_cache_bytes,
-        CoverCache, EpubImageCache, GrayImage, CACHE_HEADER_BYTES, MAX_PNG_DECODED_BUFFER_BYTES,
-        THUMB_BITMAP_BYTES, THUMB_HEIGHT, THUMB_WIDTH,
+        decode_and_dither_cover, decode_and_dither_fill, decode_and_dither_fit_within, decode_gray,
+        fit_within, floyd_steinberg_to_1bpp, parse_cache_bytes, parse_inline_image_cache_bytes,
+        placeholder_bitmap, png_pixel_gray, resize_area_average, write_cache_bytes,
+        write_inline_image_cache_bytes, CoverCache, EpubImageCache, GrayImage, CACHE_HEADER_BYTES,
+        MAX_PNG_DECODED_BUFFER_BYTES, MAX_PNG_WIDTH, THUMB_BITMAP_BYTES, THUMB_HEIGHT, THUMB_WIDTH,
     };
     use crate::reader::{BookFormat, ReaderBook};
 
@@ -2012,12 +2129,10 @@ mod tests {
     ///
     /// Source resolution (1240x1754, RGB) approximates a 150dpi A5 scanned
     /// illustration -- a plausible embedded EPUB image, and deliberately
-    /// larger than a typical cover, to stress the fact that PNG (unlike
-    /// JPEG) has no native scaled decode: `decode_png_full` always
-    /// allocates a full-resolution buffer before this function's own resize
-    /// step throws most of it away. Host timing only (not representative of
-    /// ESP32-S3 wall time), but the transient buffer sizes it prints are
-    /// hardware-independent and are the real finding of this test.
+    /// larger than a typical cover. PNG has no native scaled decode: the
+    /// rows are reduced while read ([`decode_png_reduced`]), so the full
+    /// RGB frame the line below prints never exists. Host timing only, not
+    /// representative of ESP32-S3 wall time.
     #[test]
     fn inline_image_poc_full_page_width_decode_timing() {
         let source_width = 1240u32;
@@ -2051,32 +2166,204 @@ mod tests {
         }
     }
 
-    /// Guards `decode_png_full`'s IHDR-based size check: a PNG declaring a
-    /// worst-case (RGBA) decode buffer past `MAX_PNG_DECODED_BUFFER_BYTES`
-    /// must be rejected from the header alone, before the real
-    /// full-resolution buffer is ever allocated -- same as any other corrupt
-    /// or unsupported cover, it falls back to a placeholder rather than
-    /// risking an OOM abort on PSRAM-limited hardware.
+    /// A cover at the size stores ask for: as a full RGB frame it is 12 MB,
+    /// over the budget the full-frame decode refused it on. Read row by row
+    /// it comes out already reduced.
     #[test]
-    fn png_decode_rejects_images_exceeding_the_decoded_size_budget_before_allocating() {
-        let width = 2000u32;
-        let height = 2000u32;
+    fn a_large_png_is_reduced_while_it_is_read() {
+        let png_bytes = encode_gradient_png(1600, 2560);
+        let gray = decode_gray(&png_bytes, "image/png", THUMB_WIDTH, THUMB_HEIGHT).unwrap();
+        // The largest factor still covering 208x252: min(1600/208, 2560/252) = 7.
+        assert_eq!((gray.width, gray.height), (229, 366));
+        assert_eq!(gray.pixels.len(), 229 * 366);
         assert!(
-            u64::from(width) * u64::from(height) * 4 > MAX_PNG_DECODED_BUFFER_BYTES,
-            "test fixture must actually exceed the budget it is asserting against"
+            !decode_and_dither_cover(&png_bytes, "image/png")
+                .unwrap()
+                .placeholder
         );
-        let png_bytes = encode_flat_rgba_png(width, height);
+    }
 
-        let started = std::time::Instant::now();
-        let result = decode_and_dither_fill(&png_bytes, "image/png", 432, 300);
-        let elapsed = started.elapsed();
+    #[test]
+    fn png_reduction_averages_each_block_including_the_narrow_edges() {
+        // 10x6 gray reduced by 3 (target 3x2): blocks 3, 3, 3 and 1 wide.
+        let (width, height) = (10usize, 6usize);
+        let pixels: Vec<u8> = (0..width * height).map(|index| (index * 4) as u8).collect();
+        let png_bytes = handmade_png(width as u32, height as u32, 0, false, &pixels);
+        let gray = decode_gray(&png_bytes, "image/png", 3, 2).unwrap();
+        assert_eq!((gray.width, gray.height), (4, 2));
+        let mut expected = Vec::new();
+        for band in 0..2 {
+            for column in 0..4 {
+                let (mut sum, mut count) = (0u32, 0u32);
+                for y in band * 3..(band * 3 + 3).min(height) {
+                    for x in column * 3..(column * 3 + 3).min(width) {
+                        sum += u32::from(pixels[y * width + x]);
+                        count += 1;
+                    }
+                }
+                expected.push(((sum + count / 2) / count) as u8);
+            }
+        }
+        assert_eq!(gray.pixels, expected);
+    }
 
-        let error = result.expect_err("oversized PNG must be rejected, not decoded");
+    #[test]
+    fn interlaced_and_plain_pngs_decode_to_the_same_gray() {
+        // RGBA with every level of transparency, for the compositing too.
+        let (width, height) = (13u32, 11u32);
+        let pixels: Vec<u8> = (0..width * height)
+            .flat_map(|index| {
+                let value = (index * 37 % 256) as u8;
+                [
+                    value,
+                    value.wrapping_mul(3),
+                    255 - value,
+                    (index * 11 % 256) as u8,
+                ]
+            })
+            .collect();
+        let plain = handmade_png(width, height, 6, false, &pixels);
+        let interlaced = handmade_png(width, height, 6, true, &pixels);
+        // A target as large as the image: nothing reduced, every pixel compared.
+        let (hint_width, hint_height) = (width as u16, height as u16);
+        let from_plain = decode_gray(&plain, "image/png", hint_width, hint_height).unwrap();
+        let from_interlaced =
+            decode_gray(&interlaced, "image/png", hint_width, hint_height).unwrap();
+        assert_eq!((from_plain.width, from_plain.height), (width, height));
+        assert_eq!(
+            (from_interlaced.width, from_interlaced.height),
+            (width, height)
+        );
+        let expected: Vec<u8> = pixels.chunks_exact(4).map(png_pixel_gray).collect();
+        assert_eq!(from_plain.pixels, expected);
+        assert_eq!(from_interlaced.pixels, expected);
+    }
+
+    #[test]
+    fn transparent_png_pixels_are_drawn_on_white() {
+        assert_eq!(png_pixel_gray(&[0, 0, 0, 0]), 255);
+        assert_eq!(png_pixel_gray(&[0, 0, 0, 255]), 0);
+        assert_eq!(png_pixel_gray(&[0, 128]), 127);
+        assert_eq!(png_pixel_gray(&[200]), 200);
+        assert_eq!(png_pixel_gray(&[255, 255, 255]), 255);
+    }
+
+    /// An interlaced PNG still needs the whole frame: past
+    /// `MAX_PNG_DECODED_BUFFER_BYTES` it is refused from its header, before
+    /// the frame is allocated.
+    #[test]
+    fn an_oversized_interlaced_png_is_refused_before_allocating() {
+        let (width, height) = (2000u32, 2000u32);
+        assert!(u64::from(width) * u64::from(height) * 4 > MAX_PNG_DECODED_BUFFER_BYTES);
+        let pixels = vec![0u8; (width * height * 4) as usize];
+        let png_bytes = handmade_png(width, height, 6, true, &pixels);
+        let error = decode_and_dither_fill(&png_bytes, "image/png", 432, 300)
+            .expect_err("an oversized interlaced PNG must be refused");
         assert!(
             error.contains("over the") && error.contains("byte budget"),
             "unexpected error message: {error}"
         );
-        println!("poc: oversized-png-rejected-in={elapsed:?} error={error}");
+    }
+
+    /// The reduced image has the same budget: a PNG that cannot be reduced
+    /// (shorter than the target) and is past it is refused too.
+    #[test]
+    fn a_png_too_large_even_reduced_is_refused() {
+        let (width, height) = (MAX_PNG_WIDTH, 600u32);
+        assert!(u64::from(width) * u64::from(height) > MAX_PNG_DECODED_BUFFER_BYTES);
+        let pixels = vec![0u8; (width * height) as usize];
+        let png_bytes = handmade_png(width, height, 0, false, &pixels);
+        let error = decode_and_dither_fill(&png_bytes, "image/png", 432, 800)
+            .expect_err("a PNG past the budget must be refused");
+        assert!(error.contains("byte budget"), "unexpected error: {error}");
+        let wider = handmade_png(MAX_PNG_WIDTH + 1, 1, 0, false, &vec![0u8; 16_385]);
+        let error = decode_and_dither_fill(&wider, "image/png", 100, 100)
+            .expect_err("a PNG past the width limit must be refused");
+        assert!(error.contains("wider than"), "unexpected error: {error}");
+    }
+
+    /// CRC-32 of a PNG chunk's type and data, a bit at a time: fine for a
+    /// test.
+    fn png_crc(bytes: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A PNG put together by hand, because the `png` crate cannot write an
+    /// interlaced one. 8-bit `color_type` 0 (gray), 2 (RGB), 4 (gray and
+    /// alpha) or 6 (RGBA); rows unfiltered, in Adam7 passes when
+    /// `interlaced`.
+    fn handmade_png(
+        width: u32,
+        height: u32,
+        color_type: u8,
+        interlaced: bool,
+        pixels: &[u8],
+    ) -> Vec<u8> {
+        let channels = match color_type {
+            0 => 1,
+            2 => 3,
+            4 => 2,
+            6 => 4,
+            _ => panic!("unsupported color type {color_type}"),
+        };
+        let mut scanlines = Vec::new();
+        let mut push_pass = |x0: u32, y0: u32, dx: u32, dy: u32| {
+            if x0 >= width || y0 >= height {
+                return;
+            }
+            for y in (y0..height).step_by(dy as usize) {
+                scanlines.push(0); // filter type: none
+                for x in (x0..width).step_by(dx as usize) {
+                    let start = (y * width + x) as usize * channels;
+                    scanlines.extend_from_slice(&pixels[start..start + channels]);
+                }
+            }
+        };
+        if interlaced {
+            for (x0, y0, dx, dy) in [
+                (0, 0, 8, 8),
+                (4, 0, 8, 8),
+                (0, 4, 4, 8),
+                (2, 0, 4, 4),
+                (0, 2, 2, 4),
+                (1, 0, 2, 2),
+                (0, 1, 1, 2),
+            ] {
+                push_pass(x0, y0, dx, dy);
+            }
+        } else {
+            push_pass(0, 0, 1, 1);
+        }
+        let mut header = Vec::new();
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        header.extend_from_slice(&[8, color_type, 0, 0, u8::from(interlaced)]);
+        let image_data = miniz_oxide::deflate::compress_to_vec_zlib(&scanlines, 6);
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        for (kind, data) in [
+            (*b"IHDR", header),
+            (*b"IDAT", image_data),
+            (*b"IEND", Vec::new()),
+        ] {
+            png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let start = png.len();
+            png.extend_from_slice(&kind);
+            png.extend_from_slice(&data);
+            let crc = png_crc(&png[start..]);
+            png.extend_from_slice(&crc.to_be_bytes());
+        }
+        png
     }
 
     /// Encode a flat (fast-to-compress) RGBA PNG at an arbitrary declared
