@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Portal Fix and Update Channels
+## v1.4.9 — Portal Fix and Update Channels
 
 - Wi-Fi portal: the protected configuration files (`WIFI.TXT` and the others) are refused by the path actually resolved, in the resolver every file endpoint goes through, instead of by the raw query value, so no other spelling of their names gets past the check.
 - Software Update: choose the update channel with UP/DOWN. Stable keeps following the latest release; Beta takes the highest version among the five most recent releases, pre-releases included. Versions now compare with SemVer precedence (`1.5.0-beta.1` < `1.5.0-beta.2` < `1.5.0`). The channel is saved in `/RUSTMIX/UPDATE.TXT`.
