@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.0-beta.2 — Bootloader updates over the air
 
 - Bootloader update over the air: a release can carry the bootloader as `*-bootloader.img`, which `scripts/build-ota-image.sh` now writes next to the app image. When the firmware is up to date and the release's bootloader differs from the one in flash, Settings → Update offers it: it is downloaded and checked first (the SHA-256 GitHub publishes, the image's own appended hash, chip and size), then written on a second SELECT with the battery at 50% or the USB cable, staged in unused flash, read back and copied again if it differs; the device restarts into it. The ESP32-S3 has no backup bootloader, so a power cut during the write (under a second) still needs a USB reflash.
 - Update shows the installed bootloader (ESP-IDF version and build date), to tell this project's from espflash's generic one.
