@@ -13,7 +13,8 @@ use crate::{
     },
     build_info::FIRMWARE_VERSION,
     orientation::OrientedFrameBuffer,
-    ota::OtaCheckState,
+    ota::{OtaCheckState, UpdateChannel},
+    regional::Locale,
 };
 
 pub fn render_ota_update(
@@ -36,6 +37,13 @@ pub fn render_ota_update(
         FIRMWARE_VERSION,
         body,
     )?;
+    line(
+        display,
+        152,
+        t(locale, "Channel", "Canale"),
+        channel_label(locale, state.ota_channel),
+        body,
+    )?;
 
     let (status_heading, lines, footer_hint): (&str, [&str; 3], &str) = match &state.ota {
         OtaCheckState::Idle => (
@@ -49,7 +57,11 @@ pub fn render_ota_update(
                 t(locale, "newer release.", "una versione più recente."),
                 "",
             ],
-            t(locale, "SELECT CHECK", "SELECT CONTROLLA"),
+            t(
+                locale,
+                "SELECT CHECK  UP/DOWN CHANNEL",
+                "SELECT CONTROLLA  SU/GIÙ CANALE",
+            ),
         ),
         OtaCheckState::Checking => (
             t(
@@ -79,7 +91,11 @@ pub fn render_ota_update(
                 "",
                 "",
             ],
-            t(locale, "SELECT CHECK AGAIN", "SELECT CONTROLLA DI NUOVO"),
+            t(
+                locale,
+                "SELECT CHECK  UP/DOWN CHANNEL",
+                "SELECT CONTROLLA  SU/GIÙ CANALE",
+            ),
         ),
         OtaCheckState::UpdateAvailable { version, .. } => {
             return render_update_available(display, state, version, heading, body, detail);
@@ -95,7 +111,11 @@ pub fn render_ota_update(
                     "Premi SELECT per riprovare.",
                 ),
             ],
-            t(locale, "SELECT RETRY", "SELECT RIPROVA"),
+            t(
+                locale,
+                "SELECT RETRY  UP/DOWN CHANNEL",
+                "SELECT RIPROVA  SU/GIÙ CANALE",
+            ),
         ),
         OtaCheckState::Installing => (
             t(
@@ -137,14 +157,18 @@ pub fn render_ota_update(
                     "Premi SELECT per riprovare.",
                 ),
             ],
-            t(locale, "SELECT RETRY", "SELECT RIPROVA"),
+            t(
+                locale,
+                "SELECT RETRY  UP/DOWN CHANNEL",
+                "SELECT RIPROVA  SU/GIÙ CANALE",
+            ),
         ),
     };
 
-    Text::new(status_heading, Point::new(22, 166), heading).draw(display)?;
+    Text::new(status_heading, Point::new(22, 200), heading).draw(display)?;
     for (index, text) in lines.iter().enumerate() {
         if !text.is_empty() {
-            Text::new(text, Point::new(22, 206 + index as i32 * 34), body).draw(display)?;
+            Text::new(text, Point::new(22, 240 + index as i32 * 34), body).draw(display)?;
         }
     }
 
@@ -163,13 +187,13 @@ fn render_update_available(
     let locale = state.regional.locale;
     Text::new(
         t(locale, "Update available", "Aggiornamento disponibile"),
-        Point::new(22, 166),
+        Point::new(22, 200),
         heading,
     )
     .draw(display)?;
     line(
         display,
-        206,
+        240,
         t(locale, "New version", "Nuova versione"),
         version,
         body,
@@ -180,7 +204,7 @@ fn render_update_available(
             "Press SELECT to download and install.",
             "Premi SELECT per scaricare e installare.",
         ),
-        Point::new(22, 246),
+        Point::new(22, 280),
         body,
     )
     .draw(display)?;
@@ -190,7 +214,7 @@ fn render_update_available(
             "The device restarts automatically once",
             "Il dispositivo si riavvia automaticamente",
         ),
-        Point::new(22, 286),
+        Point::new(22, 320),
         detail,
     )
     .draw(display)?;
@@ -200,16 +224,27 @@ fn render_update_available(
             "the new firmware is written to flash.",
             "una volta scritto il nuovo firmware.",
         ),
-        Point::new(22, 316),
+        Point::new(22, 350),
         detail,
     )
     .draw(display)?;
     draw_footer(
         display,
         state,
-        t(locale, "SELECT INSTALL", "SELECT INSTALLA"),
+        t(
+            locale,
+            "SELECT INSTALL  UP/DOWN CHANNEL",
+            "SELECT INSTALLA  SU/GIÙ CANALE",
+        ),
     )?;
     Ok(())
+}
+
+fn channel_label(locale: Locale, channel: UpdateChannel) -> &'static str {
+    match channel {
+        UpdateChannel::Stable => t(locale, "Stable", "Stabile"),
+        UpdateChannel::Beta => "Beta",
+    }
 }
 
 fn line(
@@ -228,8 +263,10 @@ fn line(
 mod tests {
     use super::render_ota_update;
     use crate::{
-        app::AppState, framebuffer::FrameBuffer, orientation::OrientedFrameBuffer,
-        ota::OtaCheckState,
+        app::AppState,
+        framebuffer::FrameBuffer,
+        orientation::OrientedFrameBuffer,
+        ota::{OtaCheckState, UpdateChannel},
     };
 
     #[test]
@@ -247,11 +284,14 @@ mod tests {
             OtaCheckState::InstallFailed("flash write failed".into()),
         ];
         for state_value in states {
-            let mut frame = FrameBuffer::new_white();
-            let mut display = OrientedFrameBuffer::new(&mut frame, Default::default());
-            let mut state = AppState::default();
-            state.ota = state_value;
-            render_ota_update(&mut display, &state).unwrap();
+            for channel in [UpdateChannel::Stable, UpdateChannel::Beta] {
+                let mut frame = FrameBuffer::new_white();
+                let mut display = OrientedFrameBuffer::new(&mut frame, Default::default());
+                let mut state = AppState::default();
+                state.ota = state_value.clone();
+                state.ota_channel = channel;
+                render_ota_update(&mut display, &state).unwrap();
+            }
         }
     }
 }

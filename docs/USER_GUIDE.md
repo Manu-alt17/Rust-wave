@@ -117,7 +117,7 @@ A read-only browser of the whole microSD, with a preview of text files.
 | Tile | Contents |
 | --- | --- |
 | Rete (Network) | Connection state, saved networks, Wi-Fi setup |
-| Update | Check for a firmware update and install it (never checked automatically) |
+| Update | Firmware updates over Wi-Fi, from the stable or the beta channel (never checked automatically) |
 | Audio | Codec state, volume, test chime |
 | Orologio (Clock) | Date, time and time zone (Europe/Rome by default, New York, UTC) |
 | Schermo (Display) | Interface text size, sleep screen, automatic standby |
@@ -126,6 +126,8 @@ A read-only browser of the whole microSD, with a preview of text files.
 | Al PC (To PC) | Connect to PC, see below |
 
 The sleep screen is what stays on the glass during standby: the images in `RUSTMIX/SLEEP` in turn (default) or at random, or the cover of the book being read. Automatic standby comes after 5, 10 (default), 15, 30 or 60 minutes without input, or never.
+
+Update shows the installed version and the channel. **Stabile** follows the latest stable release; **Beta** the highest version among the recent releases, pre-releases included, so a newer stable release reaches it too. UP or DOWN switches channel and checks it; SELECT checks again, or installs the update found. This firmware is a beta (`1.5.0-beta.1`): it follows Beta until the channel is changed, and the choice is kept in `RUSTMIX/UPDATE.TXT`. Back on Stable the device never installs an older firmware: it waits for a stable release newer than the one it runs.
 
 ## 9. Connect to PC
 

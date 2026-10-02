@@ -19,6 +19,7 @@ Added:
 - Progressive JPEG covers, through a luma-only decoder (`src/jpeg_luma.rs`, ported from E-ink).
 - The title written on placeholder covers.
 - Italian and Europe/Rome by default.
+- Update channel in Settings → Update, as on `feature/ota-update`: Stable follows the latest release, Beta the highest version among the five most recent releases, pre-releases included, with SemVer pre-release ordering. Kept in `RUSTMIX/UPDATE.TXT`; a beta firmware follows Beta until it is changed.
 
 Fixed:
 
