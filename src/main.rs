@@ -103,8 +103,8 @@ mod firmware {
                 install_update_on_main_task, mark_running_slot_valid, poll_latest_release_check,
                 spawn_latest_release_check,
             },
-            OtaCheckState, OtaUiRequest, ReleaseCheckError, ReleaseInfo,
-            OTA_CHECK_INTERVAL_SECONDS,
+            OtaCheckState, OtaUiRequest, ReleaseCheckError, ReleaseInfo, UpdateChannel,
+            OTA_CHECK_INTERVAL_SECONDS, UPDATE_CONFIG_PATH,
         },
         panel_refresh::{
             parse_sleep_timestamp, wake_uses_fast_waveform, PanelGlobalReason,
@@ -762,6 +762,11 @@ mod firmware {
         let mut panel_refresh = PanelRefreshCoordinator::default();
         sync_panel_refresh_diagnostics(&mut state, &panel_refresh);
         state.display = display_preferences;
+        state.ota_channel = UpdateChannel::load_from_path(UPDATE_CONFIG_PATH, FIRMWARE_VERSION);
+        info!(
+            "rustmix-wave=update-channel channel={} path={UPDATE_CONFIG_PATH}",
+            state.ota_channel.marker()
+        );
         // A missing file (first boot) just keeps the default history.
         if let Ok(usage) = CategoryUsage::load_from_path(MENU_USAGE_CONFIG_PATH) {
             state.category_usage = usage;
@@ -2679,7 +2684,7 @@ mod firmware {
                         // requests raced onto the same tick -- drop the
                         // second rather than starting an overlapping fetch.
                         if ota_check_in_flight.is_none() {
-                            match spawn_latest_release_check() {
+                            match spawn_latest_release_check(state.ota_channel) {
                                 Ok(receiver) => ota_check_in_flight = Some(receiver),
                                 // Thread creation itself failed synchronously
                                 // -- there is nothing to poll for, so resolve
@@ -3377,6 +3382,7 @@ mod firmware {
                         state.update_board_snapshot(board_services.read_light_snapshot());
                         let previous_route = state.active_route();
                         let previous_display = state.display;
+                        let previous_ota_channel = state.ota_channel;
                         let previous_category_usage = state.category_usage.clone();
                         let previous_regional = state.regional;
                         if previous_route == ScreenRoute::Files {
@@ -3536,6 +3542,17 @@ mod firmware {
                         state.display.font_family.marker(),
                         state.display.font_size.marker()
                     );
+                        }
+                        if state.ota_channel != previous_ota_channel {
+                            match state.ota_channel.save_to_path(UPDATE_CONFIG_PATH) {
+                                Ok(()) => info!(
+                                    "rustmix-wave=update-channel-write status=saved channel={}",
+                                    state.ota_channel.marker()
+                                ),
+                                Err(error) => warn!(
+                                    "rustmix-wave=update-channel-write status=failed path={UPDATE_CONFIG_PATH} error={error:#}"
+                                ),
+                            }
                         }
                         if state.category_usage != previous_category_usage {
                             if let Err(error) =

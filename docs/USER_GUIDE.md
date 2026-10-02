@@ -482,6 +482,21 @@ Weather uses the configured Open-Meteo profile, bounded retries, and a last-know
 | SELECT | Run the selected action |
 | BOOT | Return to Settings |
 
+### Software Update
+
+Software Update checks the GitHub releases for a newer firmware and installs it over Wi-Fi. It shows the installed version and the update channel:
+
+- **Stable** follows the latest release, never a pre-release.
+- **Beta** follows the highest version among the recent releases, pre-releases included: beta builds are published as pre-releases (for example `1.5.0-beta.1`), and a stable release newer than them still reaches beta devices.
+
+Going back from Beta to Stable never installs an older firmware: the device waits for a stable release newer than the one it runs. The channel is kept in `/RUSTMIX/UPDATE.TXT`; until it is first changed, a stable firmware follows Stable and a beta firmware Beta.
+
+| Control | Action |
+| --- | --- |
+| Rotary up / down | Switch between Stable and Beta, and check that channel |
+| SELECT | Check again, or install the update found |
+| BOOT | Return to Settings |
+
 ## 7. Power-key maintenance and sleep
 
 A long Power press opens a display-maintenance menu from any ordinary UI route. Select **Clear ghosting now** to request the shared global-base refresh path. Select **Cancel** or BOOT to return without refreshing.

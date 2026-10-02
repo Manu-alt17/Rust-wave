@@ -4,6 +4,7 @@ use crate::{
     alarm::AlarmSnapshot,
     audio::{AudioSnapshot, AudioUiRequest},
     board_services::BoardSnapshot,
+    build_info::FIRMWARE_VERSION,
     buttons::ButtonEvent,
     calendar::{CalendarEditorOutcome, CalendarUiRequest, CalendarUiState},
     clock_time_editor::{self, ClockEditField, ClockTimeEditor},
@@ -15,7 +16,7 @@ use crate::{
     network::NetworkSnapshot,
     network_saved::NetworkSavedUiState,
     orientation::DisplayOrientation,
-    ota::{OtaCheckState, OtaUiRequest},
+    ota::{OtaCheckState, OtaUiRequest, UpdateChannel},
     power_key_menu::{PowerKeyMenuOutcome, PowerKeyMenuUiState},
     reader::{
         LibraryBookAction, ReaderDictionaryMode, ReaderLocation, ReaderOption, ReaderOrientation,
@@ -130,6 +131,9 @@ pub struct AppState {
     /// GitHub-release OTA check/install lifecycle, shown on the Software
     /// Update screen.
     pub ota: OtaCheckState,
+    /// Releases the Software Update screen checks: changed there with UP or
+    /// DOWN, persisted by the runtime owner in main.rs.
+    pub ota_channel: UpdateChannel,
     ota_request: Option<OtaUiRequest>,
     /// Lazily-aggregated reading time/speed/streak snapshot, refreshed by
     /// the runtime owner in main.rs when the Reading Stats screen is opened
@@ -192,6 +196,7 @@ impl Default for AppState {
             power_key_manual_refresh_requested: false,
             weather_refresh_requested: false,
             ota: OtaCheckState::default(),
+            ota_channel: UpdateChannel::of_version(FIRMWARE_VERSION),
             ota_request: None,
             reading_stats: ReadingStatsSnapshot::default(),
             reading_stats_refresh_requested: false,
@@ -420,6 +425,15 @@ impl AppState {
                             self.ota = OtaCheckState::Checking;
                         }
                         _ => {}
+                    }
+                }
+                (ScreenRoute::OtaUpdate, ButtonEvent::Up | ButtonEvent::Down) => {
+                    // Not while a check or an install is under way: its
+                    // result belongs to the channel it was started for.
+                    if self.ota.can_check() {
+                        self.ota_channel = self.ota_channel.toggled();
+                        self.ota_request = Some(OtaUiRequest::CheckNow);
+                        self.ota = OtaCheckState::Checking;
                     }
                 }
                 (ScreenRoute::DeviceInfoBoard, ButtonEvent::Select) => {
@@ -1746,6 +1760,32 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::Files);
         state.router.back();
         assert_eq!(state.active_route(), ScreenRoute::Tools);
+    }
+
+    #[test]
+    fn up_or_down_on_software_update_switches_the_channel_and_checks_it() {
+        use crate::ota::{OtaCheckState, OtaUiRequest, UpdateChannel};
+
+        let mut state = AppState::default();
+        assert_eq!(state.ota_channel, UpdateChannel::Stable);
+        state.router.navigate_to(ScreenRoute::OtaUpdate);
+        state.ota = OtaCheckState::UpdateAvailable {
+            version: "v1.4.9".into(),
+            download_url: "https://example.com/s.bin".into(),
+        };
+        state.apply(ButtonEvent::Down);
+        assert_eq!(state.ota_channel, UpdateChannel::Beta);
+        // The update found on the other channel is not offered any more.
+        assert_eq!(state.ota, OtaCheckState::Checking);
+        assert_eq!(state.take_ota_request(), Some(OtaUiRequest::CheckNow));
+        // A check under way belongs to its channel: no switching meanwhile.
+        state.apply(ButtonEvent::Up);
+        assert_eq!(state.ota_channel, UpdateChannel::Beta);
+        assert_eq!(state.take_ota_request(), None);
+        state.update_ota_state(OtaCheckState::UpToDate);
+        state.apply(ButtonEvent::Up);
+        assert_eq!(state.ota_channel, UpdateChannel::Stable);
+        assert_eq!(state.take_ota_request(), Some(OtaUiRequest::CheckNow));
     }
 
     #[test]

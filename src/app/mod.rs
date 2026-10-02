@@ -282,6 +282,26 @@ mod tests {
                     ..Default::default()
                 });
             }),
+            ("ota-update-beta", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.ota_channel = crate::ota::UpdateChannel::Beta;
+                state.ota = crate::ota::OtaCheckState::UpToDate;
+                state.router.navigate_to(crate::app::ScreenRoute::OtaUpdate);
+            }),
+            ("ota-update-available", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.ota = crate::ota::OtaCheckState::UpdateAvailable {
+                    version: "v1.4.9".into(),
+                    download_url: "https://example.com/update.bin".into(),
+                };
+                state.router.navigate_to(crate::app::ScreenRoute::OtaUpdate);
+            }),
+            ("ota-update-failed", |state| {
+                state.ota = crate::ota::OtaCheckState::CheckFailed(
+                    "GitHub API returned HTTP status 403".into(),
+                );
+                state.router.navigate_to(crate::app::ScreenRoute::OtaUpdate);
+            }),
             ("wifi-transfer", |state| {
                 state.update_wifi_transfer_snapshot(crate::wifi_transfer::WifiTransferSnapshot {
                     state: crate::wifi_transfer::WifiTransferState::Ready,

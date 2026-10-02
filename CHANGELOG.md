@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Portal Fix and Update Channels
+
+- Wi-Fi portal: the protected configuration files (`WIFI.TXT` and the others) are refused by the path actually resolved, in the resolver every file endpoint goes through, instead of by the raw query value, so no other spelling of their names gets past the check.
+- Software Update: choose the update channel with UP/DOWN. Stable keeps following the latest release; Beta takes the highest version among the five most recent releases, pre-releases included. Versions now compare with SemVer precedence (`1.5.0-beta.1` < `1.5.0-beta.2` < `1.5.0`). The channel is saved in `/RUSTMIX/UPDATE.TXT`.
+- `docs/RELEASE.md` explains how to publish stable and beta OTA releases; `docs/USER_GUIDE.md` documents the Software Update screen.
+
 ## Unreleased — PMIC Power-Off Shutdown
 
 - Replace the Reader's two smallest Book Font Size options (`Small`, `Medium`) with two new larger tiers above the old `XLarge` ceiling; the size picker now reads `Little` / `Medium` / `Large` / `XLarge` on screen (internally still the `Large` / `XLarge` / `XXLarge` / `XXXLarge` variants and persisted markers, to keep old preference files loading correctly), with the internal `XLarge` tier (on-screen "Medium") as the new default. Adds matching generated bitmap strikes (Atkinson Hyperlegible Next Medium, DejaVu Serif, Literata Medium) and recalibrated `lines_per_page` pagination for both new sizes. Saved preference files from older firmware that still say `small` or `medium` load as the smallest tier instead of failing to parse.

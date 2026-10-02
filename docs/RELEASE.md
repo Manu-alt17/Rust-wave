@@ -97,6 +97,27 @@ No `*-flash.bin` artifact is generated.
 Use this only after the exact source tree has already passed
 `./scripts/validate.sh`.
 
+## OTA releases and update channels
+
+Devices update themselves from the GitHub releases of the repository in
+`src/build_info.rs` (`OTA_REPO_OWNER`/`OTA_REPO_NAME`), using the `.bin`
+asset that `./scripts/build-ota-image.sh` builds. The user picks a channel on
+the Software Update screen:
+
+- **Stable** reads `releases/latest`: the newest release that is not a
+  pre-release. Publish stable releases from `feature/ota-update`, with a plain
+  version (`1.4.9`) in `Cargo.toml` and a matching `v1.4.9` tag.
+- **Beta** reads the five most recent releases and takes the highest version,
+  pre-releases included. Publish beta builds from the `beta` branch with a
+  pre-release version (`1.5.0-beta.1`, then `-beta.2`, ...), and tick
+  **Set as a pre-release** on GitHub: without it the build becomes the latest
+  release and stable devices install it too.
+
+Versions compare with SemVer precedence: `1.5.0-beta.2` comes after
+`1.5.0-beta.1` and before `1.5.0`, so the final `1.5.0` replaces the betas on
+both channels. Draft releases are never offered. A device switched back from
+Beta to Stable keeps its firmware until a newer stable release appears.
+
 ## Package cleaned source
 
 ```bash
