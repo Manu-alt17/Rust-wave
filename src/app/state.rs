@@ -107,6 +107,10 @@ pub struct AppState {
     /// Releases the Software Update screen checks: changed there with UP or
     /// DOWN, persisted by the runtime owner in main.rs.
     pub ota_channel: UpdateChannel,
+    /// The bootloader in flash as it describes itself (`v5.5.1,
+    /// 2026-10-02`), read at boot by the runtime owner in main.rs; `None`
+    /// when it carries no description.
+    pub installed_bootloader: Option<String>,
     ota_request: Option<OtaUiRequest>,
     /// Lazily-aggregated reading time/speed/streak snapshot, refreshed by
     /// the runtime owner in main.rs when the Reading Stats screen is opened
@@ -162,6 +166,7 @@ impl Default for AppState {
             power_key_manual_refresh_requested: false,
             ota: OtaCheckState::default(),
             ota_channel: UpdateChannel::of_version(FIRMWARE_VERSION),
+            installed_bootloader: None,
             ota_request: None,
             reading_stats: ReadingStatsSnapshot::default(),
             reading_stats_refresh_requested: false,
@@ -342,6 +347,32 @@ impl AppState {
                                 download_url: download_url.clone(),
                             });
                             self.ota = OtaCheckState::Installing;
+                        }
+                        OtaCheckState::BootloaderAvailable { release, asset, .. } => {
+                            self.ota_request = Some(OtaUiRequest::PrepareBootloader {
+                                release: release.clone(),
+                                asset: asset.clone(),
+                            });
+                            self.ota = OtaCheckState::PreparingBootloader;
+                        }
+                        OtaCheckState::BootloaderReady { .. }
+                        | OtaCheckState::BootloaderDamaged(_) => {
+                            // Checked here, at the press, against the battery
+                            // reading the screen is showing.
+                            match crate::bootloader_update::power_allows_write(
+                                self.battery_percent(),
+                                self.battery_charging(),
+                            ) {
+                                Ok(()) => {
+                                    self.ota_request = Some(OtaUiRequest::InstallBootloader);
+                                    self.ota = OtaCheckState::InstallingBootloader;
+                                }
+                                Err(battery) => {
+                                    self.ota = OtaCheckState::BootloaderFailed(
+                                        bootloader_power_refusal(self.regional.locale, battery),
+                                    );
+                                }
+                            }
                         }
                         state if state.can_check() => {
                             self.ota_request = Some(OtaUiRequest::CheckNow);
@@ -1127,6 +1158,22 @@ fn compact_local_date(local: crate::rtc::RtcDateTime) -> String {
     format!("{weekday}, {month} {}", local.day)
 }
 
+/// Why a bootloader write was refused, in the user's language.
+fn bootloader_power_refusal(locale: crate::regional::Locale, battery: Option<u8>) -> String {
+    use crate::{bootloader_update::MIN_BATTERY_PERCENT, regional::Locale};
+
+    match (battery, locale) {
+        (Some(percent), Locale::Italian) => format!(
+            "Batteria al {percent}%: caricala almeno al {MIN_BATTERY_PERCENT}% o collega il cavo USB."
+        ),
+        (Some(percent), Locale::English) => format!(
+            "Battery at {percent}%: charge it to {MIN_BATTERY_PERCENT}% or connect the USB cable."
+        ),
+        (None, Locale::Italian) => "Livello della batteria sconosciuto: collega il cavo USB.".into(),
+        (None, Locale::English) => "Battery level unknown: connect the USB cable.".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{compact_local_date, AppState, ClockEditField};
@@ -1274,6 +1321,83 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::Files);
         state.router.back();
         assert_eq!(state.active_route(), ScreenRoute::Home);
+    }
+
+    #[test]
+    fn a_bootloader_is_downloaded_then_written_only_with_enough_power() {
+        use crate::{
+            bootloader_update::BootloaderAsset,
+            ota::{OtaCheckState, OtaUiRequest},
+            power::PowerSnapshot,
+        };
+
+        let asset = BootloaderAsset {
+            download_url: "https://example.com/x-bootloader.img".into(),
+            sha256: [7; 32],
+            size: 19_008,
+        };
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::OtaUpdate);
+        state.ota = OtaCheckState::BootloaderAvailable {
+            release: "v1.5.0-beta.2".into(),
+            installed: None,
+            asset: asset.clone(),
+        };
+        // First SELECT: download and check only.
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.ota, OtaCheckState::PreparingBootloader);
+        assert_eq!(
+            state.take_ota_request(),
+            Some(OtaUiRequest::PrepareBootloader {
+                release: "v1.5.0-beta.2".into(),
+                asset,
+            })
+        );
+        // No second request while it downloads.
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.take_ota_request(), None);
+
+        let ready = OtaCheckState::BootloaderReady {
+            release: "v1.5.0-beta.2".into(),
+            new: Some("v5.5.1, 2026-10-02".into()),
+        };
+        let battery = |percent: u8, external: bool| PowerSnapshot {
+            battery_percent: Some(percent),
+            battery_voltage_mv: Some(3_900),
+            vbus_present: external,
+            charging: false,
+        };
+        // Second SELECT on a low battery: refused, nothing requested, said
+        // in the user's language.
+        state.ota = ready.clone();
+        state.board.power = Some(battery(30, false));
+        state.regional.locale = crate::regional::Locale::Italian;
+        state.apply(ButtonEvent::Select);
+        assert_eq!(
+            state.ota,
+            OtaCheckState::BootloaderFailed(
+                "Batteria al 30%: caricala almeno al 50% o collega il cavo USB.".into()
+            )
+        );
+        assert_eq!(state.take_ota_request(), None);
+        // After a copy that did not read back, SELECT writes it again.
+        state.ota = OtaCheckState::BootloaderDamaged("readback".into());
+        state.board.power = Some(battery(80, false));
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.ota, OtaCheckState::InstallingBootloader);
+        assert_eq!(
+            state.take_ota_request(),
+            Some(OtaUiRequest::InstallBootloader)
+        );
+        // On the USB cable it goes ahead.
+        state.ota = ready;
+        state.board.power = Some(battery(30, true));
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.ota, OtaCheckState::InstallingBootloader);
+        assert_eq!(
+            state.take_ota_request(),
+            Some(OtaUiRequest::InstallBootloader)
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Minimal binary-prompt screen for GitHub-release OTA updates.
+//! Minimal binary-prompt screen for GitHub-release OTA updates, and for the
+//! bootloader update that can follow one.
 
 use core::convert::Infallible;
 
@@ -16,6 +17,11 @@ use crate::{
     ota::{OtaCheckState, UpdateChannel},
     regional::Locale,
 };
+
+const LEFT: i32 = 22;
+const TEXT_WIDTH: i32 = 480 - 2 * LEFT;
+const STATUS_TOP: i32 = 234;
+const LINE_STEP: i32 = 34;
 
 pub fn render_ota_update(
     display: &mut OrientedFrameBuffer<'_>,
@@ -42,6 +48,16 @@ pub fn render_ota_update(
         152,
         t(locale, "Channel", "Canale"),
         channel_label(locale, state.ota_channel),
+        body,
+    )?;
+    line(
+        display,
+        186,
+        "Bootloader",
+        state
+            .installed_bootloader
+            .as_deref()
+            .unwrap_or_else(|| t(locale, "unknown", "sconosciuto")),
         body,
     )?;
 
@@ -163,12 +179,18 @@ pub fn render_ota_update(
                 "SELECT RIPROVA  SU/GIÙ CANALE",
             ),
         ),
+        bootloader_state => return render_bootloader(display, state, bootloader_state),
     };
 
-    Text::new(status_heading, Point::new(22, 200), heading).draw(display)?;
+    Text::new(status_heading, Point::new(LEFT, STATUS_TOP), heading).draw(display)?;
     for (index, text) in lines.iter().enumerate() {
         if !text.is_empty() {
-            Text::new(text, Point::new(22, 240 + index as i32 * 34), body).draw(display)?;
+            Text::new(
+                text,
+                Point::new(LEFT, STATUS_TOP + 40 + index as i32 * LINE_STEP),
+                body,
+            )
+            .draw(display)?;
         }
     }
 
@@ -187,13 +209,13 @@ fn render_update_available(
     let locale = state.regional.locale;
     Text::new(
         t(locale, "Update available", "Aggiornamento disponibile"),
-        Point::new(22, 200),
+        Point::new(LEFT, STATUS_TOP),
         heading,
     )
     .draw(display)?;
     line(
         display,
-        240,
+        STATUS_TOP + 40,
         t(locale, "New version", "Nuova versione"),
         version,
         body,
@@ -204,7 +226,7 @@ fn render_update_available(
             "Press SELECT to download and install.",
             "Premi SELECT per scaricare e installare.",
         ),
-        Point::new(22, 280),
+        Point::new(LEFT, STATUS_TOP + 80),
         body,
     )
     .draw(display)?;
@@ -214,7 +236,7 @@ fn render_update_available(
             "The device restarts automatically once",
             "Il dispositivo si riavvia automaticamente",
         ),
-        Point::new(22, 320),
+        Point::new(LEFT, STATUS_TOP + 120),
         detail,
     )
     .draw(display)?;
@@ -224,7 +246,7 @@ fn render_update_available(
             "the new firmware is written to flash.",
             "una volta scritto il nuovo firmware.",
         ),
-        Point::new(22, 350),
+        Point::new(LEFT, STATUS_TOP + 150),
         detail,
     )
     .draw(display)?;
@@ -238,6 +260,136 @@ fn render_update_available(
         ),
     )?;
     Ok(())
+}
+
+/// The bootloader states: a heading, an optional label/value line, a
+/// paragraph wrapped to the screen, a footer.
+fn render_bootloader(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    ota: &OtaCheckState,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let body = state.display.body_style();
+    let unknown = t(locale, "unknown", "sconosciuto");
+    let (heading, value, paragraph, footer): (&str, Option<(&str, &str)>, String, &str) =
+        match ota {
+            OtaCheckState::BootloaderAvailable { release, .. } => (
+                t(locale, "Bootloader update", "Aggiornamento bootloader"),
+                Some((t(locale, "In release", "Nella release"), release.as_str())),
+                t(
+                    locale,
+                    "The release carries a different bootloader. SELECT downloads and checks it; nothing is written yet.",
+                    "La release contiene un bootloader diverso. SELECT lo scarica e lo verifica, senza ancora scriverlo.",
+                )
+                .into(),
+                t(
+                    locale,
+                    "SELECT DOWNLOAD  UP/DOWN CHANNEL",
+                    "SELECT SCARICA  SU/GIÙ CANALE",
+                ),
+            ),
+            OtaCheckState::PreparingBootloader => (
+                t(locale, "Checking bootloader...", "Verifica bootloader..."),
+                None,
+                t(
+                    locale,
+                    "Downloading it and checking its signature.",
+                    "Scaricamento e controllo in corso.",
+                )
+                .into(),
+                "",
+            ),
+            OtaCheckState::BootloaderReady { new, .. } => (
+                t(locale, "Bootloader checked", "Bootloader verificato"),
+                Some((t(locale, "New", "Nuovo"), new.as_deref().unwrap_or(unknown))),
+                t(
+                    locale,
+                    "Writing it takes under a second. Do not switch off meanwhile: a cut then can only be fixed over USB. Needs the battery at 50% or the USB cable.",
+                    "La scrittura dura meno di un secondo. Non spegnere in quel momento: un'interruzione si ripara solo via USB. Serve la batteria al 50% o il cavo USB.",
+                )
+                .into(),
+                t(locale, "SELECT WRITE", "SELECT SCRIVI"),
+            ),
+            OtaCheckState::InstallingBootloader => (
+                t(locale, "Writing bootloader...", "Scrittura bootloader..."),
+                None,
+                t(
+                    locale,
+                    "Do not power off the device. It restarts when done.",
+                    "Non spegnere il dispositivo. Al termine si riavvia.",
+                )
+                .into(),
+                t(locale, "PLEASE WAIT", "ATTENDERE PREGO"),
+            ),
+            OtaCheckState::BootloaderInstalled => (
+                t(locale, "Bootloader updated", "Bootloader aggiornato"),
+                None,
+                t(locale, "Restarting...", "Riavvio in corso...").into(),
+                "",
+            ),
+            OtaCheckState::BootloaderDamaged(_) => (
+                t(locale, "Bootloader damaged", "Bootloader danneggiato"),
+                None,
+                t(
+                    locale,
+                    "The new bootloader did not read back intact. Do not switch the device off: it may not start again. SELECT writes it once more; if it still fails, connect the device to a computer over USB and reflash it.",
+                    "Il nuovo bootloader non si rilegge integro. Non spegnere il dispositivo: potrebbe non ripartire. SELECT lo riscrive; se non basta, collegalo a un computer via USB e riflashalo.",
+                )
+                .into(),
+                t(locale, "SELECT WRITE AGAIN", "SELECT RISCRIVI"),
+            ),
+            OtaCheckState::BootloaderFailed(error) => (
+                t(locale, "Bootloader not updated", "Bootloader non aggiornato"),
+                None,
+                error.clone(),
+                t(
+                    locale,
+                    "SELECT CHECK  UP/DOWN CHANNEL",
+                    "SELECT CONTROLLA  SU/GIÙ CANALE",
+                ),
+            ),
+            _ => (unknown, None, String::new(), ""),
+        };
+
+    Text::new(
+        heading,
+        Point::new(LEFT, STATUS_TOP),
+        state.display.heading_style(),
+    )
+    .draw(display)?;
+    let mut y = STATUS_TOP + 40;
+    if let Some((label, value)) = value {
+        line(display, y, label, value, body)?;
+        y += 40;
+    }
+    for text in wrap(body, &paragraph, TEXT_WIDTH) {
+        Text::new(&text, Point::new(LEFT, y), body).draw(display)?;
+        y += LINE_STEP;
+    }
+    draw_footer(display, state, footer)?;
+    Ok(())
+}
+
+fn wrap(style: UiTextStyle, text: &str, max_width: i32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if !current.is_empty() && style.text_width(&candidate) > max_width {
+            lines.push(std::mem::replace(&mut current, word.to_string()));
+        } else {
+            current = candidate;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 fn channel_label(locale: Locale, channel: UpdateChannel) -> &'static str {
@@ -254,7 +406,7 @@ fn line(
     value: &str,
     style: UiTextStyle,
 ) -> Result<(), Infallible> {
-    Text::new(label, Point::new(22, y), style).draw(display)?;
+    Text::new(label, Point::new(LEFT, y), style).draw(display)?;
     Text::new(value, Point::new(194, y), style).draw(display)?;
     Ok(())
 }
@@ -264,6 +416,7 @@ mod tests {
     use super::render_ota_update;
     use crate::{
         app::AppState,
+        bootloader_update::BootloaderAsset,
         framebuffer::FrameBuffer,
         orientation::OrientedFrameBuffer,
         ota::{OtaCheckState, UpdateChannel},
@@ -271,6 +424,11 @@ mod tests {
 
     #[test]
     fn renders_every_ota_state_without_panicking() {
+        let asset = BootloaderAsset {
+            download_url: "https://example.com/x-bootloader.img".into(),
+            sha256: [0; 32],
+            size: 19_008,
+        };
         let states = [
             OtaCheckState::Idle,
             OtaCheckState::Checking,
@@ -282,6 +440,22 @@ mod tests {
             OtaCheckState::CheckFailed("network error".into()),
             OtaCheckState::Installing,
             OtaCheckState::InstallFailed("flash write failed".into()),
+            OtaCheckState::BootloaderAvailable {
+                release: "v1.5.0-beta.2".into(),
+                installed: Some("v5.5.1, 2026-10-02".into()),
+                asset,
+            },
+            OtaCheckState::PreparingBootloader,
+            OtaCheckState::BootloaderReady {
+                release: "v1.5.0-beta.2".into(),
+                new: None,
+            },
+            OtaCheckState::InstallingBootloader,
+            OtaCheckState::BootloaderInstalled,
+            OtaCheckState::BootloaderFailed(
+                "Batteria al 35%: caricala almeno al 50% o collega il cavo USB.".into(),
+            ),
+            OtaCheckState::BootloaderDamaged("readback".into()),
         ];
         for state_value in states {
             for channel in [UpdateChannel::Stable, UpdateChannel::Beta] {

@@ -355,6 +355,43 @@ mod tests {
                 );
                 state.router.navigate_to(crate::app::ScreenRoute::OtaUpdate);
             }),
+            ("ota-bootloader-available", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.installed_bootloader = Some("v5.1.4, 2024-06-12".into());
+                state.ota = crate::ota::OtaCheckState::BootloaderAvailable {
+                    release: "v1.5.0-beta.2".into(),
+                    installed: Some("v5.1.4, 2024-06-12".into()),
+                    asset: crate::bootloader_update::BootloaderAsset {
+                        download_url: "https://example.com/x-bootloader.img".into(),
+                        sha256: [0; 32],
+                        size: 19_008,
+                    },
+                };
+                state.router.navigate_to(crate::app::ScreenRoute::OtaUpdate);
+            }),
+            ("ota-bootloader-ready", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.installed_bootloader = Some("v5.1.4, 2024-06-12".into());
+                state.ota = crate::ota::OtaCheckState::BootloaderReady {
+                    release: "v1.5.0-beta.2".into(),
+                    new: Some("v5.5.1, 2026-10-02".into()),
+                };
+                state.router.navigate_to(crate::app::ScreenRoute::OtaUpdate);
+            }),
+            ("ota-bootloader-refused", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.installed_bootloader = Some("v5.1.4, 2024-06-12".into());
+                state.ota = crate::ota::OtaCheckState::BootloaderFailed(
+                    "Batteria al 35%: caricala almeno al 50% o collega il cavo USB.".into(),
+                );
+                state.router.navigate_to(crate::app::ScreenRoute::OtaUpdate);
+            }),
+            ("ota-bootloader-damaged", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.installed_bootloader = Some("v5.1.4, 2024-06-12".into());
+                state.ota = crate::ota::OtaCheckState::BootloaderDamaged("readback".into());
+                state.router.navigate_to(crate::app::ScreenRoute::OtaUpdate);
+            }),
             ("wifi-transfer", |state| {
                 state.update_wifi_transfer_snapshot(crate::wifi_transfer::WifiTransferSnapshot {
                     state: crate::wifi_transfer::WifiTransferState::Ready,

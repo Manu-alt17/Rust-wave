@@ -11,6 +11,8 @@
 
 use std::{cmp::Ordering, fs, io, path::Path};
 
+use crate::bootloader_update::{BootloaderAsset, BOOTLOADER_ASSET_SUFFIX};
+
 /// Upper bound on the buffered `releases/latest` JSON response. A release's
 /// markdown description (`body` field) counts toward this even though it is
 /// never read, so keep release notes on this repository reasonably short --
@@ -156,6 +158,9 @@ impl UpdateChannel {
 pub struct ReleaseInfo {
     pub tag_name: String,
     pub download_url: String,
+    /// The bootloader attached to the release, if any (see
+    /// [`crate::bootloader_update`]).
+    pub bootloader: Option<BootloaderAsset>,
 }
 
 /// Release-check failure classified for logging.
@@ -195,6 +200,30 @@ pub enum OtaCheckState {
     CheckFailed(String),
     Installing,
     InstallFailed(String),
+    /// The firmware is up to date, and the release carries a bootloader
+    /// that differs from the one in flash.
+    BootloaderAvailable {
+        release: String,
+        /// The installed bootloader's own description, when it has one.
+        installed: Option<String>,
+        asset: BootloaderAsset,
+    },
+    /// Downloading and checking it.
+    PreparingBootloader,
+    /// Downloaded and checked, held in memory by the runtime owner: SELECT
+    /// writes it.
+    BootloaderReady {
+        release: String,
+        new: Option<String>,
+    },
+    InstallingBootloader,
+    /// Written and read back; the device restarts into it.
+    BootloaderInstalled,
+    /// Not written: the old bootloader is intact.
+    BootloaderFailed(String),
+    /// The copy did not read back intact: the device may not start again,
+    /// so it must stay on. SELECT writes the checked image once more.
+    BootloaderDamaged(String),
 }
 
 impl OtaCheckState {
@@ -208,6 +237,13 @@ impl OtaCheckState {
             Self::CheckFailed(_) => "CHECK FAILED",
             Self::Installing => "INSTALLING",
             Self::InstallFailed(_) => "INSTALL FAILED",
+            Self::BootloaderAvailable { .. } => "BOOTLOADER AVAILABLE",
+            Self::PreparingBootloader => "PREPARING BOOTLOADER",
+            Self::BootloaderReady { .. } => "BOOTLOADER READY",
+            Self::InstallingBootloader => "INSTALLING BOOTLOADER",
+            Self::BootloaderInstalled => "BOOTLOADER INSTALLED",
+            Self::BootloaderFailed(_) => "BOOTLOADER FAILED",
+            Self::BootloaderDamaged(_) => "BOOTLOADER DAMAGED",
         }
     }
 
@@ -219,7 +255,14 @@ impl OtaCheckState {
     /// Whether a check (manual or periodic) may currently be started.
     #[must_use]
     pub const fn can_check(&self) -> bool {
-        !matches!(self, Self::Checking | Self::Installing)
+        !matches!(
+            self,
+            Self::Checking
+                | Self::Installing
+                | Self::PreparingBootloader
+                | Self::InstallingBootloader
+                | Self::BootloaderInstalled
+        )
     }
 }
 
@@ -237,6 +280,13 @@ pub enum OtaUiRequest {
         version: String,
         download_url: String,
     },
+    /// Download and check a release's bootloader, writing nothing yet.
+    PrepareBootloader {
+        release: String,
+        asset: BootloaderAsset,
+    },
+    /// Write the bootloader the last `PrepareBootloader` checked.
+    InstallBootloader,
 }
 
 /// Compare the running firmware version against a release tag, with
@@ -400,7 +450,87 @@ fn parse_release_response(json: &str) -> Result<ReleaseInfo, ReleaseCheckError> 
     Ok(ReleaseInfo {
         tag_name,
         download_url,
+        bootloader: extract_bootloader_asset(json),
     })
+}
+
+/// `"key": 123` in a JSON document, the first such key.
+fn extract_number_field(json: &str, key: &str) -> Option<usize> {
+    let pattern = format!("\"{key}\"");
+    let after_key = &json[json.find(&pattern)? + pattern.len()..];
+    let after_colon = after_key[after_key.find(':')? + 1..].trim_start();
+    let digits = after_colon
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(after_colon.len());
+    after_colon[..digits].parse().ok()
+}
+
+/// The objects in the array under `key` (`"assets": [{..}, {..}]`), as
+/// slices; brackets and braces inside strings do not count.
+fn array_objects<'a>(json: &'a str, key: &str) -> Vec<&'a str> {
+    let pattern = format!("\"{key}\"");
+    let Some(key_pos) = json.find(&pattern) else {
+        return Vec::new();
+    };
+    let after_key = &json[key_pos + pattern.len()..];
+    let Some(open) = after_key.find('[') else {
+        return Vec::new();
+    };
+    let array = &after_key[open..];
+    let mut objects = Vec::new();
+    let (mut depth, mut start) = (0_usize, 0_usize);
+    let (mut in_string, mut escaped) = (false, false);
+    for (index, byte) in array.bytes().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                if depth == 1 && byte == b'{' {
+                    start = index;
+                }
+                depth += 1;
+            }
+            b']' | b'}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                if depth == 1 && byte == b'}' {
+                    objects.push(&array[start..=index]);
+                }
+            }
+            _ => {}
+        }
+    }
+    objects
+}
+
+/// The release's bootloader asset (`*-bootloader.img`), only when GitHub
+/// published its SHA-256: without one it is never offered.
+fn extract_bootloader_asset(release: &str) -> Option<BootloaderAsset> {
+    array_objects(release, "assets")
+        .into_iter()
+        .find_map(|asset| {
+            let name = extract_string_field(asset, "name")?;
+            if !name.ends_with(BOOTLOADER_ASSET_SUFFIX) {
+                return None;
+            }
+            let digest = extract_string_field(asset, "digest")?;
+            Some(BootloaderAsset {
+                download_url: extract_string_field(asset, "browser_download_url")?,
+                sha256: crate::sha256::from_hex(digest.strip_prefix("sha256:")?)?,
+                size: extract_number_field(asset, "size")?,
+            })
+        })
 }
 
 /// `"key": true|false` in a JSON document, the first such key.
@@ -459,6 +589,7 @@ struct ReleaseEntry {
     tag_name: String,
     draft: bool,
     download_url: Option<String>,
+    bootloader: Option<BootloaderAsset>,
 }
 
 /// Parse a GitHub "list releases" response: a JSON array of releases, each
@@ -471,6 +602,7 @@ fn parse_release_list(json: &str) -> Vec<ReleaseEntry> {
                 tag_name: extract_string_field(release, "tag_name")?,
                 draft: extract_bool_field(release, "draft").unwrap_or(false),
                 download_url: extract_first_bin_asset_url(release),
+                bootloader: extract_bootloader_asset(release),
             })
         })
         .collect()
@@ -495,6 +627,7 @@ fn newest_release(releases: Vec<ReleaseEntry>) -> Option<ReleaseInfo> {
                 ReleaseInfo {
                     tag_name: release.tag_name,
                     download_url,
+                    bootloader: release.bootloader,
                 },
             ));
         }
@@ -518,6 +651,7 @@ pub mod espidf {
     use log::{info, warn};
 
     use crate::{
+        bootloader_update::{self, BootloaderAsset},
         build_info::{FIRMWARE_VERSION, OTA_REPO_NAME, OTA_REPO_OWNER},
         ota::{
             is_update_available, OtaCheckState, ReleaseCheckError, ReleaseInfo, UpdateChannel,
@@ -587,6 +721,8 @@ pub mod espidf {
                         version: release.tag_name,
                         download_url: release.download_url,
                     }
+                } else if let Some(asset) = release.bootloader {
+                    bootloader_state(release.tag_name, asset)
                 } else {
                     info!(
                         "rustmix-wave=ota-check status=up-to-date current={FIRMWARE_VERSION} latest={}",
@@ -605,6 +741,37 @@ pub mod espidf {
                 OtaCheckState::CheckFailed(message)
             }
         })
+    }
+
+    /// Up to date, with a bootloader on the release: offered when the one in
+    /// flash differs from it. Reading flash takes a few milliseconds, on the
+    /// main task like the rest of the poll.
+    fn bootloader_state(release: String, asset: BootloaderAsset) -> OtaCheckState {
+        match bootloader_update::espidf::read_installed() {
+            Ok(region) if bootloader_update::is_installed(&region, &asset) => {
+                info!(
+                    "rustmix-wave=ota-check status=up-to-date bootloader=current latest={release}"
+                );
+                OtaCheckState::UpToDate
+            }
+            Ok(region) => {
+                let installed =
+                    bootloader_update::describe(&region).map(|description| description.label());
+                info!(
+                    "rustmix-wave=ota-check status=bootloader-available latest={release} installed={}",
+                    installed.as_deref().unwrap_or("unknown")
+                );
+                OtaCheckState::BootloaderAvailable {
+                    release,
+                    installed,
+                    asset,
+                }
+            }
+            Err(error) => {
+                warn!("rustmix-wave=ota-check status=bootloader-unreadable error={error}");
+                OtaCheckState::UpToDate
+            }
+        }
     }
 
     fn fetch_release(channel: UpdateChannel) -> Result<ReleaseInfo, ReleaseCheckError> {
@@ -825,6 +992,7 @@ mod tests {
             ReleaseInfo {
                 tag_name: "v1.3.0".into(),
                 download_url: "https://example.com/rustmix-wave-v1.3.0.bin".into(),
+                bootloader: None,
             }
         );
     }
@@ -930,6 +1098,7 @@ mod tests {
             ReleaseInfo {
                 tag_name: "v1.5.0-beta.2".into(),
                 download_url: "https://example.com/b2.bin".into(),
+                bootloader: None,
             }
         );
         let with_newer_stable = RELEASE_LIST.replace("v1.4.9", "v1.5.0");
@@ -967,6 +1136,51 @@ mod tests {
         let json = std::fs::read_to_string(path).unwrap();
         let release = UpdateChannel::Beta.parse_response(&json).unwrap();
         println!("beta channel: {release:?}");
+    }
+
+    /// Shaped like GitHub's assets: an uploader object inside each, the
+    /// digest GitHub computes, the bootloader listed before the app image.
+    const RELEASE_WITH_BOOTLOADER: &str = concat!(
+        "{\"tag_name\":\"v1.5.0-beta.2\",\"draft\":false,\"assets\":[",
+        "{\"url\":\"https://api.github.com/x/1\",\"name\":\"w-v1.5.0-beta.2-bootloader.img\",",
+        "\"uploader\":{\"login\":\"o\",\"type\":\"User\"},\"size\":19008,",
+        "\"digest\":\"sha256:5412887c8bc25fe6097e8ef28275d9d9f6869ced4ce87d8e1a60f4d72c9b2b20\",",
+        "\"browser_download_url\":\"https://example.com/w-bootloader.img\"},",
+        "{\"url\":\"https://api.github.com/x/2\",\"name\":\"w-v1.5.0-beta.2-ota-update.bin\",",
+        "\"uploader\":{\"login\":\"o\"},\"size\":2743488,",
+        "\"digest\":\"sha256:3a1663f5a9c57c14c5192f918a1c43803c0630dfcc4ff64bd477580da4a3535c\",",
+        "\"browser_download_url\":\"https://example.com/w-ota-update.bin\"}",
+        "],\"body\":\"Bootloader {and} app\"}",
+    );
+
+    #[test]
+    fn a_release_bootloader_is_read_with_its_digest_and_never_taken_for_the_app() {
+        let release = parse_release_response(RELEASE_WITH_BOOTLOADER).unwrap();
+        // The .img is skipped when looking for the app image, even listed first.
+        assert_eq!(release.download_url, "https://example.com/w-ota-update.bin");
+        let bootloader = release.bootloader.unwrap();
+        assert_eq!(
+            bootloader.download_url,
+            "https://example.com/w-bootloader.img"
+        );
+        assert_eq!(bootloader.size, 19_008);
+        assert_eq!(
+            crate::sha256::to_hex(&bootloader.sha256),
+            "5412887c8bc25fe6097e8ef28275d9d9f6869ced4ce87d8e1a60f4d72c9b2b20"
+        );
+        // The beta channel reads it from the list as well.
+        let list = format!("[{RELEASE_WITH_BOOTLOADER}]");
+        assert!(UpdateChannel::Beta
+            .parse_response(&list)
+            .unwrap()
+            .bootloader
+            .is_some());
+        // Without a digest it is not offered at all.
+        let without_digest = RELEASE_WITH_BOOTLOADER.replacen("\"digest\"", "\"checksum\"", 1);
+        assert_eq!(
+            parse_release_response(&without_digest).unwrap().bootloader,
+            None
+        );
     }
 
     #[test]

@@ -50,6 +50,7 @@ mod firmware {
         },
         board_services::{BoardServices, BoardSnapshot},
         boot_profile,
+        bootloader_update::{self, BOOTLOADER_REGION_BYTES},
         build_info::{FIRMWARE_VERSION, PRODUCT_SLUG},
         buttons::{
             set_select_long_press_ms, BootBackButton, ButtonEvent, Buttons, SelectHoldButton,
@@ -722,6 +723,22 @@ mod firmware {
             "rustmix-wave=update-channel channel={} path={UPDATE_CONFIG_PATH}",
             state.ota_channel.marker()
         );
+        // Shown on the Software Update screen: which bootloader this device
+        // really has (one flashed by plain `espflash flash` is espflash's
+        // own, not this project's).
+        state.installed_bootloader = match bootloader_update::espidf::read_installed() {
+            Ok(region) => {
+                bootloader_update::describe(&region).map(|description| description.label())
+            }
+            Err(error) => {
+                warn!("rustmix-wave=bootloader status=unreadable error={error}");
+                None
+            }
+        };
+        info!(
+            "rustmix-wave=bootloader installed={}",
+            state.installed_bootloader.as_deref().unwrap_or("unknown")
+        );
         // A missing file (first boot) just keeps the default history.
         if let Ok(usage) = CategoryUsage::load_from_path(MENU_USAGE_CONFIG_PATH) {
             state.category_usage = usage;
@@ -1200,6 +1217,9 @@ mod firmware {
         let mut ota_check_in_flight: Option<
             std::sync::mpsc::Receiver<Result<ReleaseInfo, ReleaseCheckError>>,
         > = None;
+        // A bootloader downloaded and checked by `PrepareBootloader`, waiting
+        // for the confirming SELECT (see `bootloader_update`).
+        let mut prepared_bootloader: Option<Vec<u8>> = None;
         // Amortized EPUB cover-thumbnail generation: no dedicated thread (the
         // main loop is single-threaded and this is the project's only SD
         // consumer, so there is nothing to contend with). At most one
@@ -1970,6 +1990,104 @@ mod firmware {
                             Err(error) => {
                                 warn!("rustmix-wave=ota-install status=failed error={error}");
                                 state.update_ota_state(OtaCheckState::InstallFailed(error));
+                                if state.panel_awake
+                                    && state.active_route() == ScreenRoute::OtaUpdate
+                                {
+                                    refresh_screen(
+                                        &mut panel,
+                                        &mut frame,
+                                        &mut state,
+                                        &mut panel_refresh,
+                                        RefreshRequest::Normal,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                    OtaUiRequest::PrepareBootloader { release, asset } => {
+                        info!(
+                            "rustmix-wave=bootloader-update status=downloading release={release}"
+                        );
+                        // Same headroom as the firmware install: the TLS
+                        // session runs on the main task's heap.
+                        state.reader.release_parked_sessions_for_install();
+                        let checked = bootloader_update::espidf::download(
+                            &asset.download_url,
+                            BOOTLOADER_REGION_BYTES,
+                        )
+                        .and_then(|image| {
+                            bootloader_update::check_image(&image, &asset.sha256).map(|()| image)
+                        });
+                        match checked {
+                            Ok(image) => {
+                                let new = bootloader_update::describe(&image)
+                                    .map(|description| description.label());
+                                info!(
+                                    "rustmix-wave=bootloader-update status=checked bytes={} new={}",
+                                    image.len(),
+                                    new.as_deref().unwrap_or("unknown")
+                                );
+                                prepared_bootloader = Some(image);
+                                state.update_ota_state(OtaCheckState::BootloaderReady {
+                                    release,
+                                    new,
+                                });
+                            }
+                            Err(error) => {
+                                warn!("rustmix-wave=bootloader-update status=check-failed error={error}");
+                                state.update_ota_state(OtaCheckState::BootloaderFailed(error));
+                            }
+                        }
+                        if state.panel_awake && state.active_route() == ScreenRoute::OtaUpdate {
+                            refresh_screen(
+                                &mut panel,
+                                &mut frame,
+                                &mut state,
+                                &mut panel_refresh,
+                                RefreshRequest::Normal,
+                            )?;
+                        }
+                    }
+                    OtaUiRequest::InstallBootloader => {
+                        // Kept until it is written: after a copy that did not
+                        // read back, SELECT writes the same image again.
+                        let installed = match prepared_bootloader.as_deref() {
+                            Some(image) => bootloader_update::espidf::install(image),
+                            None => Err(bootloader_update::InstallError::NotWritten(
+                                "no checked bootloader to write".into(),
+                            )),
+                        };
+                        match installed {
+                            Ok(()) => {
+                                state.update_ota_state(OtaCheckState::BootloaderInstalled);
+                                if state.panel_awake
+                                    && state.active_route() == ScreenRoute::OtaUpdate
+                                {
+                                    refresh_screen(
+                                        &mut panel,
+                                        &mut frame,
+                                        &mut state,
+                                        &mut panel_refresh,
+                                        RefreshRequest::Normal,
+                                    )?;
+                                }
+                                // Straight into the new bootloader, with the
+                                // user still there: if it ever failed to
+                                // start, better known now than at the next
+                                // power-on.
+                                warn!("rustmix-wave=bootloader-update status=installed action=restart");
+                                restart();
+                            }
+                            Err(error) => {
+                                warn!("rustmix-wave=bootloader-update status=failed error={error}");
+                                state.update_ota_state(match error {
+                                    bootloader_update::InstallError::NotWritten(reason) => {
+                                        OtaCheckState::BootloaderFailed(reason)
+                                    }
+                                    bootloader_update::InstallError::Damaged(reason) => {
+                                        OtaCheckState::BootloaderDamaged(reason)
+                                    }
+                                });
                                 if state.panel_awake
                                     && state.active_route() == ScreenRoute::OtaUpdate
                                 {

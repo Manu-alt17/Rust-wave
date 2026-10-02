@@ -129,6 +129,8 @@ The sleep screen is what stays on the glass during standby: the images in `RUSTM
 
 Update shows the installed version and the channel. **Stabile** follows the latest stable release; **Beta** the highest version among the recent releases, pre-releases included, so a newer stable release reaches it too. UP or DOWN switches channel and checks it; SELECT checks again, or installs the update found. This firmware is a beta (`1.5.0-beta.1`): it follows Beta until the channel is changed, and the choice is kept in `RUSTMIX/UPDATE.TXT`. Back on Stable the device never installs an older firmware: it waits for a stable release newer than the one it runs.
 
+Update also shows the bootloader the device has (ESP-IDF version and build date). When the firmware is up to date and the release carries a different bootloader, the screen offers it: SELECT downloads and checks it, writing nothing; a second SELECT writes it, then the device restarts. The write needs the battery at 50% or the USB cable, and takes under a second: do not switch the device off meanwhile, because a bootloader cut halfway can only be fixed by reflashing over USB.
+
 ## 9. Connect to PC
 
 <img src="../screenshots/rendered-usb-disk.png" width="360" alt="Connect to PC">

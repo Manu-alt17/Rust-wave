@@ -118,6 +118,30 @@ Versions compare with SemVer precedence: `1.5.0-beta.2` comes after
 both channels. Draft releases are never offered. A device switched back from
 Beta to Stable keeps its firmware until a newer stable release appears.
 
+## Bootloader updates
+
+A release can also carry the bootloader: attach
+`dist/waveshare-epd397-rust-app-v<VERSION>-bootloader.img`, which
+`./scripts/build-ota-image.sh` copies from the build. It is named `.img`, not
+`.bin`, because firmware before this feature takes the first `.bin` asset as
+the app image. A device whose firmware is already up to date then offers it on
+the Software Update screen, if it differs from the bootloader in its flash:
+the first SELECT downloads it and checks it against the SHA-256 GitHub
+publishes for the asset (no digest, no offer), the second writes it, and the
+device restarts into it.
+
+Attach it only when the bootloader really changed (the `BOOTLOADER_` options
+in `sdkconfig.defaults`, or a new ESP-IDF). The ESP32-S3 has no backup
+bootloader to fall back on: a power cut during the write, which takes under a
+second, leaves a device that only a USB reflash can recover. The device
+refuses the write below 50% battery without the USB cable, stages the image
+in unused flash (never in a firmware slot, which rollback may need), and reads
+it back after the copy, copying it again if it differs.
+
+Devices flashed with plain `espflash flash` run espflash's own bootloader, not
+this project's (`scripts/flash.sh` passes `--bootloader`): the Software Update
+screen shows which one a device has.
+
 ## Package cleaned source
 
 ```bash

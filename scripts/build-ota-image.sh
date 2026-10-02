@@ -88,6 +88,19 @@ sha256_file() {
 }
 sha256_file "$OTA_BIN_OUT" > "$CHECKSUM_OUT"
 
+# The bootloader built from sdkconfig.defaults, for the releases that should
+# also update it on the devices (see src/bootloader_update.rs). Named .img,
+# not .bin: firmware before the bootloader update takes the first .bin asset
+# as the app image.
+BOOTLOADER_SOURCE="$(ls -t target/xtensa-esp32s3-espidf/release/build/esp-idf-sys-*/out/build/bootloader/bootloader.bin 2>/dev/null | head -n1 || true)"
+BOOTLOADER_OUT="${PREFIX}-bootloader.img"
+if [[ -n "$BOOTLOADER_SOURCE" ]]; then
+  cp "$BOOTLOADER_SOURCE" "$BOOTLOADER_OUT"
+else
+  echo 'release-ota-image-build=warning bootloader=not-found' >&2
+  BOOTLOADER_OUT=""
+fi
+
 cat <<TXT
 
 Attach this file to the GitHub release tagged for v${VERSION} on the repo
@@ -100,8 +113,14 @@ save-image --merge. It carries no bootloader/partition-table/flash-address
 data and is only ever written through the device's own OTA update path.
 Use scripts/build-release-firmware.sh + scripts/flash-release.sh for USB
 flashing instead.
+
+Attach the bootloader image ($(basename "${BOOTLOADER_OUT:-none}")) only when
+the devices should also get this build's bootloader: they offer it after the
+firmware, and a power cut while it is written leaves a device that only a
+USB reflash can recover. See docs/RELEASE.md.
 TXT
 
 echo "release-ota-image=$OTA_BIN_OUT"
 echo "release-ota-image-checksum=$CHECKSUM_OUT"
+echo "release-bootloader-image=${BOOTLOADER_OUT:-none}"
 echo 'release-ota-image-build=ok'
