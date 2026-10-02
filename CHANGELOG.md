@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased — E-ink merge (`feature/merge-eink`)
+## v1.5.0-beta.1 — E-ink merge (`beta`)
 
-Rustmix Wave v1.4.8 merged with the E-ink firmware, a C / ESP-IDF e-reader for the same board. Each item below is one commit or a few.
+Rustmix Wave v1.4.8 merged with the E-ink firmware, a C / ESP-IDF e-reader for the same board. Each item below is one commit or a few. The first version of the `beta` branch: a pre-release version, so beta devices are never offered a stable 1.4.x release, which would replace this firmware.
 
 Removed:
 
@@ -26,6 +26,8 @@ Fixed:
 - Wi-Fi portal: protected files are checked by their resolved path, so `./WIFI.TXT`, `WIFI.TXT/` or `%2557IFI.TXT` no longer reach them.
 - EPUB: no silent truncation of long spines, manifests or archives; nested NCX entries and the EPUB3 `toc` nav only; named entities decoded.
 - Covers are centre-cropped instead of stretched, and JPEGs that would not fit in memory are refused instead of aborting.
+- A PNG cover could run the decoder out of memory at every boot (the Home Continue card decodes it), so the device restarted endlessly: PNG frames are reserved fallibly, and a decode that crashed the device is not tried again.
+- PNGs are read row by row and reduced while read, so a large one never sits in memory whole; transparency is drawn on white.
 - Panel: waking from the idle sleep no longer flashes; the frame on the glass is reloaded silently.
 - Reading statistics count days in local time.
 - SD logs move to `.OLD` at 64 KB; release builds log warnings only, from the bootloader on; the app descriptor version follows `Cargo.toml`.
@@ -34,6 +36,7 @@ Fixed:
 Faster:
 
 - SD at 20 MHz again, and large reads into PSRAM through an internal buffer (2.3 times faster).
+- SD reads that start mid-sector go up to the sector boundary first: the SD driver read them one sector per command (a 1.46 MB cover: 4.7 s, now 1.3 s).
 - The library visible set, sleep-image checks, the kept `.EPX` handle, and no Wi-Fi scan with a single saved network.
 
 ## v1.4.x — PMIC Power-Off Shutdown

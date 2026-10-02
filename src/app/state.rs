@@ -1281,24 +1281,29 @@ mod tests {
         use crate::ota::{OtaCheckState, OtaUiRequest, UpdateChannel};
 
         let mut state = AppState::default();
-        assert_eq!(state.ota_channel, UpdateChannel::Stable);
+        // A stable firmware starts on Stable, a beta one on Beta.
+        let initial = state.ota_channel;
+        assert_eq!(
+            initial,
+            UpdateChannel::of_version(crate::build_info::FIRMWARE_VERSION)
+        );
         state.router.navigate_to(ScreenRoute::OtaUpdate);
         state.ota = OtaCheckState::UpdateAvailable {
             version: "v1.4.9".into(),
             download_url: "https://example.com/s.bin".into(),
         };
         state.apply(ButtonEvent::Down);
-        assert_eq!(state.ota_channel, UpdateChannel::Beta);
+        assert_eq!(state.ota_channel, initial.toggled());
         // The update found on the other channel is not offered any more.
         assert_eq!(state.ota, OtaCheckState::Checking);
         assert_eq!(state.take_ota_request(), Some(OtaUiRequest::CheckNow));
         // A check under way belongs to its channel: no switching meanwhile.
         state.apply(ButtonEvent::Up);
-        assert_eq!(state.ota_channel, UpdateChannel::Beta);
+        assert_eq!(state.ota_channel, initial.toggled());
         assert_eq!(state.take_ota_request(), None);
         state.update_ota_state(OtaCheckState::UpToDate);
         state.apply(ButtonEvent::Up);
-        assert_eq!(state.ota_channel, UpdateChannel::Stable);
+        assert_eq!(state.ota_channel, initial);
         assert_eq!(state.take_ota_request(), Some(OtaUiRequest::CheckNow));
     }
 

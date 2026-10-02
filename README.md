@@ -2,7 +2,7 @@
 
 Rustmix Wave is a Rust / ESP-IDF firmware that turns the Waveshare ESP32-S3 3.97-inch e-paper board into an e-reader and audiobook player. The native panel is `800 × 480`; the interface renders on a logical `480 × 800` portrait canvas.
 
-This branch (`feature/merge-eink`) merges Rustmix Wave v1.4.8 with the E-ink firmware, a C / ESP-IDF e-reader for the same board: the reading-focused parts of Rustmix Wave stay, the rest was removed, and the E-ink firmware contributed audiobooks, the microSD as a USB disk, and a number of fixes found on its hardware. Firmware version: **1.4.8** (`Cargo.toml`), not yet released.
+This branch (`feature/merge-eink`) merges Rustmix Wave v1.4.8 with the E-ink firmware, a C / ESP-IDF e-reader for the same board: the reading-focused parts of Rustmix Wave stay, the rest was removed, and the E-ink firmware contributed audiobooks, the microSD as a USB disk, and a number of fixes found on its hardware. Firmware version: **1.5.0-beta.1** (`Cargo.toml`). It is published as the `beta` branch: the update channels in `docs/RELEASE.md` explain how beta and stable releases reach the devices.
 
 A screen-by-screen guide is in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md), with images under [`screenshots/`](screenshots/).
 
