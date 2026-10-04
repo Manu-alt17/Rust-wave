@@ -1,6 +1,6 @@
 # Rustmix Wave user guide
 
-This guide describes the firmware on the `feature/merge-eink` branch, published as `beta` (version 1.5.0-beta.2): Rustmix Wave v1.4.8 merged with the E-ink firmware, on the Waveshare ESP32-S3 3.97-inch e-paper board. The interface speaks Italian by default (Settings → Lingua switches to English); screen labels below are given in Italian with the English wording in parentheses.
+This guide describes the firmware on the `feature/merge-eink` branch, published as `beta` (version 1.5.0-beta.3): Rustmix Wave v1.4.8 merged with the E-ink firmware, on the Waveshare ESP32-S3 3.97-inch e-paper board. The interface speaks Italian by default (Settings → Lingua switches to English); screen labels below are given in Italian with the English wording in parentheses.
 
 Images named `rendered-*.png` are drawn by the firmware's own renderer and match the panel pixel for pixel; the `*.jpg` photographs predate the merge. See [`screenshots/README.md`](../screenshots/README.md).
 
@@ -143,7 +143,7 @@ The sleep screen is what stays on the glass during standby: the images in `RUSTM
 
 Rete lists the connection state and four actions. **Configura da telefono** opens the portal of section 6. **Reti salvate** lists the saved networks, the connected one marked: SELECT on a network opens a menu to connect to it or forget it. If it cannot be joined, the Network screen says so and the device goes back to the saved networks by itself. **Riprova connessione** tries the saved networks again, and **Dettagli** shows the time synchronization and the last error.
 
-Update shows the installed version and the channel. **Stabile** follows the latest stable release; **Beta** the highest version among the recent releases, pre-releases included, so a newer stable release reaches it too. UP and DOWN move between the action and the channel: SELECT on the channel switches it and checks; SELECT on the action checks again, or installs the update found, after a second SELECT to confirm. This firmware is a beta (`1.5.0-beta.2`): it follows Beta until the channel is changed, and the choice is kept in `RUSTMIX/UPDATE.TXT`. Back on Stable the device never installs an older firmware: it waits for a stable release newer than the one it runs.
+Update shows the installed version and the channel. **Stabile** follows the latest stable release; **Beta** the highest version among the recent releases, pre-releases included, so a newer stable release reaches it too. UP and DOWN move between the action and the channel: SELECT on the channel switches it and checks; SELECT on the action checks again, or installs the update found, after a second SELECT to confirm. This firmware is a beta (`1.5.0-beta.3`): it follows Beta until the channel is changed, and the choice is kept in `RUSTMIX/UPDATE.TXT`. Back on Stable the device never installs an older firmware: it waits for a stable release newer than the one it runs.
 
 While an update downloads, the screen shows a bar with the percentage and the megabytes received, redrawn every 10%.
 

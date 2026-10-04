@@ -28,12 +28,12 @@ version_contract() {
 from pathlib import Path
 import re
 
-cargo = Path('Cargo.toml').read_text()
+cargo = Path('Cargo.toml').read_text(encoding='utf-8')
 version = re.search(r'^version = "([^"]+)"$', cargo, re.M).group(1)
-lock = Path('Cargo.lock').read_text()
+lock = Path('Cargo.lock').read_text(encoding='utf-8')
 entry = re.search(r'name = "waveshare-epd397-rust-app"\nversion = "([^"]+)"', lock)
 assert entry and entry.group(1) == version, f'Cargo.lock version differs from {version}'
-sdkconfig = Path('sdkconfig.defaults').read_text()
+sdkconfig = Path('sdkconfig.defaults').read_text(encoding='utf-8')
 assert f'CONFIG_APP_PROJECT_VER="{version}"' in sdkconfig, f'sdkconfig.defaults app version differs from {version}'
 PY
 }
@@ -70,8 +70,8 @@ expected = {
 actual = {p.name for p in Path('docs').iterdir() if p.is_file()}
 assert actual == expected, f'durable docs mismatch: actual={sorted(actual)} expected={sorted(expected)}'
 
-readme = Path('README.md').read_text()
-arch = Path('docs/ARCHITECTURE.md').read_text()
+readme = Path('README.md').read_text(encoding='utf-8')
+arch = Path('docs/ARCHITECTURE.md').read_text(encoding='utf-8')
 for fragment in (
     'docs/USER_GUIDE.md',
     'screenshots/',
@@ -98,7 +98,7 @@ for fragment in (
 
 # Documentation of removed features must not come back.
 for path in [Path('README.md'), *Path('docs').glob('*.md')]:
-    text = path.read_text()
+    text = path.read_text(encoding='utf-8')
     for removed in ('Voice Notes boundary', 'Calendar boundary', 'Games and Lua boundary', 'Native IMU event pipeline', 'RRBP'):
         assert removed not in text, f'{path} still documents removed feature: {removed}'
 PY
@@ -110,7 +110,7 @@ from pathlib import Path
 import re
 
 screenshots = Path('screenshots')
-guide = Path('docs/USER_GUIDE.md').read_text()
+guide = Path('docs/USER_GUIDE.md').read_text(encoding='utf-8')
 assert (screenshots / 'README.md').is_file(), 'screenshots/README.md missing'
 
 images = {path.name for path in screenshots.iterdir() if path.is_file() and path.name != 'README.md'}
@@ -133,7 +133,7 @@ PY
 ci_workflow_contract() {
   python3 - <<'PY'
 from pathlib import Path
-workflow = Path('.github/workflows/ci.yml').read_text()
+workflow = Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
 assert not Path('.github/workflows/source-contract.yml').exists()
 for fragment in (
     'actions/checkout@v4',
@@ -153,11 +153,11 @@ PY
 release_binary_builder_contract() {
   python3 - <<'PY'
 from pathlib import Path
-builder = Path('scripts/build-release-firmware.sh').read_text()
-flasher = Path('scripts/flash-release.sh').read_text()
-release_doc = Path('docs/RELEASE.md').read_text()
-readme = Path('README.md').read_text()
-known = Path('docs/KNOWN_ISSUES.md').read_text()
+builder = Path('scripts/build-release-firmware.sh').read_text(encoding='utf-8')
+flasher = Path('scripts/flash-release.sh').read_text(encoding='utf-8')
+release_doc = Path('docs/RELEASE.md').read_text(encoding='utf-8')
+readme = Path('README.md').read_text(encoding='utf-8')
+known = Path('docs/KNOWN_ISSUES.md').read_text(encoding='utf-8')
 
 for fragment in (
     './scripts/validate.sh',
@@ -203,7 +203,7 @@ PY
 package_release_contract() {
   python3 - <<'PY'
 from pathlib import Path
-script = Path('scripts/package-release.sh').read_text()
+script = Path('scripts/package-release.sh').read_text(encoding='utf-8')
 for fragment in (
     './scripts/validate.sh',
     "--exclude 'dist/'",
@@ -220,7 +220,7 @@ PY
 host_test_native_target_contract() {
   python3 - <<'PY'
 from pathlib import Path
-script = Path('scripts/test-host.sh').read_text()
+script = Path('scripts/test-host.sh').read_text(encoding='utf-8')
 for fragment in (
     'HOST_TRIPLE="$(rustc +stable -vV',
     "sed -n 's/^host: //p'",
@@ -235,11 +235,11 @@ runtime_contract() {
   python3 - <<'PY'
 from pathlib import Path
 
-lib = Path('src/lib.rs').read_text()
-main = Path('src/main.rs').read_text()
-state = Path('src/app/state.rs').read_text()
-power = Path('src/power_key.rs').read_text()
-wifi = Path('src/wifi_transfer.rs').read_text()
+lib = Path('src/lib.rs').read_text(encoding='utf-8')
+main = Path('src/main.rs').read_text(encoding='utf-8')
+state = Path('src/app/state.rs').read_text(encoding='utf-8')
+power = Path('src/power_key.rs').read_text(encoding='utf-8')
+wifi = Path('src/wifi_transfer.rs').read_text(encoding='utf-8')
 
 for module in (
     'reader', 'epub', 'dictionary', 'reading_stats', 'cover_cache', 'jpeg_luma',
@@ -265,10 +265,10 @@ for fragment in ('power_key_event_from_irq_status', 'POWER_KEY_LONG_PRESS_MASK',
 
 # Connect to PC: the PHY is released first thing at boot, and no format ever.
 assert 'usb_disk::espidf::release_phy();' in main
-assert '-Wl,--wrap=f_mkfs' in Path('components/usbdisk/CMakeLists.txt').read_text()
+assert '-Wl,--wrap=f_mkfs' in Path('components/usbdisk/CMakeLists.txt').read_text(encoding='utf-8')
 
 # The in-reader lookup reuses the bounded X4 dictionary pack.
-dictionary = Path('src/dictionary.rs').read_text()
+dictionary = Path('src/dictionary.rs').read_text(encoding='utf-8')
 for fragment in (
     'DICTIONARY_ROOT: &str = "/sdcard/RUSTMIX/APPS/DICT"',
     'DICTIONARY_INDEX_FILE: &str = "INDEX.TXT"',
@@ -310,7 +310,7 @@ from pathlib import Path
 pairs = {'(': ')', '[': ']', '{': '}'}
 closing = {v: k for k, v in pairs.items()}
 for path in sorted(Path('src').rglob('*.rs')):
-    text = path.read_text()
+    text = path.read_text(encoding='utf-8')
     stack = []
     i = 0
     state = 'code'

@@ -82,7 +82,7 @@ CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n
 # (a unit test in src/build_info.rs keeps the two equal). The OTA check reads
 # the Cargo one; this one is what ESP-IDF prints at boot.
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="1.5.0-beta.2"
+CONFIG_APP_PROJECT_VER="1.5.0-beta.3"
 
 # Logs: warnings and errors only, from the bootloader on. Every line also goes
 # out on UART0 at 115200 baud, about 87 us of busy wait per character, and at

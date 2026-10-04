@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.0-beta.3 — One interface, and the functions it lacked
 
 - Library and Home covers are stretched to fill their cell instead of centre-cropped, so the whole cover shows whatever its shape; thumbnails already on the card are rebuilt once. The full-screen sleep cover is still cropped.
 
@@ -38,6 +38,7 @@ Fixed:
 - The percent sign of the 12 px interface font was two smudges without the slash (hinting broke it): redrawn by hand, with an override in `tools/fontgen/gen_bitmap_fonts.py` so a regeneration keeps it.
 - Texts in English on the Italian interface (opening a book, the dictionary's "word not found", the portal's last action, Wi-Fi states) and leftovers of removed features on Info, Clock and the Power-key menu.
 - The Italian Update tile and header say **Aggiorna**; "Streak" is **Serie**.
+- `scripts/validate_source_contract.sh` reads the sources as UTF-8 whatever the system's default encoding is: on Windows its last check stopped on the first accented letter, and with it `build-ota-image.sh`.
 - The player's status and volume are no longer drawn under its menu; a dictionary text longer than the page is cut instead of running through the footer.
 
 ## v1.5.0-beta.2 — Bootloader updates over the air

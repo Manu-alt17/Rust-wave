@@ -1954,7 +1954,9 @@ mod tests {
 
     #[test]
     fn the_portal_page_asks_for_no_code() {
-        let source = include_str!("wifi_transfer.rs");
+        // A Windows checkout has CRLF line endings, which `include_str!`
+        // keeps (string literals themselves always get LF).
+        let source = include_str!("wifi_transfer.rs").replace("\r\n", "\n");
         let page_start = source.find("const PORTAL_HTML").unwrap();
         let page_end = page_start + source[page_start..].find("\"##;").unwrap();
         let page = &source[page_start..page_end];
