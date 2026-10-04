@@ -45,6 +45,28 @@ impl WifiConnectionState {
             },
         }
     }
+
+    /// The state as a sentence for the Network screen, where
+    /// [`Self::label_i18n`]'s terse upper-case tags read as error codes.
+    #[must_use]
+    pub const fn status_text(self, locale: Locale) -> &'static str {
+        match locale {
+            Locale::English => match self {
+                Self::Disabled => "Wi-Fi off",
+                Self::ConfigurationMissing => "No saved network",
+                Self::Connecting => "Connecting...",
+                Self::Connected => "Connected",
+                Self::Failed => "Not connected",
+            },
+            Locale::Italian => match self {
+                Self::Disabled => "Wi-Fi spento",
+                Self::ConfigurationMissing => "Nessuna rete salvata",
+                Self::Connecting => "Connessione in corso...",
+                Self::Connected => "Connesso",
+                Self::Failed => "Non connesso",
+            },
+        }
+    }
 }
 
 /// Product-facing SNTP synchronization state.

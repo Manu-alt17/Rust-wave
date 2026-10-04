@@ -16,7 +16,6 @@ use embedded_iconoir::{
         activities::{BookStack as CompactBookStack, StatsReport as CompactStatsReport},
         audio::SoundLow as CompactSoundLow,
         connectivity::Wifi as CompactWifi,
-        devices::Laptop as CompactLaptop,
         docs::Folder as CompactFolder,
         editor::TextSize as CompactTextSize,
         music::Headset as CompactHeadset,
@@ -231,7 +230,7 @@ fn draw_route_icon_compact(
         ScreenRoute::ReadingStats => {
             draw_iconoir_icon_scaled(display, top_left, &CompactStatsReport::new(BinaryColor::On))
         }
-        ScreenRoute::WifiTransfer => {
+        ScreenRoute::Upload => {
             draw_iconoir_icon_scaled(display, top_left, &CompactImport::new(BinaryColor::On))
         }
         ScreenRoute::Settings => draw_iconoir_icon_scaled(
@@ -262,9 +261,6 @@ fn draw_route_icon_compact(
             top_left,
             &CompactRefreshDouble::new(BinaryColor::On),
         ),
-        ScreenRoute::UsbDisk => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactLaptop::new(BinaryColor::On))
-        }
         ScreenRoute::Files => {
             draw_iconoir_icon_scaled(display, top_left, &CompactFolder::new(BinaryColor::On))
         }

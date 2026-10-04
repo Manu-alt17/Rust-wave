@@ -13,8 +13,21 @@ use crate::{
     app::{
         i18n::t,
         state::AppState,
-        typography::{Text, UiTextStyle},
-        widgets::{footer::draw_footer, header::draw_header, qr::draw_qr},
+        typography::Text,
+        widgets::{
+            footer::{
+                back_action, back_only, draw_footer, draw_footer_paged, footer_hints,
+                select_and_back, FooterKey,
+            },
+            header::draw_header,
+            layout::{CONTENT_LEFT, CONTENT_RIGHT, CONTENT_WIDTH, FIRST_BASELINE, FIRST_ROW_TOP},
+            list::{
+                centered_baseline, draw_field, draw_list_row, draw_row_frame, draw_section_title,
+                ROW_STEP,
+            },
+            qr::draw_qr,
+            text::{draw_paragraph, draw_text_centered, draw_text_fit},
+        },
     },
     network::NetworkSnapshot,
     orientation::OrientedFrameBuffer,
@@ -27,58 +40,92 @@ pub fn render_network(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
+    let preferences = state.display;
     let network = &state.network;
     let rssi = network.rssi_label();
 
     draw_header(display, state, t(locale, "NETWORK", "RETE"))?;
 
-    Text::new(
-        t(locale, "Wi-Fi station", "Stazione Wi-Fi"),
-        Point::new(22, 112),
-        heading,
-    )
-    .draw(display)?;
-    line(
+    let mut baseline = draw_section_title(display, preferences, FIRST_BASELINE, "Wi-Fi")?;
+    baseline = draw_field(
         display,
-        160,
-        t(locale, "State", "Stato"),
-        network.wifi_state.label_i18n(locale),
-        body,
+        preferences,
+        baseline,
+        t(locale, "Status", "Stato"),
+        network.wifi_state.status_text(locale),
     )?;
-    line(display, 200, "SSID", network.ssid_label(), body)?;
-    line(display, 240, "IPv4", network.ipv4_label(), body)?;
-    line(display, 280, "RSSI", &rssi, body)?;
-    let saved = match locale {
-        Locale::English => format!("{} network(s)", network.saved_network_count),
-        Locale::Italian => format!("{} rete/i", network.saved_network_count),
-    };
-    line(display, 320, t(locale, "Saved", "Salvate"), &saved, body)?;
+    baseline = draw_field(
+        display,
+        preferences,
+        baseline,
+        t(locale, "Network", "Rete"),
+        network.ssid_label(),
+    )?;
+    baseline = draw_field(
+        display,
+        preferences,
+        baseline,
+        t(locale, "IP address", "Indirizzo IP"),
+        network.ipv4_label(),
+    )?;
+    baseline = draw_field(
+        display,
+        preferences,
+        baseline,
+        t(locale, "Signal", "Segnale"),
+        &rssi,
+    )?;
 
-    Text::new(t(locale, "Actions", "Azioni"), Point::new(22, 380), heading).draw(display)?;
-    draw_action(
+    let body_line = i32::from(preferences.body_style().line_height());
+    let mut rows_top = baseline - body_line + 10;
+    if let Some(ssid) = state.network_join_failed.as_deref() {
+        // A "Connect" that did not work: say which network, and that the
+        // device went back to the saved ones.
+        let notice = match locale {
+            Locale::English => {
+                format!("Could not connect to {ssid}. Trying the saved networks again.")
+            }
+            Locale::Italian => {
+                format!("Connessione a {ssid} non riuscita. Riprovo con le reti salvate.")
+            }
+        };
+        let next = draw_paragraph(
+            display,
+            &notice,
+            CONTENT_LEFT,
+            baseline,
+            preferences.detail_style(),
+            CONTENT_WIDTH,
+            2,
+            2,
+        )?;
+        rows_top = next - i32::from(preferences.detail_style().line_height()) + 8;
+    }
+    let saved = network.saved_network_count.to_string();
+    let rows: [(&str, &str); 4] = [
+        (
+            t(locale, "Configure via phone", "Configura da telefono"),
+            "",
+        ),
+        (t(locale, "Saved networks", "Reti salvate"), &saved),
+        (t(locale, "Retry connection", "Riprova connessione"), ""),
+        (t(locale, "Details", "Dettagli"), ""),
+    ];
+    for (index, (label, value)) in rows.into_iter().enumerate() {
+        draw_list_row(
+            display,
+            preferences,
+            rows_top + index as i32 * ROW_STEP,
+            label,
+            value,
+            state.network_action_selected == index,
+        )?;
+    }
+    draw_footer(
         display,
-        424,
-        t(locale, "Configure via phone", "Configura da telefono"),
-        state.network_action_selected == 0,
-        body,
-    )?;
-    draw_action(
-        display,
-        492,
-        t(locale, "Saved networks", "Reti salvate"),
-        state.network_action_selected == 1,
-        body,
-    )?;
-    draw_action(
-        display,
-        560,
-        t(locale, "Provisioning details", "Dettagli configurazione"),
-        state.network_action_selected == 2,
-        body,
-    )?;
-    Ok(())
+        state,
+        &select_and_back(locale, t(locale, "OPEN", "APRI")),
+    )
 }
 
 /// Single-sentence phone Wi-Fi join status, matching the portal card's
@@ -104,297 +151,330 @@ fn provision_join_status_text(join: &JoinAttemptState, locale: Locale) -> String
     }
 }
 
-/// Read-only saved-network list: no typing, just view and forget. Adding a
-/// network or changing its password happens through the phone portal.
+/// Saved-network list, or the action menu of the selected network once
+/// SELECT opened it: connect to it, forget it. Adding a network or changing
+/// its password happens through the phone portal.
 pub fn render_network_saved(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let detail = state.display.detail_style();
+    let preferences = state.display;
     let saved = &state.network_saved;
 
     draw_header(display, state, t(locale, "SAVED WI-FI", "RETI SALVATE"))?;
 
     if saved.networks.is_empty() {
-        Text::new(
-            t(locale, "No networks saved yet.", "Nessuna rete salvata."),
-            Point::new(22, 130),
-            heading,
-        )
-        .draw(display)?;
-        Text::new(
+        let next = draw_section_title(
+            display,
+            preferences,
+            FIRST_BASELINE,
+            t(locale, "No saved network", "Nessuna rete salvata"),
+        )?;
+        draw_paragraph(
+            display,
             t(
                 locale,
-                "Use Configure via phone to add one.",
-                "Usa Configura da telefono per aggiungerne una.",
+                "Choose Configure via phone on the Network screen to add one.",
+                "Scegli Configura da telefono nella schermata Rete per aggiungerne una.",
             ),
-            Point::new(22, 166),
-            detail,
-        )
-        .draw(display)?;
-    } else {
-        let selected_on_page = saved.selected_on_page();
-        for (index, entry) in saved.visible_entries().iter().enumerate() {
-            let top = 108 + (index as i32 * 66);
-            let selected = index == selected_on_page;
-            let outline = if selected {
-                PrimitiveStyle::with_stroke(BinaryColor::On, 3)
-            } else {
-                PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-            };
-            Rectangle::new(Point::new(22, top), Size::new(436, 54))
-                .into_styled(outline)
-                .draw(display)?;
-            Text::new(
-                if selected { ">" } else { " " },
-                Point::new(36, top + 32),
-                heading,
-            )
-            .draw(display)?;
-            Text::new(
-                &placeholder_or_truncate(&entry.ssid, 22),
-                Point::new(62, top + 32),
-                heading,
-            )
-            .draw(display)?;
-            if entry.connected {
-                Text::new(
-                    t(locale, "CONNECTED", "CONNESSA"),
-                    Point::new(330, top + 32),
-                    detail,
-                )
-                .draw(display)?;
-            }
-        }
-        if saved.confirming_forget {
-            Text::new(
-                t(
-                    locale,
-                    "SELECT again to forget this network.",
-                    "Premi di nuovo SELECT per dimenticare questa rete.",
-                ),
-                Point::new(22, 700),
-                detail,
-            )
-            .draw(display)?;
-        }
+            CONTENT_LEFT,
+            next,
+            preferences.body_style(),
+            CONTENT_WIDTH,
+            4,
+            6,
+        )?;
+        return draw_footer(display, state, &back_only(locale));
     }
 
-    draw_footer(
+    if let Some(menu_selected) = saved.menu {
+        let ssid = saved
+            .selected_entry()
+            .map_or("", |entry| entry.ssid.as_str());
+        draw_section_title(display, preferences, FIRST_BASELINE, ssid)?;
+        let rows_top = FIRST_BASELINE + 24;
+        for (index, action) in saved.menu_actions().into_iter().enumerate() {
+            draw_list_row(
+                display,
+                preferences,
+                rows_top + index as i32 * ROW_STEP,
+                action.label_i18n(locale),
+                "",
+                index == menu_selected,
+            )?;
+        }
+        return draw_footer(
+            display,
+            state,
+            &select_and_back(locale, t(locale, "CONFIRM", "CONFERMA")),
+        );
+    }
+
+    let selected_on_page = saved.selected_on_page();
+    for (index, entry) in saved.visible_entries().iter().enumerate() {
+        draw_list_row(
+            display,
+            preferences,
+            FIRST_ROW_TOP + index as i32 * ROW_STEP,
+            if entry.ssid.is_empty() {
+                "-"
+            } else {
+                &entry.ssid
+            },
+            if entry.connected {
+                t(locale, "Connected", "Connessa")
+            } else {
+                ""
+            },
+            index == selected_on_page,
+        )?;
+    }
+    draw_footer_paged(
         display,
         state,
-        t(locale, "SELECT FORGET", "SELECT DIMENTICA"),
-    )?;
-    Ok(())
+        &select_and_back(locale, t(locale, "OPTIONS", "OPZIONI")),
+        Some(saved.page_position()),
+    )
 }
 
-/// Left/right margin shared by the status card, divider and stop button.
-const PORTAL_CONTENT_LEFT: i32 = 22;
-const PORTAL_CONTENT_RIGHT: i32 = 458;
 /// Inner padding of the status card holding the QR code and connection
 /// details.
 const PORTAL_CARD_PAD: i32 = 20;
 /// Target side length of the QR module, vertically centered in the card;
 /// the actual drawn size still self-sizes to a whole number of modules.
 const PORTAL_QR_BOX: i32 = 140;
-const PORTAL_CARD_CORNER_RADIUS: Size = Size::new(14, 14);
+const PORTAL_CARD_HEIGHT: i32 = 216;
+const PORTAL_CARD_CORNER_RADIUS: Size = Size::new(16, 16);
 const PORTAL_DOT_DIAMETER: i32 = 12;
+/// Height of the "stop" row under the status.
+const PORTAL_BUTTON_HEIGHT: i32 = 64;
 
 pub fn render_wifi_transfer(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let detail = state.display.detail_style();
+    let preferences = state.display;
+    let heading = preferences.heading_style();
+    let body = preferences.body_style();
+    let detail = preferences.detail_style();
     let transfer = &state.wifi_transfer;
     // No Wi-Fi joined yet: the portal was bootstrapped from the device's own
     // hotspot (see `NetworkRuntime::start_provisioning`) instead of the
     // already-connected LAN, so the QR below joins that hotspot first.
     let via_hotspot = transfer.ap_ssid.is_some();
+    let ready = transfer.state == WifiTransferState::Ready;
 
-    draw_header(display, state, t(locale, "UPLOAD", "CARICA"))?;
+    draw_header(display, state, t(locale, "OVER WI-FI", "VIA WI-FI"))?;
 
-    let status_baseline = Point::new(PORTAL_CONTENT_LEFT + 18, 96);
-    draw_status_dot(
+    let text_left = CONTENT_LEFT + 18;
+    let text_width = CONTENT_RIGHT - text_left;
+    let status_baseline = 96;
+    draw_status_dot(display, CONTENT_LEFT, status_baseline, ready)?;
+    draw_text_fit(
         display,
-        PORTAL_CONTENT_LEFT,
-        status_baseline.y,
-        transfer.state == WifiTransferState::Ready,
-    )?;
-    Text::new(
         wifi_transfer_status_label(transfer.state, locale),
-        status_baseline,
+        Point::new(text_left, status_baseline),
         heading,
-    )
-    .draw(display)?;
-
-    let hint_left = PORTAL_CONTENT_LEFT + 18;
-    let hint_width = PORTAL_CONTENT_RIGHT - hint_left;
-    let mut hint_baseline_y = status_baseline.y + i32::from(heading.line_height());
-    for line in wrap_to_width(
+        text_width,
+    )?;
+    let hint_baseline = status_baseline + i32::from(heading.line_height());
+    let after_hint = draw_paragraph(
+        display,
+        wifi_transfer_mode_hint(transfer.state, via_hotspot, locale),
+        text_left,
+        hint_baseline,
         body,
-        wifi_transfer_mode_hint(via_hotspot, locale),
-        hint_width,
-    ) {
-        Text::new(&line, Point::new(hint_left, hint_baseline_y), body).draw(display)?;
-        hint_baseline_y += i32::from(body.line_height());
+        text_width,
+        3,
+        0,
+    )?;
+
+    let mut cursor_top = after_hint - i32::from(body.line_height()) + 12;
+    if ready {
+        draw_portal_card(display, state, cursor_top, via_hotspot)?;
+        cursor_top += PORTAL_CARD_HEIGHT + 24;
+        Rectangle::new(
+            Point::new(CONTENT_LEFT, cursor_top),
+            Size::new(CONTENT_WIDTH as u32, 1),
+        )
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(display)?;
+        cursor_top += 16;
     }
 
-    let card_top = hint_baseline_y + 12;
-    let card_height = 216;
+    // What the portal is doing, wrapped: a file name or a join error can be
+    // far wider than the screen.
+    let mut baseline = cursor_top + i32::from(body.line_height()) + 4;
+    if ready && via_hotspot {
+        draw_status_dot(
+            display,
+            CONTENT_LEFT,
+            baseline,
+            matches!(transfer.join, JoinAttemptState::Succeeded { .. }),
+        )?;
+        baseline = draw_paragraph(
+            display,
+            &provision_join_status_text(&transfer.join, locale),
+            CONTENT_LEFT + 26,
+            baseline,
+            body,
+            CONTENT_WIDTH - 26,
+            2,
+            2,
+        )?;
+    } else if ready {
+        baseline = draw_paragraph(
+            display,
+            &wifi_transfer_status_text(transfer, locale),
+            CONTENT_LEFT,
+            baseline,
+            body,
+            CONTENT_WIDTH,
+            2,
+            2,
+        )?;
+    }
+    if let Some(error) = transfer.error.as_deref() {
+        baseline = draw_paragraph(
+            display,
+            error,
+            CONTENT_LEFT,
+            baseline,
+            detail,
+            CONTENT_WIDTH,
+            3,
+            2,
+        )?;
+    }
+
+    let button_top = baseline - i32::from(body.line_height()) + 14;
+    let button_label = match (transfer.state, via_hotspot) {
+        (WifiTransferState::Off | WifiTransferState::Failed, _) => t(locale, "Back", "Indietro"),
+        (_, true) => t(locale, "Cancel setup", "Annulla configurazione"),
+        (_, false) => t(locale, "Stop and go back", "Ferma e torna indietro"),
+    };
+    draw_row_frame(display, button_top, PORTAL_BUTTON_HEIGHT, true)?;
+    draw_text_centered(
+        display,
+        button_label,
+        CONTENT_LEFT,
+        CONTENT_WIDTH,
+        centered_baseline(heading, button_top, PORTAL_BUTTON_HEIGHT),
+        heading,
+    )?;
+    draw_footer(
+        display,
+        state,
+        &footer_hints(
+            locale,
+            &[
+                (FooterKey::Select, t(locale, "STOP", "FERMA")),
+                (FooterKey::Boot, back_action(locale)),
+            ],
+        ),
+    )
+}
+
+/// The QR code and the address, code and folder (LAN) or the hotspot's name
+/// and password beside it.
+fn draw_portal_card(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    card_top: i32,
+    via_hotspot: bool,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let heading = state.display.heading_style();
+    let body = state.display.body_style();
+    let transfer = &state.wifi_transfer;
+
     RoundedRectangle::new(
         Rectangle::new(
-            Point::new(PORTAL_CONTENT_LEFT, card_top),
-            Size::new(
-                (PORTAL_CONTENT_RIGHT - PORTAL_CONTENT_LEFT) as u32,
-                card_height as u32,
-            ),
+            Point::new(CONTENT_LEFT, card_top),
+            Size::new(CONTENT_WIDTH as u32, PORTAL_CARD_HEIGHT as u32),
         ),
         CornerRadii::new(PORTAL_CARD_CORNER_RADIUS),
     )
     .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
     .draw(display)?;
 
-    let qr_left = PORTAL_CONTENT_LEFT + PORTAL_CARD_PAD;
+    let qr_left = CONTENT_LEFT + PORTAL_CARD_PAD;
     let text_left = qr_left + PORTAL_QR_BOX + PORTAL_CARD_PAD;
+    let text_width = CONTENT_RIGHT - PORTAL_CARD_PAD - text_left;
     let detail_top = card_top + PORTAL_CARD_PAD + 20;
+    let qr_top = card_top + (PORTAL_CARD_HEIGHT - PORTAL_QR_BOX) / 2;
 
-    if via_hotspot {
-        let ap_ssid = transfer.ap_ssid.as_deref().unwrap_or("--");
-        let ap_password = transfer.ap_password.as_deref().unwrap_or("--");
-        let join_payload = crate::app::widgets::qr::wifi_join_payload(ap_ssid, ap_password);
-        let (module_px, qr_inner_left) =
-            match crate::app::widgets::qr::qr_modules_wide(&join_payload) {
-                Some(modules) if modules > 0 => {
-                    let module_px = (PORTAL_QR_BOX / modules as i32).clamp(2, 7);
-                    let qr_inner_left =
-                        qr_left + ((PORTAL_QR_BOX - modules as i32 * module_px) / 2).max(0);
-                    (module_px, qr_inner_left)
-                }
-                _ => (3, qr_left),
-            };
-        let qr_top = card_top + (card_height - PORTAL_QR_BOX) / 2;
+    let ap_ssid = transfer.ap_ssid.as_deref().unwrap_or("--");
+    let ap_password = transfer.ap_password.as_deref().unwrap_or("--");
+    let payload = if via_hotspot {
+        Some(crate::app::widgets::qr::wifi_join_payload(
+            ap_ssid,
+            ap_password,
+        ))
+    } else {
+        transfer.url.clone()
+    };
+    if let Some(payload) = payload.as_deref() {
+        let (module_px, qr_inner_left) = match crate::app::widgets::qr::qr_modules_wide(payload) {
+            Some(modules) if modules > 0 => {
+                let module_px = (PORTAL_QR_BOX / modules as i32).clamp(2, 7);
+                let qr_inner_left =
+                    qr_left + ((PORTAL_QR_BOX - modules as i32 * module_px) / 2).max(0);
+                (module_px, qr_inner_left)
+            }
+            _ => (3, qr_left),
+        };
         draw_qr(
             display,
             Point::new(qr_inner_left, qr_top),
             module_px,
-            &join_payload,
+            payload,
         )?;
+    }
 
+    if via_hotspot {
         let network_line = format!("{}: {ap_ssid}", t(locale, "Network", "Rete"));
-        Text::new(&network_line, Point::new(text_left, detail_top), heading).draw(display)?;
-        Text::new(
-            t(locale, "Password:", "Password:"),
-            Point::new(text_left, detail_top + 30),
-            body,
-        )
-        .draw(display)?;
-        Text::new(ap_password, Point::new(text_left, detail_top + 60), heading).draw(display)?;
-        let code_line = format!("{}: {}", t(locale, "Code", "Codice"), transfer.code_label());
-        Text::new(&code_line, Point::new(text_left, detail_top + 94), body).draw(display)?;
+        draw_text_fit(
+            display,
+            &network_line,
+            Point::new(text_left, detail_top),
+            heading,
+            text_width,
+        )?;
+        Text::new("Password:", Point::new(text_left, detail_top + 30), body).draw(display)?;
+        draw_text_fit(
+            display,
+            ap_password,
+            Point::new(text_left, detail_top + 60),
+            heading,
+            text_width,
+        )?;
     } else {
-        match transfer.url.as_deref() {
-            Some(url) => {
-                let (module_px, qr_inner_left) = match crate::app::widgets::qr::qr_modules_wide(url)
-                {
-                    Some(modules) if modules > 0 => {
-                        let module_px = (PORTAL_QR_BOX / modules as i32).clamp(2, 7);
-                        let qr_inner_left =
-                            qr_left + ((PORTAL_QR_BOX - modules as i32 * module_px) / 2).max(0);
-                        (module_px, qr_inner_left)
-                    }
-                    _ => (3, qr_left),
-                };
-                let qr_top = card_top + (card_height - PORTAL_QR_BOX) / 2;
-                draw_qr(display, Point::new(qr_inner_left, qr_top), module_px, url)?;
-            }
-            None => {
-                Text::new(
-                    t(
-                        locale,
-                        "Portal not ready yet.",
-                        "Portale non ancora pronto.",
-                    ),
-                    Point::new(qr_left, detail_top),
-                    detail,
-                )
-                .draw(display)?;
-            }
-        }
-
+        // The address is all the browser needs: no code to type.
         Text::new(
-            &bare_host_label(transfer.url.as_deref()),
+            t(locale, "Address", "Indirizzo"),
             Point::new(text_left, detail_top),
             body,
         )
         .draw(display)?;
-        let code_line = format!("{}: {}", t(locale, "Code", "Codice"), transfer.code_label());
-        Text::new(&code_line, Point::new(text_left, detail_top + 40), heading).draw(display)?;
-        let folder_line = format!("{}: /RUSTMIX", t(locale, "Folder", "Cartella"));
-        Text::new(&folder_line, Point::new(text_left, detail_top + 80), body).draw(display)?;
-    }
-
-    let divider_top = card_top + card_height + 24;
-    Rectangle::new(
-        Point::new(PORTAL_CONTENT_LEFT, divider_top),
-        Size::new((PORTAL_CONTENT_RIGHT - PORTAL_CONTENT_LEFT) as u32, 1),
-    )
-    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-    .draw(display)?;
-
-    let section_top = divider_top + 36;
-    if via_hotspot {
-        draw_status_dot(
+        draw_text_fit(
             display,
-            PORTAL_CONTENT_LEFT,
-            section_top + 6,
-            matches!(transfer.join, JoinAttemptState::Succeeded { .. }),
+            &bare_host_label(transfer.url.as_deref()),
+            Point::new(text_left, detail_top + 32),
+            heading,
+            text_width,
         )?;
-        Text::new(
-            &provision_join_status_text(&transfer.join, locale),
-            Point::new(PORTAL_CONTENT_LEFT + 26, section_top + 6),
+        let folder_line = format!("{}: /RUSTMIX", t(locale, "Folder", "Cartella"));
+        draw_text_fit(
+            display,
+            &folder_line,
+            Point::new(text_left, detail_top + 80),
             body,
-        )
-        .draw(display)?;
-    } else {
-        Text::new(
-            t(locale, "TRANSFER STATUS", "STATO TRASFERIMENTO"),
-            Point::new(PORTAL_CONTENT_LEFT, section_top),
-            detail,
-        )
-        .draw(display)?;
-        Text::new(
-            &wifi_transfer_status_text(transfer, locale),
-            Point::new(PORTAL_CONTENT_LEFT, section_top + 38),
-            body,
-        )
-        .draw(display)?;
+            text_width,
+        )?;
     }
-    let mut button_top = section_top + 78;
-    if let Some(error) = transfer.error.as_deref() {
-        Text::new(error, Point::new(PORTAL_CONTENT_LEFT, button_top), detail).draw(display)?;
-        button_top += 40;
-    }
-
-    draw_portal_button(
-        display,
-        button_top,
-        if via_hotspot {
-            t(locale, "Cancel setup", "Annulla configurazione")
-        } else {
-            t(locale, "Stop and return", "Ferma e torna indietro")
-        },
-        heading,
-    )?;
-    draw_footer(
-        display,
-        state,
-        t(locale, "SELECT STOP  BOOT STOP", "SELECT FERMA  BOOT FERMA"),
-    )?;
     Ok(())
 }
 
@@ -404,54 +484,47 @@ pub fn render_wifi_transfer(
 /// portal's mock.
 fn wifi_transfer_status_label(state: WifiTransferState, locale: Locale) -> &'static str {
     match state {
-        WifiTransferState::Off => t(locale, "Transfer stopped", "Trasferimento fermato"),
+        WifiTransferState::Off => t(locale, "Portal stopped", "Portale fermo"),
         WifiTransferState::Starting => t(locale, "Starting...", "Avvio in corso..."),
         WifiTransferState::Ready => t(locale, "Ready to connect", "Pronto per la connessione"),
         WifiTransferState::Failed => t(locale, "Could not start", "Avvio non riuscito"),
     }
 }
 
-/// Greedy pixel-width word-wrap with no line cap, since the mode hint below
-/// is short enough that wrapping ever needing more than two lines would mean
-/// the copy itself needs trimming.
-fn wrap_to_width(style: UiTextStyle, text: &str, max_width: i32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_string()
-        } else {
-            format!("{current} {word}")
-        };
-        if !current.is_empty() && style.text_width(&candidate) > max_width {
-            lines.push(current);
-            current = word.to_string();
-        } else {
-            current = candidate;
-        }
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
-/// One-line explanation of why the portal is in hotspot vs. direct-transfer
-/// mode, shown under the ready/status headline so the mode switch (driven by
-/// `via_hotspot`, see the comment above) doesn't read as unexplained.
-fn wifi_transfer_mode_hint(via_hotspot: bool, locale: Locale) -> &'static str {
-    if via_hotspot {
-        t(
+/// What to do next, shown under the headline: which of the two ways in the
+/// portal is using while it runs (driven by `via_hotspot`), and that it is
+/// not reachable when it does not.
+fn wifi_transfer_mode_hint(
+    state: WifiTransferState,
+    via_hotspot: bool,
+    locale: Locale,
+) -> &'static str {
+    match (state, via_hotspot) {
+        (WifiTransferState::Off, _) => t(
             locale,
-            "No network available — join the device network to upload",
-            "Nessuna rete disponibile — collegati alla rete del dispositivo per caricare",
-        )
-    } else {
-        t(
+            "The transfer page is not reachable now.",
+            "La pagina di trasferimento ora non \u{00E8} raggiungibile.",
+        ),
+        (WifiTransferState::Starting, _) => t(
             locale,
-            "Connected to your network — open the address to upload files",
-            "Connesso alla tua rete — apri l'indirizzo per caricare i file",
-        )
+            "Getting the transfer page ready.",
+            "Preparazione della pagina di trasferimento.",
+        ),
+        (WifiTransferState::Failed, _) => t(
+            locale,
+            "Go back and try again.",
+            "Torna indietro e riprova.",
+        ),
+        (WifiTransferState::Ready, true) => t(
+            locale,
+            "No network available: join the device's network to upload files or set up Wi-Fi.",
+            "Nessuna rete disponibile: collegati alla rete del dispositivo per caricare file o configurare il Wi-Fi.",
+        ),
+        (WifiTransferState::Ready, false) => t(
+            locale,
+            "Open the address in a browser on the same network to upload files. Its Wi-Fi tab adds networks.",
+            "Apri l'indirizzo da un browser sulla stessa rete per caricare file. La scheda Wi-Fi aggiunge reti.",
+        ),
     }
 }
 
@@ -467,15 +540,41 @@ fn bare_host_label(url: Option<&str>) -> String {
     }
 }
 
-/// Body line under "TRANSFER STATUS": a friendly idle message before the
-/// first request, then the raw diagnostic action text once one arrives (same
-/// untranslated strings the previous "Last request" row showed).
+/// What the portal last did, in the user's language. The portal records its
+/// actions in English for the serial log and its own web page; the fixed
+/// ones and the verbs are translated here, the file name is kept.
 fn wifi_transfer_status_text(transfer: &WifiTransferSnapshot, locale: Locale) -> String {
-    if transfer.state == WifiTransferState::Ready && transfer.last_action == "Portal ready" {
-        t(locale, "Waiting for a file...", "In attesa di un file...").to_string()
-    } else {
-        transfer.last_action.clone()
+    let action = transfer.last_action.as_str();
+    if action == "Portal ready" {
+        return t(locale, "Waiting for a file...", "In attesa di un file...").to_string();
     }
+    if locale == Locale::English {
+        return action.to_string();
+    }
+    const FIXED: [(&str, &str); 4] = [
+        ("Portal is off", "Portale fermo"),
+        ("Starting portal", "Avvio del portale"),
+        ("Portal start failed", "Avvio del portale non riuscito"),
+        ("Listed books", "Elenco dei libri letto"),
+    ];
+    if let Some((_, italian)) = FIXED.iter().find(|(english, _)| *english == action) {
+        return (*italian).to_string();
+    }
+    const VERBS: [(&str, &str); 7] = [
+        ("Listed ", "Elenco letto: "),
+        ("Downloaded ", "Scaricato: "),
+        ("Uploaded ", "Caricato: "),
+        ("Deleted ", "Eliminato: "),
+        ("Created ", "Creato: "),
+        ("Renamed ", "Rinominato: "),
+        ("Cover ", "Copertina: "),
+    ];
+    for (english, italian) in VERBS {
+        if let Some(rest) = action.strip_prefix(english) {
+            return format!("{italian}{rest}");
+        }
+    }
+    action.to_string()
 }
 
 /// Filled when `ready`, hollow otherwise, sitting just left of the status
@@ -500,168 +599,87 @@ fn draw_status_dot(
     .draw(display)
 }
 
-/// Bold rounded-rectangle button spanning the same width as the status
-/// card, with its label centered both ways.
-fn draw_portal_button(
-    display: &mut OrientedFrameBuffer<'_>,
-    top: i32,
-    label: &str,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    let width = PORTAL_CONTENT_RIGHT - PORTAL_CONTENT_LEFT;
-    let height = 64;
-    RoundedRectangle::new(
-        Rectangle::new(
-            Point::new(PORTAL_CONTENT_LEFT, top),
-            Size::new(width as u32, height as u32),
-        ),
-        CornerRadii::new(PORTAL_CARD_CORNER_RADIUS),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 3))
-    .draw(display)?;
-
-    let text_width = style.text_width(label);
-    let (ink_top, ink_bottom) = style.text_ink_bounds(label);
-    let text_left = PORTAL_CONTENT_LEFT + (width - text_width) / 2;
-    let baseline = top + (height - (ink_bottom - ink_top)) / 2 - ink_top;
-    Text::new(label, Point::new(text_left, baseline), style).draw(display)?;
-    Ok(())
-}
-
 pub fn render_network_details(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let detail = state.display.detail_style();
+    let preferences = state.display;
+    let body = preferences.body_style();
     let network = &state.network;
     let zone = state.regional.timezone_label_for_rtc(state.board.rtc);
-    let error = network
-        .error
-        .as_deref()
-        .unwrap_or(t(locale, "none", "nessuno"));
 
     draw_header(display, state, t(locale, "NETWORK INFO", "INFO RETE"))?;
 
-    Text::new(
-        t(locale, "Configuration file", "File di configurazione"),
-        Point::new(22, 118),
-        heading,
-    )
-    .draw(display)?;
-    Text::new(NetworkSnapshot::config_path(), Point::new(22, 166), body).draw(display)?;
-    Text::new(
+    let mut baseline = draw_section_title(
+        display,
+        preferences,
+        FIRST_BASELINE,
+        t(locale, "Configuration", "Configurazione"),
+    )?;
+    baseline = draw_field(
+        display,
+        preferences,
+        baseline,
+        t(locale, "File", "File"),
+        NetworkSnapshot::config_path(),
+    )?;
+    baseline = draw_paragraph(
+        display,
         t(
             locale,
-            "Configure via phone, or edit this file",
-            "Configura da telefono, oppure modifica questo file",
+            "Networks are added from the phone. The file can also be edited on the SD card; restart afterwards.",
+            "Le reti si aggiungono dal telefono. Il file si pu\u{00F2} anche modificare sulla scheda SD; poi riavvia.",
         ),
-        Point::new(22, 206),
+        CONTENT_LEFT,
+        baseline,
         body,
-    )
-    .draw(display)?;
-    Text::new(
-        t(
-            locale,
-            "on the SD card and reboot.",
-            "sulla scheda SD e riavvia.",
-        ),
-        Point::new(22, 240),
-        body,
-    )
-    .draw(display)?;
+        CONTENT_WIDTH,
+        4,
+        4,
+    )?;
 
-    Text::new(
-        t(locale, "Regional settings", "Impostazioni regionali"),
-        Point::new(22, 300),
-        heading,
-    )
-    .draw(display)?;
-    line(
+    baseline = draw_section_title(
         display,
-        348,
-        t(locale, "Timezone", "Fuso orario"),
+        preferences,
+        baseline + 22,
+        t(locale, "Date and time", "Data e ora"),
+    )?;
+    baseline = draw_field(
+        display,
+        preferences,
+        baseline,
+        t(locale, "Time zone", "Fuso orario"),
         &zone,
-        body,
     )?;
-    line(
+    baseline = draw_field(
         display,
-        388,
-        t(locale, "RTC storage", "Memoria RTC"),
-        &state.regional.rtc_storage_label(),
-        body,
-    )?;
-    line(
-        display,
-        428,
+        preferences,
+        baseline,
         t(locale, "NTP server", "Server NTP"),
         &network.ntp_server,
-        body,
     )?;
 
-    Text::new(
+    baseline = draw_section_title(
+        display,
+        preferences,
+        baseline + 22,
         t(locale, "Last error", "Ultimo errore"),
-        Point::new(22, 500),
-        heading,
-    )
-    .draw(display)?;
-    Text::new(error, Point::new(22, 540), detail).draw(display)?;
-    Ok(())
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.into();
-    }
-    let mut output: String = value.chars().take(max_chars.saturating_sub(3)).collect();
-    output.push_str("...");
-    output
-}
-
-fn placeholder_or_truncate(value: &str, max_chars: usize) -> String {
-    if value.is_empty() {
-        "_".into()
-    } else {
-        truncate(value, max_chars)
-    }
-}
-
-fn line(
-    display: &mut OrientedFrameBuffer<'_>,
-    y: i32,
-    label: &str,
-    value: &str,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    Text::new(label, Point::new(22, y), style).draw(display)?;
-    Text::new(value, Point::new(176, y), style).draw(display)?;
-    Ok(())
-}
-
-fn draw_action(
-    display: &mut OrientedFrameBuffer<'_>,
-    top: i32,
-    label: &str,
-    selected: bool,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    Rectangle::new(Point::new(22, top), Size::new(436, 52))
-        .into_styled(if selected {
-            PrimitiveStyle::with_stroke(BinaryColor::On, 6)
-        } else {
-            PrimitiveStyle::with_stroke(BinaryColor::On, 2)
-        })
-        .draw(display)?;
-    Text::new(
-        if selected { ">" } else { " " },
-        Point::new(38, top + 34),
-        style,
-    )
-    .draw(display)?;
-    Text::new(label, Point::new(68, top + 34), style).draw(display)?;
-    Ok(())
+    )?;
+    draw_paragraph(
+        display,
+        network
+            .error
+            .as_deref()
+            .unwrap_or(t(locale, "None", "Nessuno")),
+        CONTENT_LEFT,
+        baseline,
+        body,
+        CONTENT_WIDTH,
+        5,
+        4,
+    )?;
+    draw_footer(display, state, &back_only(locale))
 }
 
 #[cfg(test)]

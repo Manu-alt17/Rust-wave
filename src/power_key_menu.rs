@@ -1,17 +1,20 @@
 //! Hardware-independent Power-key menu state.
 //!
-//! A physical Power long press opens a compact global display-maintenance
-//! menu. A physical Power short press is handled by the AXP2101 runtime and
-//! enters the existing sleep-image path without routing through this menu.
+//! A physical Power long press opens a compact global menu: clean the
+//! screen, restart the device. A physical Power short press is handled by
+//! the AXP2101 runtime and enters the existing sleep-image path without
+//! routing through this menu; standby already cuts the power at the PMIC,
+//! so the menu has no separate "power off".
 
 use crate::buttons::ButtonEvent;
 
-pub const POWER_KEY_MENU_ACTION_COUNT: usize = 2;
+pub const POWER_KEY_MENU_ACTION_COUNT: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PowerKeyMenuOutcome {
     None,
     ClearGhosting,
+    Restart,
     Cancel,
 }
 
@@ -41,6 +44,7 @@ impl PowerKeyMenuUiState {
             }
             ButtonEvent::Select => match self.selected {
                 0 => PowerKeyMenuOutcome::ClearGhosting,
+                1 => PowerKeyMenuOutcome::Restart,
                 _ => PowerKeyMenuOutcome::Cancel,
             },
         }
@@ -53,7 +57,7 @@ mod tests {
     use crate::buttons::ButtonEvent;
 
     #[test]
-    fn defaults_to_clear_ghosting_and_cycles_cancel() {
+    fn defaults_to_clear_ghosting_and_cycles_restart_and_cancel() {
         let mut menu = PowerKeyMenuUiState::default();
         assert_eq!(menu.selected, 0);
         assert_eq!(
@@ -65,6 +69,15 @@ mod tests {
             PowerKeyMenuOutcome::None
         );
         assert_eq!(menu.selected, 1);
+        assert_eq!(
+            menu.apply_button(ButtonEvent::Select),
+            PowerKeyMenuOutcome::Restart
+        );
+        assert_eq!(
+            menu.apply_button(ButtonEvent::Down),
+            PowerKeyMenuOutcome::None
+        );
+        assert_eq!(menu.selected, 2);
         assert_eq!(
             menu.apply_button(ButtonEvent::Select),
             PowerKeyMenuOutcome::Cancel

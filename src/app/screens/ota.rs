@@ -1,5 +1,11 @@
-//! Minimal binary-prompt screen for GitHub-release OTA updates, and for the
+//! Software Update: firmware updates from GitHub releases, and the
 //! bootloader update that can follow one.
+//!
+//! Top to bottom: what is installed, what the last check found (a heading
+//! and a wrapped paragraph), then two rows -- the action the current state
+//! offers and the release channel. The rocker moves between the two rows
+//! and SELECT runs the selected one, so the channel never changes by
+//! brushing the rocker.
 
 use core::convert::Infallible;
 
@@ -9,387 +15,334 @@ use crate::{
     app::{
         i18n::t,
         state::AppState,
-        typography::{Text, UiTextStyle},
-        widgets::{footer::draw_footer, header::draw_header},
+        widgets::{
+            footer::{draw_footer, select_and_back},
+            header::draw_header,
+            layout::{CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE},
+            list::{draw_field, draw_list_row, draw_section_title, ROW_GAP, ROW_STEP},
+            progress::draw_progress_bar,
+            text::{draw_paragraph, draw_text_fit},
+        },
     },
     build_info::FIRMWARE_VERSION,
     orientation::OrientedFrameBuffer,
-    ota::{OtaCheckState, UpdateChannel},
+    ota::{InstallProgress, OtaCheckState, UpdateChannel},
     regional::Locale,
 };
 
-const LEFT: i32 = 22;
-const TEXT_WIDTH: i32 = 480 - 2 * LEFT;
-const STATUS_TOP: i32 = 234;
-const LINE_STEP: i32 = 34;
+/// Top of the action row; the channel row follows it. Anchored to the
+/// bottom so the rows stay put while the text above changes length.
+const ROWS_TOP: i32 = CONTENT_BOTTOM - 2 * ROW_STEP + ROW_GAP;
 
 pub fn render_ota_update(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let detail = state.display.detail_style();
+    let preferences = state.display;
+    let body = preferences.body_style();
+    let unknown = t(locale, "unknown", "sconosciuto");
 
-    // "Update" reads the same in English and Italian chrome, so this header
-    // does not need a locale-branched `t()` call.
-    draw_header(display, state, "UPDATE")?;
+    draw_header(display, state, t(locale, "UPDATE", "AGGIORNA"))?;
 
-    line(
+    let mut baseline = FIRST_BASELINE;
+    baseline = draw_field(
         display,
-        118,
+        preferences,
+        baseline,
         t(locale, "Installed", "Installata"),
         FIRMWARE_VERSION,
-        body,
     )?;
-    line(
+    baseline = draw_field(
         display,
-        152,
+        preferences,
+        baseline,
         t(locale, "Channel", "Canale"),
         channel_label(locale, state.ota_channel),
-        body,
     )?;
-    line(
+    baseline = draw_field(
         display,
-        186,
+        preferences,
+        baseline,
         "Bootloader",
-        state
-            .installed_bootloader
-            .as_deref()
-            .unwrap_or_else(|| t(locale, "unknown", "sconosciuto")),
-        body,
+        state.installed_bootloader.as_deref().unwrap_or(unknown),
     )?;
 
-    let (status_heading, lines, footer_hint): (&str, [&str; 3], &str) = match &state.ota {
-        OtaCheckState::Idle => (
-            t(locale, "No check yet", "Nessun controllo eseguito"),
-            [
-                t(
-                    locale,
-                    "Press SELECT to check GitHub for a",
-                    "Premi SELECT per controllare su GitHub",
+    let status = status_text(state);
+    baseline = draw_section_title(display, preferences, baseline + 18, status.heading)?;
+    if let Some((label, value)) = status.field {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
+    baseline = draw_paragraph(
+        display,
+        &status.paragraph,
+        CONTENT_LEFT,
+        baseline,
+        body,
+        CONTENT_WIDTH,
+        8,
+        6,
+    )?;
+    if let (OtaCheckState::Installing, Some(progress)) = (&state.ota, state.ota_install_progress) {
+        draw_install_progress(display, state, baseline + 14, progress)?;
+    }
+
+    let Some(action) = action_label(state) else {
+        // A check or an install is under way: nothing to select.
+        return draw_footer(display, state, t(locale, "PLEASE WAIT", "ATTENDERE"));
+    };
+    draw_list_row(
+        display,
+        preferences,
+        ROWS_TOP,
+        &action,
+        "",
+        state.ota_action_selected == 0,
+    )?;
+    draw_list_row(
+        display,
+        preferences,
+        ROWS_TOP + ROW_STEP,
+        t(locale, "Channel", "Canale"),
+        channel_label(locale, state.ota_channel),
+        state.ota_action_selected == 1,
+    )?;
+    let hint = if state.ota_action_selected == 1 {
+        t(locale, "CHANGE", "CAMBIA")
+    } else {
+        t(locale, "RUN", "ESEGUI")
+    };
+    draw_footer(display, state, &select_and_back(locale, hint))
+}
+
+/// Height of the download bar.
+const PROGRESS_BAR_HEIGHT: i32 = 16;
+
+/// The download so far: a bar when the size of the image is known, and
+/// under it how much arrived.
+fn draw_install_progress(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    top: i32,
+    progress: InstallProgress,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let body = state.display.body_style();
+    let mark = match locale {
+        Locale::English => '.',
+        Locale::Italian => ',',
+    };
+    let received = InstallProgress::megabytes_label(progress.received_bytes, mark);
+    let downloaded = t(locale, "Downloaded", "Scaricati");
+    let (label, text_top) = match (progress.percent(), progress.total_bytes) {
+        (Some(percent), Some(total)) => {
+            draw_progress_bar(
+                display,
+                CONTENT_LEFT,
+                top,
+                CONTENT_WIDTH,
+                PROGRESS_BAR_HEIGHT,
+                percent,
+            )?;
+            (
+                format!(
+                    "{percent}% \u{00B7} {received} {} {}",
+                    t(locale, "of", "di"),
+                    InstallProgress::megabytes_label(total, mark)
                 ),
-                t(locale, "newer release.", "una versione più recente."),
-                "",
-            ],
+                top + PROGRESS_BAR_HEIGHT + 12,
+            )
+        }
+        _ => (format!("{downloaded} {received}"), top),
+    };
+    draw_text_fit(
+        display,
+        &label,
+        Point::new(CONTENT_LEFT, text_top + i32::from(body.line_height())),
+        body,
+        CONTENT_WIDTH,
+    )
+}
+
+/// What the screen says about the current state.
+struct StatusText<'a> {
+    heading: &'static str,
+    field: Option<(&'static str, &'a str)>,
+    paragraph: String,
+}
+
+fn status_text(state: &AppState) -> StatusText<'_> {
+    let locale = state.regional.locale;
+    let unknown = t(locale, "unknown", "sconosciuto");
+    let plain = |heading: &'static str, paragraph: &str| StatusText {
+        heading,
+        field: None,
+        paragraph: paragraph.to_string(),
+    };
+    match &state.ota {
+        OtaCheckState::Idle => plain(
+            t(locale, "No check yet", "Nessun controllo eseguito"),
             t(
                 locale,
-                "SELECT CHECK  UP/DOWN CHANNEL",
-                "SELECT CONTROLLA  SU/GIÙ CANALE",
+                "Check GitHub for a newer release.",
+                "Controlla se su GitHub c'\u{00E8} una versione pi\u{00F9} recente.",
             ),
         ),
-        OtaCheckState::Checking => (
+        OtaCheckState::Checking => plain(
             t(
                 locale,
                 "Checking for updates...",
                 "Controllo aggiornamenti...",
             ),
-            [
-                t(
-                    locale,
-                    "Contacting GitHub, please wait.",
-                    "Connessione a GitHub in corso.",
-                ),
-                "",
-                "",
-            ],
-            "",
+            t(
+                locale,
+                "Contacting GitHub, please wait.",
+                "Connessione a GitHub in corso.",
+            ),
         ),
-        OtaCheckState::UpToDate => (
+        OtaCheckState::UpToDate => plain(
             t(locale, "Up to date", "Aggiornato"),
-            [
-                t(
-                    locale,
-                    "You already have the latest release.",
-                    "Hai già la versione più recente.",
-                ),
-                "",
-                "",
-            ],
             t(
                 locale,
-                "SELECT CHECK  UP/DOWN CHANNEL",
-                "SELECT CONTROLLA  SU/GIÙ CANALE",
+                "You already have the latest release.",
+                "Hai gi\u{00E0} la versione pi\u{00F9} recente.",
             ),
         ),
-        OtaCheckState::UpdateAvailable { version, .. } => {
-            return render_update_available(display, state, version, heading, body, detail);
+        OtaCheckState::UpdateAvailable { version, .. } => StatusText {
+            heading: t(locale, "Update available", "Aggiornamento disponibile"),
+            field: Some((t(locale, "New version", "Nuova versione"), version.as_str())),
+            paragraph: if state.ota_install_armed {
+                t(
+                    locale,
+                    "Press SELECT again to install. Do not power off the device meanwhile.",
+                    "Premi di nuovo SELECT per installare. Non spegnere il dispositivo nel frattempo.",
+                )
+            } else {
+                t(
+                    locale,
+                    "Installing downloads the new firmware, writes it and restarts the device.",
+                    "L'installazione scarica il nuovo firmware, lo scrive e riavvia il dispositivo.",
+                )
+            }
+            .to_string(),
+        },
+        OtaCheckState::CheckFailed(error) => {
+            plain(t(locale, "Check failed", "Controllo non riuscito"), error)
         }
-        OtaCheckState::CheckFailed(error) => (
-            t(locale, "Check failed", "Controllo non riuscito"),
-            [
-                error.as_str(),
-                "",
-                t(
-                    locale,
-                    "Press SELECT to try again.",
-                    "Premi SELECT per riprovare.",
-                ),
-            ],
-            t(
-                locale,
-                "SELECT RETRY  UP/DOWN CHANNEL",
-                "SELECT RIPROVA  SU/GIÙ CANALE",
-            ),
-        ),
-        OtaCheckState::Installing => (
+        OtaCheckState::Installing => plain(
             t(
                 locale,
                 "Installing update...",
                 "Installazione aggiornamento...",
             ),
-            [
-                t(
-                    locale,
-                    "Downloading and flashing.",
-                    "Scaricamento e scrittura in corso.",
-                ),
-                t(
-                    locale,
-                    "Do not power off the device.",
-                    "Non spegnere il dispositivo.",
-                ),
-                t(
-                    locale,
-                    "The device restarts automatically.",
-                    "Il dispositivo si riavvia automaticamente.",
-                ),
-            ],
-            t(locale, "PLEASE WAIT", "ATTENDERE PREGO"),
+            t(
+                locale,
+                "Downloading and writing. Do not power off the device: it restarts by itself when done.",
+                "Scaricamento e scrittura in corso. Non spegnere il dispositivo: al termine si riavvia da solo.",
+            ),
         ),
-        OtaCheckState::InstallFailed(error) => (
-            t(locale, "Install failed", "Installazione non riuscita"),
-            [
-                error.as_str(),
+        OtaCheckState::InstallFailed(error) => StatusText {
+            heading: t(locale, "Install failed", "Installazione non riuscita"),
+            field: None,
+            paragraph: format!(
+                "{error}\n{}",
                 t(
                     locale,
                     "The previous firmware is unaffected.",
-                    "Il firmware precedente non è stato modificato.",
-                ),
-                t(
-                    locale,
-                    "Press SELECT to try again.",
-                    "Premi SELECT per riprovare.",
-                ),
-            ],
+                    "Il firmware precedente non \u{00E8} stato modificato.",
+                )
+            ),
+        },
+        OtaCheckState::BootloaderAvailable { release, .. } => StatusText {
+            heading: t(locale, "Bootloader update", "Aggiornamento bootloader"),
+            field: Some((t(locale, "In release", "Nella release"), release.as_str())),
+            paragraph: t(
+                locale,
+                "The release carries a different bootloader. Downloading checks it; nothing is written yet.",
+                "La release contiene un bootloader diverso. Lo scaricamento lo verifica, senza ancora scriverlo.",
+            )
+            .to_string(),
+        },
+        OtaCheckState::PreparingBootloader => plain(
+            t(locale, "Checking bootloader...", "Verifica bootloader..."),
             t(
                 locale,
-                "SELECT RETRY  UP/DOWN CHANNEL",
-                "SELECT RIPROVA  SU/GIÙ CANALE",
+                "Downloading it and checking its signature.",
+                "Scaricamento e controllo in corso.",
             ),
         ),
-        bootloader_state => return render_bootloader(display, state, bootloader_state),
-    };
-
-    Text::new(status_heading, Point::new(LEFT, STATUS_TOP), heading).draw(display)?;
-    for (index, text) in lines.iter().enumerate() {
-        if !text.is_empty() {
-            Text::new(
-                text,
-                Point::new(LEFT, STATUS_TOP + 40 + index as i32 * LINE_STEP),
-                body,
+        OtaCheckState::BootloaderReady { new, .. } => StatusText {
+            heading: t(locale, "Bootloader checked", "Bootloader verificato"),
+            field: Some((t(locale, "New", "Nuovo"), new.as_deref().unwrap_or(unknown))),
+            paragraph: t(
+                locale,
+                "Writing it takes under a second. Do not switch off meanwhile: a cut then can only be fixed over USB. Needs the battery at 50% or the USB cable.",
+                "La scrittura dura meno di un secondo. Non spegnere in quel momento: un'interruzione si ripara solo via USB. Serve la batteria al 50% o il cavo USB.",
             )
-            .draw(display)?;
-        }
+            .to_string(),
+        },
+        OtaCheckState::InstallingBootloader => plain(
+            t(locale, "Writing bootloader...", "Scrittura bootloader..."),
+            t(
+                locale,
+                "Do not power off the device. It restarts when done.",
+                "Non spegnere il dispositivo. Al termine si riavvia.",
+            ),
+        ),
+        OtaCheckState::BootloaderInstalled => plain(
+            t(locale, "Bootloader updated", "Bootloader aggiornato"),
+            t(locale, "Restarting...", "Riavvio in corso..."),
+        ),
+        OtaCheckState::BootloaderDamaged(_) => plain(
+            t(locale, "Bootloader damaged", "Bootloader danneggiato"),
+            t(
+                locale,
+                "The new bootloader did not read back intact. Do not switch the device off: it may not start again. Write it once more; if it still fails, connect the device to a computer over USB and reflash it.",
+                "Il nuovo bootloader non si rilegge integro. Non spegnere il dispositivo: potrebbe non ripartire. Riscrivilo; se non basta, collegalo a un computer via USB e riflashalo.",
+            ),
+        ),
+        OtaCheckState::BootloaderFailed(error) => plain(
+            t(
+                locale,
+                "Bootloader not updated",
+                "Bootloader non aggiornato",
+            ),
+            error,
+        ),
     }
-
-    draw_footer(display, state, footer_hint)?;
-    Ok(())
 }
 
-fn render_update_available(
-    display: &mut OrientedFrameBuffer<'_>,
-    state: &AppState,
-    version: &str,
-    heading: UiTextStyle,
-    body: UiTextStyle,
-    detail: UiTextStyle,
-) -> Result<(), Infallible> {
+/// Label of the action row for the current state, or `None` while a check
+/// or an install is under way and there is nothing to run.
+fn action_label(state: &AppState) -> Option<String> {
     let locale = state.regional.locale;
-    Text::new(
-        t(locale, "Update available", "Aggiornamento disponibile"),
-        Point::new(LEFT, STATUS_TOP),
-        heading,
-    )
-    .draw(display)?;
-    line(
-        display,
-        STATUS_TOP + 40,
-        t(locale, "New version", "Nuova versione"),
-        version,
-        body,
-    )?;
-    Text::new(
-        t(
-            locale,
-            "Press SELECT to download and install.",
-            "Premi SELECT per scaricare e installare.",
-        ),
-        Point::new(LEFT, STATUS_TOP + 80),
-        body,
-    )
-    .draw(display)?;
-    Text::new(
-        t(
-            locale,
-            "The device restarts automatically once",
-            "Il dispositivo si riavvia automaticamente",
-        ),
-        Point::new(LEFT, STATUS_TOP + 120),
-        detail,
-    )
-    .draw(display)?;
-    Text::new(
-        t(
-            locale,
-            "the new firmware is written to flash.",
-            "una volta scritto il nuovo firmware.",
-        ),
-        Point::new(LEFT, STATUS_TOP + 150),
-        detail,
-    )
-    .draw(display)?;
-    draw_footer(
-        display,
-        state,
-        t(
-            locale,
-            "SELECT INSTALL  UP/DOWN CHANNEL",
-            "SELECT INSTALLA  SU/GIÙ CANALE",
-        ),
-    )?;
-    Ok(())
-}
-
-/// The bootloader states: a heading, an optional label/value line, a
-/// paragraph wrapped to the screen, a footer.
-fn render_bootloader(
-    display: &mut OrientedFrameBuffer<'_>,
-    state: &AppState,
-    ota: &OtaCheckState,
-) -> Result<(), Infallible> {
-    let locale = state.regional.locale;
-    let body = state.display.body_style();
-    let unknown = t(locale, "unknown", "sconosciuto");
-    let (heading, value, paragraph, footer): (&str, Option<(&str, &str)>, String, &str) =
-        match ota {
-            OtaCheckState::BootloaderAvailable { release, .. } => (
-                t(locale, "Bootloader update", "Aggiornamento bootloader"),
-                Some((t(locale, "In release", "Nella release"), release.as_str())),
-                t(
-                    locale,
-                    "The release carries a different bootloader. SELECT downloads and checks it; nothing is written yet.",
-                    "La release contiene un bootloader diverso. SELECT lo scarica e lo verifica, senza ancora scriverlo.",
-                )
-                .into(),
-                t(
-                    locale,
-                    "SELECT DOWNLOAD  UP/DOWN CHANNEL",
-                    "SELECT SCARICA  SU/GIÙ CANALE",
-                ),
-            ),
-            OtaCheckState::PreparingBootloader => (
-                t(locale, "Checking bootloader...", "Verifica bootloader..."),
-                None,
-                t(
-                    locale,
-                    "Downloading it and checking its signature.",
-                    "Scaricamento e controllo in corso.",
-                )
-                .into(),
-                "",
-            ),
-            OtaCheckState::BootloaderReady { new, .. } => (
-                t(locale, "Bootloader checked", "Bootloader verificato"),
-                Some((t(locale, "New", "Nuovo"), new.as_deref().unwrap_or(unknown))),
-                t(
-                    locale,
-                    "Writing it takes under a second. Do not switch off meanwhile: a cut then can only be fixed over USB. Needs the battery at 50% or the USB cable.",
-                    "La scrittura dura meno di un secondo. Non spegnere in quel momento: un'interruzione si ripara solo via USB. Serve la batteria al 50% o il cavo USB.",
-                )
-                .into(),
-                t(locale, "SELECT WRITE", "SELECT SCRIVI"),
-            ),
-            OtaCheckState::InstallingBootloader => (
-                t(locale, "Writing bootloader...", "Scrittura bootloader..."),
-                None,
-                t(
-                    locale,
-                    "Do not power off the device. It restarts when done.",
-                    "Non spegnere il dispositivo. Al termine si riavvia.",
-                )
-                .into(),
-                t(locale, "PLEASE WAIT", "ATTENDERE PREGO"),
-            ),
-            OtaCheckState::BootloaderInstalled => (
-                t(locale, "Bootloader updated", "Bootloader aggiornato"),
-                None,
-                t(locale, "Restarting...", "Riavvio in corso...").into(),
-                "",
-            ),
-            OtaCheckState::BootloaderDamaged(_) => (
-                t(locale, "Bootloader damaged", "Bootloader danneggiato"),
-                None,
-                t(
-                    locale,
-                    "The new bootloader did not read back intact. Do not switch the device off: it may not start again. SELECT writes it once more; if it still fails, connect the device to a computer over USB and reflash it.",
-                    "Il nuovo bootloader non si rilegge integro. Non spegnere il dispositivo: potrebbe non ripartire. SELECT lo riscrive; se non basta, collegalo a un computer via USB e riflashalo.",
-                )
-                .into(),
-                t(locale, "SELECT WRITE AGAIN", "SELECT RISCRIVI"),
-            ),
-            OtaCheckState::BootloaderFailed(error) => (
-                t(locale, "Bootloader not updated", "Bootloader non aggiornato"),
-                None,
-                error.clone(),
-                t(
-                    locale,
-                    "SELECT CHECK  UP/DOWN CHANNEL",
-                    "SELECT CONTROLLA  SU/GIÙ CANALE",
-                ),
-            ),
-            _ => (unknown, None, String::new(), ""),
-        };
-
-    Text::new(
-        heading,
-        Point::new(LEFT, STATUS_TOP),
-        state.display.heading_style(),
-    )
-    .draw(display)?;
-    let mut y = STATUS_TOP + 40;
-    if let Some((label, value)) = value {
-        line(display, y, label, value, body)?;
-        y += 40;
+    if !state.ota.can_check() {
+        return None;
     }
-    for text in wrap(body, &paragraph, TEXT_WIDTH) {
-        Text::new(&text, Point::new(LEFT, y), body).draw(display)?;
-        y += LINE_STEP;
-    }
-    draw_footer(display, state, footer)?;
-    Ok(())
-}
-
-fn wrap(style: UiTextStyle, text: &str, max_width: i32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_string()
-        } else {
-            format!("{current} {word}")
-        };
-        if !current.is_empty() && style.text_width(&candidate) > max_width {
-            lines.push(std::mem::replace(&mut current, word.to_string()));
-        } else {
-            current = candidate;
+    Some(match &state.ota {
+        OtaCheckState::UpdateAvailable { .. } if state.ota_install_armed => {
+            t(locale, "Confirm: install now", "Conferma: installa ora").to_string()
         }
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
+        OtaCheckState::UpdateAvailable { version, .. } => {
+            format!("{} {version}", t(locale, "Install", "Installa"))
+        }
+        OtaCheckState::CheckFailed(_) | OtaCheckState::InstallFailed(_) => {
+            t(locale, "Try again", "Riprova").to_string()
+        }
+        OtaCheckState::BootloaderAvailable { .. } => {
+            t(locale, "Download the bootloader", "Scarica il bootloader").to_string()
+        }
+        OtaCheckState::BootloaderReady { .. } => {
+            t(locale, "Write the bootloader", "Scrivi il bootloader").to_string()
+        }
+        OtaCheckState::BootloaderDamaged(_) => t(
+            locale,
+            "Write the bootloader again",
+            "Riscrivi il bootloader",
+        )
+        .to_string(),
+        _ => t(locale, "Check for updates", "Controlla aggiornamenti").to_string(),
+    })
 }
 
 fn channel_label(locale: Locale, channel: UpdateChannel) -> &'static str {
@@ -397,18 +350,6 @@ fn channel_label(locale: Locale, channel: UpdateChannel) -> &'static str {
         UpdateChannel::Stable => t(locale, "Stable", "Stabile"),
         UpdateChannel::Beta => "Beta",
     }
-}
-
-fn line(
-    display: &mut OrientedFrameBuffer<'_>,
-    y: i32,
-    label: &str,
-    value: &str,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    Text::new(label, Point::new(LEFT, y), style).draw(display)?;
-    Text::new(value, Point::new(194, y), style).draw(display)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -419,7 +360,7 @@ mod tests {
         bootloader_update::BootloaderAsset,
         framebuffer::FrameBuffer,
         orientation::OrientedFrameBuffer,
-        ota::{OtaCheckState, UpdateChannel},
+        ota::{InstallProgress, OtaCheckState, UpdateChannel},
     };
 
     #[test]
@@ -457,6 +398,17 @@ mod tests {
             ),
             OtaCheckState::BootloaderDamaged("readback".into()),
         ];
+        for progress in [
+            InstallProgress::new(300_000, None),
+            InstallProgress::new(900_000, Some(1_900_000)),
+        ] {
+            let mut frame = FrameBuffer::new_white();
+            let mut display = OrientedFrameBuffer::new(&mut frame, Default::default());
+            let mut state = AppState::default();
+            state.ota = OtaCheckState::Installing;
+            state.ota_install_progress = Some(progress);
+            render_ota_update(&mut display, &state).unwrap();
+        }
         for state_value in states {
             for channel in [UpdateChannel::Stable, UpdateChannel::Beta] {
                 let mut frame = FrameBuffer::new_white();

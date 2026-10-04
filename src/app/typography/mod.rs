@@ -13,6 +13,58 @@ use super::display::{DisplayPreferences, UiFontSize};
 
 mod assets;
 
+#[cfg(test)]
+pub mod audit {
+    use std::cell::RefCell;
+
+    use embedded_graphics::prelude::Point;
+
+    use super::{TextBounds, UiTextStyle};
+
+    #[derive(Clone, Debug)]
+    pub struct Rec {
+        pub text: String,
+        pub x: i32,
+        pub baseline: i32,
+        pub width: i32,
+        pub ink_top: i32,
+        pub ink_bottom: i32,
+        pub clip: Option<(i32, i32, i32, i32)>,
+    }
+
+    thread_local! {
+        static RECORDS: RefCell<Option<Vec<Rec>>> = const { RefCell::new(None) };
+    }
+
+    pub fn start() {
+        RECORDS.with(|records| *records.borrow_mut() = Some(Vec::new()));
+    }
+
+    pub fn take() -> Vec<Rec> {
+        RECORDS.with(|records| records.borrow_mut().take().unwrap_or_default())
+    }
+
+    pub fn record(text: &str, baseline: Point, style: UiTextStyle, bounds: Option<TextBounds>) {
+        RECORDS.with(|records| {
+            if let Some(list) = records.borrow_mut().as_mut() {
+                for (index, line) in text.split('\n').enumerate() {
+                    let (top, bottom) = style.text_ink_bounds(line);
+                    let y = baseline.y + index as i32 * i32::from(style.line_height());
+                    list.push(Rec {
+                        text: line.to_string(),
+                        x: baseline.x,
+                        baseline: y,
+                        width: style.text_width(line),
+                        ink_top: y + top,
+                        ink_bottom: y + bottom,
+                        clip: bounds.map(|b| (b.left, b.top, b.right, b.bottom)),
+                    });
+                }
+            }
+        });
+    }
+}
+
 /// One rasterized glyph: its ink box relative to the pen position on the
 /// text baseline, and how far the pen then advances.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,6 +284,8 @@ impl<'a> Text<'a> {
     where
         D: DrawTarget<Color = BinaryColor>,
     {
+        #[cfg(test)]
+        audit::record(self.text, self.baseline, self.style, bounds);
         let start_x = self.baseline.x;
         let mut cursor = self.baseline;
         for character in self.text.chars() {
@@ -420,6 +474,28 @@ mod tests {
             {
                 let glyph = font.glyph(character);
                 assert_ne!(glyph, font.glyph('?'), "missing {character}");
+            }
+        }
+    }
+
+    /// The percent sign is two rings joined by a slash, so every row of
+    /// its ink box has ink. The 12 px strike once came out of the rasterizer
+    /// as two smudges with blank rows between them, unreadable as "%" on
+    /// the battery and progress labels.
+    #[test]
+    fn the_percent_sign_is_whole_in_every_strike() {
+        for font in all_strikes() {
+            let glyph = font.glyph('%');
+            let stride = usize::from(glyph.width).div_ceil(8);
+            for row in 0..usize::from(glyph.height) {
+                let start = glyph.offset as usize + row * stride;
+                assert!(
+                    font.bitmap[start..start + stride]
+                        .iter()
+                        .any(|byte| *byte != 0),
+                    "blank row {row} in a {}-px-line strike",
+                    font.line_height
+                );
             }
         }
     }

@@ -73,8 +73,8 @@ mod firmware {
                 install_update_on_main_task, mark_running_slot_valid, poll_latest_release_check,
                 spawn_latest_release_check,
             },
-            OtaCheckState, OtaUiRequest, ReleaseCheckError, ReleaseInfo, UpdateChannel,
-            OTA_AUTO_CHECK_ENABLED, OTA_CHECK_INTERVAL_SECONDS, UPDATE_CONFIG_PATH,
+            InstallProgress, OtaCheckState, OtaUiRequest, ReleaseCheckError, ReleaseInfo,
+            UpdateChannel, OTA_AUTO_CHECK_ENABLED, OTA_CHECK_INTERVAL_SECONDS, UPDATE_CONFIG_PATH,
         },
         panel_refresh::{
             parse_sleep_timestamp, wake_uses_fast_waveform, PanelGlobalReason,
@@ -101,8 +101,8 @@ mod firmware {
         sleep_mode::{SleepModeState, SleepWakeCause},
         sleep_network::SleepNetworkState,
         storage::{
-            StorageBrowser, StorageSnapshot, StorageUiOutcome, SDMMC_COMMAND_TIMEOUT_MS,
-            SDMMC_STABLE_SPEED_KHZ, SD_MOUNT_POINT, STORAGE_IO_RETRY_ATTEMPTS,
+            StorageBrowser, StorageSnapshot, SDMMC_COMMAND_TIMEOUT_MS, SDMMC_STABLE_SPEED_KHZ,
+            SD_MOUNT_POINT, STORAGE_IO_RETRY_ATTEMPTS,
         },
         usb_disk::{self, UsbDiskPhase},
         wifi_transfer::{
@@ -1548,6 +1548,24 @@ mod firmware {
                 }
             }
 
+            // The audiobook sleep timer: when it is up the player is
+            // stopped, which also saves where the title got to.
+            if state.audiobooks.tick_sleep_timer(Instant::now()) {
+                if let Some(request) = state.audiobooks.take_request() {
+                    info!("rustmix-wave=audiobook-sleep-timer status=elapsed");
+                    apply_player_request(audio_engine.as_ref(), &mut state, request);
+                }
+                if state.panel_awake && state.active_route() == ScreenRoute::AudiobookPlayer {
+                    refresh_screen(
+                        &mut panel,
+                        &mut frame,
+                        &mut state,
+                        &mut panel_refresh,
+                        RefreshRequest::Normal,
+                    )?;
+                }
+            }
+
             if !sleep_network.is_suspended() {
                 if let Some(utc) = network_runtime.tick() {
                     info!(
@@ -1575,6 +1593,14 @@ mod firmware {
                 if latest_network != state.network {
                     state.update_network_snapshot(latest_network);
                 }
+                // Also here, not only after a key press: a "Connect" that
+                // just failed asks for the saved list to be tried again.
+                apply_network_connect_ui_request(
+                    &mut network_runtime,
+                    &network_config,
+                    &mut state,
+                    &wifi_transfer_server,
+                );
                 if let Some(scan_result) = network_runtime.poll_scan() {
                     if let Some(server) = wifi_transfer_server.as_ref() {
                         server.set_scan_results(scan_result.unwrap_or_default());
@@ -1980,7 +2006,29 @@ mod firmware {
                         log_runtime_memory("before-release-parked-sessions");
                         state.reader.release_parked_sessions_for_install();
                         log_runtime_memory("after-release-parked-sessions");
-                        match install_update_on_main_task(download_url) {
+                        // The download redraws the Update screen as it
+                        // advances; the closure borrows the panel and the
+                        // state only until the install returns.
+                        let installed = {
+                            let mut on_progress = |progress: InstallProgress| {
+                                state.ota_install_progress = Some(progress);
+                                if state.panel_awake
+                                    && state.active_route() == ScreenRoute::OtaUpdate
+                                {
+                                    if let Err(error) = refresh_screen(
+                                        &mut panel,
+                                        &mut frame,
+                                        &mut state,
+                                        &mut panel_refresh,
+                                        RefreshRequest::Normal,
+                                    ) {
+                                        warn!("rustmix-wave=ota-install status=progress-redraw-failed error={error:#}");
+                                    }
+                                }
+                            };
+                            install_update_on_main_task(download_url, &mut on_progress)
+                        };
+                        match installed {
                             Ok(()) => {
                                 info!(
                                     "rustmix-wave=ota-install status=rebooting version={version}"
@@ -2310,6 +2358,16 @@ mod firmware {
                         let previous_route = state.active_route();
                         if previous_route == ScreenRoute::Home {
                             info!("rustmix-wave=hierarchical-back outcome=ignored route=home");
+                        } else if previous_route == ScreenRoute::Files && storage_browser.go_back()
+                        {
+                            // In Files BOOT first drops a pending delete,
+                            // closes the preview or goes up one folder; only
+                            // from the card's top folder does it leave.
+                            state.update_storage_snapshot(storage_browser.snapshot());
+                            info!(
+                                "rustmix-wave=storage-browser-event outcome=back path={}",
+                                state.storage.current_path
+                            );
                         } else {
                             state.back();
                             apply_portal_ui_request(
@@ -2406,10 +2464,30 @@ mod firmware {
                             && !network_saved_context
                             && !library_book_actions_context
                             && state.apply_audiobook_select_long_press();
+                        let bookmark_delete_context = !reader_dictionary_context
+                            && !network_saved_context
+                            && !library_book_actions_context
+                            && !audiobook_menu_context
+                            && state.apply_bookmark_select_long_press();
+                        // Files: a held SELECT on a file asks to delete it;
+                        // the next SELECT confirms.
+                        let files_delete_context = !reader_dictionary_context
+                            && !network_saved_context
+                            && !library_book_actions_context
+                            && !audiobook_menu_context
+                            && !bookmark_delete_context
+                            && state.active_route() == ScreenRoute::Files
+                            && storage_browser.request_delete();
+                        if files_delete_context {
+                            state.update_storage_snapshot(storage_browser.snapshot());
+                            info!("rustmix-wave=storage-delete status=awaiting-confirmation");
+                        }
                         if reader_dictionary_context
                             || network_saved_context
                             || library_book_actions_context
                             || audiobook_menu_context
+                            || bookmark_delete_context
+                            || files_delete_context
                         {
                             if reader_dictionary_context {
                                 info!(
@@ -2422,9 +2500,15 @@ mod firmware {
                             }
                             if network_saved_context {
                                 info!(
-                                "rustmix-wave=network-saved-forget-confirm outcome=toggled armed={}",
-                                state.network_saved.confirming_forget
-                            );
+                                    "rustmix-wave=network-saved-menu outcome=opened open={}",
+                                    state.network_saved.menu.is_some()
+                                );
+                            }
+                            if bookmark_delete_context {
+                                info!(
+                                    "rustmix-wave=bookmark-delete outcome=deleted route={}",
+                                    state.active_route().marker()
+                                );
                             }
                             if library_book_actions_context {
                                 info!(
@@ -2513,6 +2597,24 @@ mod firmware {
                                 }
                                 apply_player_request(audio_engine.as_ref(), &mut state, request);
                             }
+                            // "Restart" from the Power-key menu: what is
+                            // still only in memory is saved first.
+                            if state.take_restart_request() {
+                                info!(
+                                    "rustmix-wave=restart status=requested source=power-key-menu"
+                                );
+                                reading_stats_tracker.close_session(STATS_DIRECTORY);
+                                state.reader.flush_pending_persist();
+                                if let Some(engine) = audio_engine.as_ref() {
+                                    engine.send(AudioCommand::Player(PlayerCommand::Stop));
+                                    engine.suspend();
+                                    state
+                                        .audiobooks
+                                        .update_now_playing(engine.current().now_playing);
+                                }
+                                save_audiobook_positions(&state);
+                                restart();
+                            }
                             // "Connect to PC": close everything that uses
                             // the card, unmount it and hand it to the PC.
                             // One way: this ends in a restart.
@@ -2589,6 +2691,12 @@ mod firmware {
                             &mut portal_via_hotspot,
                             &mut portal_lan_recovering,
                             &mut storage_browser,
+                        );
+                        apply_network_connect_ui_request(
+                            &mut network_runtime,
+                            &network_config,
+                            &mut state,
+                            &wifi_transfer_server,
                         );
                         apply_clock_set_time_ui_request(&mut board_services, &mut state);
                         apply_clock_set_timezone_ui_request(&mut network_config, &mut state);
@@ -2850,7 +2958,6 @@ mod firmware {
                 }
                 *lan_recovering = false;
                 state.update_wifi_transfer_snapshot(WifiTransferSnapshot::starting());
-                let code = format!("{:06}", unsafe { sys::esp_random() } % 1_000_000);
                 // Free the background-warmed book sessions first, exactly as
                 // the OTA install does: they hold ~30 KB of internal RAM
                 // (allocations up to SPIRAM_MALLOC_ALWAYSINTERNAL land there),
@@ -2865,7 +2972,7 @@ mod firmware {
                 log_runtime_memory("before-wifi-transfer-start");
                 if let Some(ipv4) = state.network.ipv4_address.clone() {
                     info!("rustmix-wave=wifi-transfer-server status=starting mode=lan ipv4={ipv4} port=80 root={WIFI_TRANSFER_ROOT} stack-bytes={WIFI_TRANSFER_SERVER_STACK_BYTES}");
-                    match WifiTransferServer::start_lan(&ipv4, code) {
+                    match WifiTransferServer::start_lan(&ipv4) {
                         Ok(active) => {
                             active.set_saved_networks(saved_ssids(network_config));
                             *via_hotspot = false;
@@ -2903,7 +3010,6 @@ mod firmware {
                         &ap_info.portal_ip,
                         ap_info.ap_ssid.clone(),
                         ap_info.ap_password.clone(),
-                        code,
                     ) {
                         Ok(active) => {
                             active.set_saved_networks(saved_ssids(network_config));
@@ -3225,6 +3331,53 @@ mod firmware {
             .as_ref()
             .map_or(0, |config| config.networks.len());
         info!("rustmix-wave=network-saved-forget status=completed ssid={ssid}");
+    }
+
+    /// Connect to the saved network chosen on the "Saved networks" screen,
+    /// or reconnect with the whole saved list: "Retry connection" on the
+    /// Network screen, and the automatic recovery after a "Connect" that
+    /// failed (see `AppState::settle_network_join`). Both only start the
+    /// handshake; `NetworkRuntime::tick` carries it on, so nothing blocks
+    /// here. Ignored while the portal runs, which owns the radio.
+    fn apply_network_connect_ui_request(
+        runtime: &mut NetworkRuntime,
+        network_config: &Option<NetworkConfig>,
+        state: &mut AppState,
+        server: &Option<WifiTransferServer>,
+    ) {
+        let join = state.take_network_join_request();
+        let retry = state.take_network_retry_request();
+        if join.is_none() && !retry {
+            return;
+        }
+        if server.is_some() || runtime.is_suspended() {
+            warn!("rustmix-wave=network-connect-request status=ignored reason=radio-busy");
+            return;
+        }
+        let Some(config) = network_config.as_ref() else {
+            return;
+        };
+        let chosen = join
+            .as_deref()
+            .and_then(|ssid| config.networks.iter().find(|network| network.ssid == ssid));
+        let result = match chosen {
+            Some(network) => {
+                info!(
+                    "rustmix-wave=network-connect-request action=join ssid={}",
+                    network.ssid
+                );
+                runtime.try_join_candidate(network.ssid.clone(), network.password.clone())
+            }
+            None => {
+                info!("rustmix-wave=network-connect-request action=reconnect-saved-list");
+                runtime.stop_provisioning(Some(config))
+            }
+        };
+        if let Err(error) = result {
+            warn!("rustmix-wave=network-connect-request status=failed error={error:#}");
+            runtime.record_resume_failure(format!("{error:#}"));
+        }
+        state.update_network_snapshot(runtime.snapshot());
     }
 
     fn suspend_network(
@@ -3810,9 +3963,6 @@ mod firmware {
             state.note_select_press();
         }
         let outcome = browser.apply_button(event);
-        if outcome == StorageUiOutcome::ReturnHome {
-            state.router.back();
-        }
         state.update_storage_snapshot(browser.snapshot());
         info!(
             "rustmix-wave=storage-browser-event outcome={outcome:?} path={} entries={} retained-entries={} raw-entries={} selected={} preview={}",

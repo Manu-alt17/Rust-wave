@@ -10,7 +10,10 @@
 //! radio changes, while `start_ap` is used instead when no Wi-Fi is joined
 //! yet, bootstrapping the device's own hotspot first (via
 //! `NetworkRuntime::start_provisioning`) so the portal -- Wi-Fi setup tab
-//! included -- is reachable there instead. The target-specific HTTP server
+//! included -- is reachable there instead. The portal asks for no code:
+//! reaching its address while it is open is enough, and only requests sent
+//! by another site's page are refused (`is_same_origin_request`). The
+//! target-specific HTTP server
 //! owns its own ESP-IDF task while the main loop retains display, routing
 //! and sleep ownership.
 
@@ -35,8 +38,6 @@ pub const WIFI_TRANSFER_MAX_PATH_BYTES: usize = 128;
 pub const WIFI_TRANSFER_INACTIVITY_SECONDS: u64 = 10 * 60;
 /// The first slice uses the conventional LAN HTTP port.
 pub const WIFI_TRANSFER_HTTP_PORT: u16 = 80;
-/// One authenticated browser session code is shown on the e-paper screen.
-pub const WIFI_TRANSFER_CODE_DIGITS: usize = 6;
 /// Bound one directory listing to protect the HTTP task heap.
 pub const WIFI_TRANSFER_MAX_DIRECTORY_ROWS: usize = 256;
 /// Stop a forgotten hotspot-bootstrap session after five minutes without HTTP
@@ -134,7 +135,6 @@ impl WifiTransferState {
 pub struct WifiTransferSnapshot {
     pub state: WifiTransferState,
     pub url: Option<String>,
-    pub code: Option<String>,
     /// `Some` only while reachable via the bootstrap hotspot instead of an
     /// already-joined LAN (see the module docs); drives which card the
     /// on-device screen and the portal's Wi-Fi tab show.
@@ -151,7 +151,6 @@ impl Default for WifiTransferSnapshot {
         Self {
             state: WifiTransferState::Off,
             url: None,
-            code: None,
             ap_ssid: None,
             ap_password: None,
             join: JoinAttemptState::Idle,
@@ -194,11 +193,28 @@ impl WifiTransferSnapshot {
     pub fn url_label(&self) -> &str {
         self.url.as_deref().unwrap_or("--")
     }
+}
 
-    #[must_use]
-    pub fn code_label(&self) -> &str {
-        self.code.as_deref().unwrap_or("------")
-    }
+/// Whether a request that changes something (upload, delete, rename, Wi-Fi
+/// setup) may be served, going by its `Origin` and `Host` headers.
+///
+/// The portal asks for no code: whoever reaches its address while it is open
+/// may use it. What must still be refused is a request the user never made:
+/// any web page open in a browser on the same network can make that browser
+/// send a POST to this address. A browser states the page such a request
+/// comes from in `Origin`, so one naming another site is refused. A request
+/// without `Origin` (not sent by a page's script) is served.
+#[must_use]
+pub fn is_same_origin_request(origin: Option<&str>, host: Option<&str>) -> bool {
+    let Some(origin) = origin.map(str::trim).filter(|origin| !origin.is_empty()) else {
+        return true;
+    };
+    let Some(host) = host.map(str::trim).filter(|host| !host.is_empty()) else {
+        return false;
+    };
+    origin
+        .strip_prefix("http://")
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
 }
 
 /// Resolve one portal path, as it arrives from [`query_value`] (already
@@ -340,8 +356,8 @@ pub mod espidf {
     use crate::storage::SD_MOUNT_POINT;
 
     use super::{
-        is_protected_portal_path, query_value, resolve_portal_path, JoinAttemptState,
-        PendingJoinRequest, WifiTransferSnapshot, WifiTransferState,
+        is_protected_portal_path, is_same_origin_request, query_value, resolve_portal_path,
+        JoinAttemptState, PendingJoinRequest, WifiTransferSnapshot, WifiTransferState,
         NETWORK_PROVISION_INACTIVITY_SECONDS, WIFI_TRANSFER_HTTP_PORT,
         WIFI_TRANSFER_INACTIVITY_SECONDS, WIFI_TRANSFER_MAX_DIRECTORY_ROWS,
         WIFI_TRANSFER_MAX_UPLOAD_BYTES, WIFI_TRANSFER_ROOT, WIFI_TRANSFER_SERVER_STACK_BYTES,
@@ -410,12 +426,6 @@ th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;
 .bg-preview{width:100%;max-width:480px;height:auto;display:block;margin:.6rem auto;border-radius:8px;image-rendering:pixelated;border:1px solid var(--border)}
 .search-row{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem}
 .search-row input[type=text]{flex:1;min-width:10rem}
-.lock{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:1rem;z-index:50}
-.lock-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.6rem;max-width:320px;width:100%;text-align:center}
-.lock-card h1{margin:0 0 .4rem;font-size:1.25rem}
-.lock-card input{width:100%;text-align:center;letter-spacing:.4em;font-size:1.4rem;margin:1rem 0 .6rem;padding:.6rem}
-.lock-card button{width:100%;padding:.6rem;margin-top:.3rem}
-.lock-error{color:var(--danger);font-size:.85rem;min-height:1.2em;margin:.6rem 0 0}
 .tabs{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.8rem}
 .tab{border:1px solid var(--border);background:var(--card);color:var(--muted);border-radius:999px;padding:.55rem 1.1rem;cursor:pointer;font-size:.9rem}
 .tab.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
@@ -429,25 +439,15 @@ th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;
 .book-card .actions{margin-top:auto;display:flex;gap:.4rem}
 .book-card .actions a,.book-card .actions button{padding:.3rem .5rem;font-size:.75rem;flex:1;text-align:center;text-decoration:none}
 </style></head><body>
-<div class="lock" id="lock">
-<div class="lock-card">
-<h1>Rustmix-Wave</h1>
-<p class="hint">Inserisci il codice a sei cifre mostrato sul dispositivo per accedere.</p>
-<input id="lockCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" onkeydown="if(event.key==='Enter')unlock()">
-<button class="primary" onclick="unlock()">Sblocca</button>
-<p class="lock-error" id="lockError"></p>
-</div>
-</div>
-<div class="wrap" id="app" hidden>
+<div class="wrap" id="app">
 <header class="top">
 <div>
 <h1>Rustmix-Wave</h1>
-<p class="hint" style="margin:.15rem 0 0">Gestisci libri, sfondi e token dal browser</p>
+<p class="hint" style="margin:.15rem 0 0">Gestisci libri, sfondi, file e reti Wi-Fi dal browser</p>
 </div>
 <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
 <span class="badge" id="space">Spazio: --</span>
 <button onclick="refreshActiveTab()">Aggiorna</button>
-<button onclick="lockOut()">Blocca</button>
 </div>
 </header>
 <nav class="tabs">
@@ -547,49 +547,11 @@ let current='/',entries=[],selected=new Set(),activeTab='books',books=[];
 function status(t){document.getElementById('status').textContent=t}
 function enc(s){return encodeURIComponent(s)}
 function join(n){return (current==='/'?'/':current+'/')+n}
-function getCode(){return localStorage.rustmixCode||''}
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function formatBytes(n){if(n===undefined||n===null)return '--';const u=['B','KB','MB','GB'];let i=0,v=n;while(v>=1024&&i<u.length-1){v/=1024;i++}return (i===0?v:v.toFixed(1))+' '+u[i]}
-async function api(url,opt){let sep=url.includes('?')?'&':'?';let r=await fetch(url+sep+'code='+enc(getCode()),opt);let t=await r.text();if(!r.ok)throw new Error(t||('HTTP '+r.status));return t}
+async function api(url,opt){let r=await fetch(url,opt);let t=await r.text();if(!r.ok)throw new Error(t||('HTTP '+r.status));return t}
 async function fetchSpace(){try{let s=JSON.parse(await api('/api/status'));document.getElementById('space').textContent='Spazio libero: '+formatBytes(s.free_bytes)+' / '+formatBytes(s.total_bytes)}catch(e){}}
 async function ensureDir(path){try{await api('/api/list?path='+enc(path))}catch(e){try{await api('/api/mkdir?path='+enc(path),{method:'POST'})}catch(e2){}}}
-
-// --- accesso: nessuna chiamata verso i dati del dispositivo avviene prima
-// che il codice a sei cifre mostrato sul pannello sia stato verificato.
-function lockError(t){document.getElementById('lockError').textContent=t}
-async function unlock(){
-  let code=document.getElementById('lockCode').value.trim();
-  if(!/^\d{6}$/.test(code)){lockError('Inserisci le sei cifre mostrate sul dispositivo.');return}
-  lockError('Verifica in corso...');
-  try{
-    let r=await fetch('/api/status?code='+enc(code));
-    if(!r.ok)throw new Error('invalid');
-    localStorage.rustmixCode=code;
-    enterApp();
-  }catch(e){lockError('Codice non valido, riprova.')}
-}
-function lockOut(){
-  delete localStorage.rustmixCode;
-  document.getElementById('app').hidden=true;
-  document.getElementById('lock').hidden=false;
-  document.getElementById('lockCode').value='';
-  lockError('');
-  document.getElementById('lockCode').focus();
-}
-function enterApp(){
-  document.getElementById('lock').hidden=true;
-  document.getElementById('app').hidden=false;
-  initApp();
-}
-async function tryAutoUnlock(){
-  let saved=localStorage.rustmixCode;
-  if(!saved){document.getElementById('lockCode').focus();return}
-  try{
-    let r=await fetch('/api/status?code='+enc(saved));
-    if(!r.ok)throw new Error('invalid');
-    enterApp();
-  }catch(e){document.getElementById('lockCode').focus()}
-}
 
 // --- schede ---
 function showTab(name){
@@ -641,7 +603,7 @@ function createUploader(opts){
       let xhr=new XMLHttpRequest();
       let dir=opts.getDir();
       let path=(dir==='/'?'/':dir+'/')+item.name;
-      let url='/api/upload?path='+enc(path)+'&code='+enc(getCode());
+      let url='/api/upload?path='+enc(path);
       xhr.open('POST',url);
       xhr.upload.onprogress=function(e){if(e.lengthComputable){item.progress=Math.round(e.loaded/e.total*100);render()}};
       xhr.onload=function(){if(xhr.status>=200&&xhr.status<300)resolve();else reject(new Error(xhr.responseText||('HTTP '+xhr.status)))};
@@ -694,7 +656,7 @@ function coverFingerprint(absPath,sizeBytes,modifiedSeconds){
   const u64=n=>{let v=BigInt(Math.trunc(n));for(let i=0;i<8;i++){buf.push(Number(v&0xffn));v>>=8n}};
   const u16=n=>{buf.push(n&0xff);buf.push((n>>8)&0xff)};
   // The last string is the firmware's COVER_CACHE_FORMAT_VERSION: the two must match.
-  str(absPath);u64(sizeBytes);u64(modifiedSeconds);str('epub');u16(COVER_THUMB_W);u16(COVER_THUMB_H);str('4');
+  str(absPath);u64(sizeBytes);u64(modifiedSeconds);str('epub');u16(COVER_THUMB_W);u16(COVER_THUMB_H);str('5');
   return fnv1a64(Uint8Array.from(buf));
 }
 function zipParseCentralDirectory(bytes){
@@ -770,11 +732,9 @@ async function buildCoverBits(imageBytes,mediaType){
   // Transparency on white, as the firmware draws it: a bare canvas reads
   // back transparent pixels as black.
   ctx.fillStyle='#fff';ctx.fillRect(0,0,COVER_THUMB_W,COVER_THUMB_H);
-  // Centre-crop to the cell's shape, as the firmware does: stretching made
-  // a 2:3 cover a quarter too wide.
-  let sx=0,sy=0,sw=bitmap.width,sh=bitmap.height,cell=COVER_THUMB_W/COVER_THUMB_H;
-  if(sw/sh>cell){let w=Math.round(sh*cell);sx=Math.floor((sw-w)/2);sw=w}else{let h=Math.round(sw/cell);sy=Math.floor((sh-h)/2);sh=h}
-  ctx.drawImage(bitmap,sx,sy,sw,sh,0,0,COVER_THUMB_W,COVER_THUMB_H);
+  // The whole cover stretched to the cell's shape, as the firmware does:
+  // the centre crop cut the edges off.
+  ctx.drawImage(bitmap,0,0,COVER_THUMB_W,COVER_THUMB_H);
   let imageData=ctx.getImageData(0,0,COVER_THUMB_W,COVER_THUMB_H);
   let lum=computeLuminance(imageData.data,COVER_THUMB_W,COVER_THUMB_H,0,0);
   let dithered=ditherFloydSteinberg(lum,COVER_THUMB_W,COVER_THUMB_H);
@@ -848,8 +808,8 @@ function renderBooks(){
   let visible=books.filter(b=>!q||b.title.toLowerCase().includes(q));
   let html='';
   for(const b of visible){
-    let coverUrl='/api/cover?path='+enc(b.path)+'&code='+enc(getCode());
-    html+='<div class="book-card"><div class="book-cover"><img src="'+coverUrl+'" alt="" loading="lazy" onerror="this.parentElement.classList.add(\'empty\')"></div><div class="book-title">'+escapeHtml(b.title)+'</div><div class="hint">'+b.format+' &middot; '+formatBytes(b.size)+'</div><div class="actions"><a href="/api/download?code='+enc(getCode())+'&path='+enc(b.path)+'">Scarica</a><button class="danger" data-p="'+escapeHtml(b.path)+'" onclick="deleteBook(this.dataset.p)">Elimina</button></div></div>';
+    let coverUrl='/api/cover?path='+enc(b.path);
+    html+='<div class="book-card"><div class="book-cover"><img src="'+coverUrl+'" alt="" loading="lazy" onerror="this.parentElement.classList.add(\'empty\')"></div><div class="book-title">'+escapeHtml(b.title)+'</div><div class="hint">'+b.format+' &middot; '+formatBytes(b.size)+'</div><div class="actions"><a href="/api/download?path='+enc(b.path)+'">Scarica</a><button class="danger" data-p="'+escapeHtml(b.path)+'" onclick="deleteBook(this.dataset.p)">Elimina</button></div></div>';
   }
   document.getElementById('bookGrid').innerHTML=html||'<p class="hint">Nessun libro caricato. Trascina un file EPUB o TXT qui sopra per iniziare.</p>';
 }
@@ -864,7 +824,7 @@ async function deleteBook(path){
 function crumbsHtml(path){let parts=path.split('/').filter(Boolean);let html='<a onclick="loadList(\'/\')">RUSTMIX</a>';let acc='';for(const p of parts){acc+='/'+p;html+='<span>/</span><a data-p="'+escapeHtml(acc)+'" onclick="loadList(this.dataset.p)">'+escapeHtml(p)+'</a>'}return html}
 async function loadList(path){try{current=path;let t=await api('/api/list?path='+enc(path));entries=JSON.parse(t);selected.clear();document.getElementById('crumbs').innerHTML=crumbsHtml(path);renderTable();status('Pronto - '+entries.length+' elementi');fetchSpace()}catch(e){status('Errore: '+e.message)}}
 function matchesSearch(name){let q=document.getElementById('search').value.trim().toLowerCase();return !q||name.toLowerCase().includes(q)}
-function renderTable(){let rows='';if(current!=='/')rows+='<tr><td></td><td colspan="3"><button onclick="up()">.. Su</button></td></tr>';let visible=entries.filter(e=>matchesSearch(e.name));for(const e of visible){let p=join(e.name);let checked=selected.has(e.name)?'checked':'';let kindLabel=e.kind==='folder'?'<span class="kind-folder">cartella</span>':'file';let ep=escapeHtml(p);let openOrDownload=e.kind==='folder'?'<button data-p="'+ep+'" onclick="loadList(this.dataset.p)">Apri</button>':'<a href="/api/download?code='+enc(getCode())+'&path='+enc(p)+'">Scarica</a>';rows+='<tr><td><input type="checkbox" '+checked+' data-n="'+escapeHtml(e.name)+'" onchange="toggleSelect(this.dataset.n,this.checked)"></td><td>'+escapeHtml(e.name)+'</td><td>'+kindLabel+'</td><td>'+(e.kind==='folder'?'':formatBytes(e.size))+'</td><td class="actions">'+openOrDownload+' <button data-p="'+ep+'" onclick="renamePath(this.dataset.p)">Rinomina</button> <button class="danger" data-p="'+ep+'" onclick="deletePath(this.dataset.p)">Elimina</button></td></tr>'}document.getElementById('rows').innerHTML=rows||'<tr><td colspan="5" class="hint">Nessun elemento</td></tr>';document.getElementById('selectAll').checked=visible.length>0&&visible.every(e=>selected.has(e.name));updateBulkBar()}
+function renderTable(){let rows='';if(current!=='/')rows+='<tr><td></td><td colspan="3"><button onclick="up()">.. Su</button></td></tr>';let visible=entries.filter(e=>matchesSearch(e.name));for(const e of visible){let p=join(e.name);let checked=selected.has(e.name)?'checked':'';let kindLabel=e.kind==='folder'?'<span class="kind-folder">cartella</span>':'file';let ep=escapeHtml(p);let openOrDownload=e.kind==='folder'?'<button data-p="'+ep+'" onclick="loadList(this.dataset.p)">Apri</button>':'<a href="/api/download?path='+enc(p)+'">Scarica</a>';rows+='<tr><td><input type="checkbox" '+checked+' data-n="'+escapeHtml(e.name)+'" onchange="toggleSelect(this.dataset.n,this.checked)"></td><td>'+escapeHtml(e.name)+'</td><td>'+kindLabel+'</td><td>'+(e.kind==='folder'?'':formatBytes(e.size))+'</td><td class="actions">'+openOrDownload+' <button data-p="'+ep+'" onclick="renamePath(this.dataset.p)">Rinomina</button> <button class="danger" data-p="'+ep+'" onclick="deletePath(this.dataset.p)">Elimina</button></td></tr>'}document.getElementById('rows').innerHTML=rows||'<tr><td colspan="5" class="hint">Nessun elemento</td></tr>';document.getElementById('selectAll').checked=visible.length>0&&visible.every(e=>selected.has(e.name));updateBulkBar()}
 function up(){let p=current.split('/').filter(Boolean);p.pop();loadList('/'+p.join('/'))}
 function toggleSelect(name,checked){if(checked)selected.add(name);else selected.delete(name);renderTable()}
 function toggleSelectAll(checked){let visible=entries.filter(e=>matchesSearch(e.name));for(const e of visible){if(checked)selected.add(e.name);else selected.delete(e.name)}renderTable()}
@@ -1053,7 +1013,7 @@ async function uploadBackground(){
     let blob=new Blob([bytes],{type:'application/octet-stream'});
     await new Promise((resolve,reject)=>{
       let xhr=new XMLHttpRequest();
-      let url='/api/upload?path='+enc('/SLEEP/'+name)+'&code='+enc(getCode());
+      let url='/api/upload?path='+enc('/SLEEP/'+name);
       xhr.open('POST',url);
       xhr.upload.onprogress=function(e){if(e.lengthComputable)bgStatus('Caricamento '+Math.round(e.loaded/e.total*100)+'%')};
       xhr.onload=function(){if(xhr.status>=200&&xhr.status<300)resolve();else reject(new Error(xhr.responseText||('HTTP '+xhr.status)))};
@@ -1072,7 +1032,7 @@ async function refreshSleepGallery(){
     let list=JSON.parse(t).filter(e=>e.kind==='file');
     let html='';
     for(const e of list){
-      let url='/api/download?code='+enc(getCode())+'&path='+enc('/SLEEP/'+e.name);
+      let url='/api/download?path='+enc('/SLEEP/'+e.name);
       html+='<div class="book-card"><div class="book-cover"><img src="'+url+'" alt="" loading="lazy" onerror="this.parentElement.classList.add(\'empty\')"></div><div class="book-title">'+escapeHtml(e.name)+'</div><div class="actions"><a href="'+url+'">Scarica</a><button class="danger" onclick="deleteSleepImage(\''+e.name+'\')">Elimina</button></div></div>';
     }
     document.getElementById('sleepGallery').innerHTML=html||'<p class="hint">Nessuno sfondo caricato.</p>';
@@ -1177,7 +1137,7 @@ async function wifiPollJoinStatus(){
 }
 setInterval(()=>{if(activeTab==='wifi')wifiLoadScan()},12000);
 
-tryAutoUnlock();
+initApp();
 </script></body></html>"##;
 
     #[derive(Debug)]
@@ -1202,17 +1162,11 @@ tryAutoUnlock();
     }
 
     impl SharedStatus {
-        fn new(
-            url: String,
-            code: String,
-            ap_ssid: Option<String>,
-            ap_password: Option<String>,
-        ) -> Self {
+        fn new(url: String, ap_ssid: Option<String>, ap_password: Option<String>) -> Self {
             Self {
                 snapshot: WifiTransferSnapshot {
                     state: WifiTransferState::Ready,
                     url: Some(url),
-                    code: Some(code),
                     ap_ssid,
                     ap_password,
                     join: JoinAttemptState::Idle,
@@ -1259,21 +1213,16 @@ tryAutoUnlock();
     impl WifiTransferServer {
         /// Start reachable on the LAN address the device already has (no
         /// radio changes): the common case once Wi-Fi is configured.
-        pub fn start_lan(ipv4: &str, code: String) -> Result<Self> {
+        pub fn start_lan(ipv4: &str) -> Result<Self> {
             let url = format!("http://{ipv4}/");
-            Self::start_inner(url, code, None)
+            Self::start_inner(url, None)
         }
 
         /// Start reachable via the device's own bootstrap hotspot instead,
         /// for when no Wi-Fi is joined yet. `ap_ssid`/`ap_password` come from
         /// the `NetworkRuntime::start_provisioning` call the caller is
         /// expected to have just made.
-        pub fn start_ap(
-            portal_ip: &str,
-            ap_ssid: String,
-            ap_password: String,
-            code: String,
-        ) -> Result<Self> {
+        pub fn start_ap(portal_ip: &str, ap_ssid: String, ap_password: String) -> Result<Self> {
             let answer_ip = portal_ip
                 .parse::<std::net::Ipv4Addr>()
                 .with_context(|| format!("portal IP is not a valid IPv4 address: {portal_ip}"))?
@@ -1283,12 +1232,11 @@ tryAutoUnlock();
             // lands on this HTTP server and the OS offers to open it.
             let dns = CaptivePortalDns::start(answer_ip)?;
             let url = format!("http://{portal_ip}/");
-            Self::start_inner(url, code, Some((ap_ssid, ap_password, dns)))
+            Self::start_inner(url, Some((ap_ssid, ap_password, dns)))
         }
 
         fn start_inner(
             url: String,
-            code: String,
             ap: Option<(String, String, CaptivePortalDns)>,
         ) -> Result<Self> {
             // Suspend Wi-Fi modem-sleep for the life of the portal session:
@@ -1306,7 +1254,6 @@ tryAutoUnlock();
             };
             let shared = Arc::new(Mutex::new(SharedStatus::new(
                 url.clone(),
-                code.clone(),
                 ap_ssid,
                 ap_password,
             )));
@@ -1341,9 +1288,7 @@ tryAutoUnlock();
             })?;
 
             let list_shared = Arc::clone(&shared);
-            let list_code = code.clone();
             server.fn_handler("/api/list", Method::Get, move |request| {
-                authenticate(request.uri(), &list_code)?;
                 let relative = query_value(request.uri(), "path").unwrap_or_else(|| "/".into());
                 let body = list_directory_json(&relative)?;
                 lock(&list_shared).touch(format!("Listed {relative}"), body.len());
@@ -1352,9 +1297,7 @@ tryAutoUnlock();
             })?;
 
             let download_shared = Arc::clone(&shared);
-            let download_code = code.clone();
             server.fn_handler("/api/download", Method::Get, move |request| {
-                authenticate(request.uri(), &download_code)?;
                 let relative = required_query(request.uri(), "path")?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 let mut file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
@@ -1373,9 +1316,8 @@ tryAutoUnlock();
             })?;
 
             let upload_shared = Arc::clone(&shared);
-            let upload_code = code.clone();
             server.fn_handler("/api/upload", Method::Post, move |mut request| {
-                authenticate(request.uri(), &upload_code)?;
+                ensure_same_origin(request.header("Origin"), request.header("Host"))?;
                 let relative = required_query(request.uri(), "path")?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 let temporary = temporary_path(&path)?;
@@ -1414,9 +1356,8 @@ tryAutoUnlock();
             })?;
 
             let delete_shared = Arc::clone(&shared);
-            let delete_code = code.clone();
             server.fn_handler("/api/delete", Method::Post, move |request| {
-                authenticate(request.uri(), &delete_code)?;
+                ensure_same_origin(request.header("Origin"), request.header("Host"))?;
                 let relative = required_query(request.uri(), "path")?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 if path.is_dir() { fs::remove_dir(&path)?; } else { fs::remove_file(&path)?; }
@@ -1427,9 +1368,8 @@ tryAutoUnlock();
             })?;
 
             let mkdir_shared = Arc::clone(&shared);
-            let mkdir_code = code.clone();
             server.fn_handler("/api/mkdir", Method::Post, move |request| {
-                authenticate(request.uri(), &mkdir_code)?;
+                ensure_same_origin(request.header("Origin"), request.header("Host"))?;
                 let relative = required_query(request.uri(), "path")?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 fs::create_dir(&path)?;
@@ -1440,9 +1380,8 @@ tryAutoUnlock();
             })?;
 
             let rename_shared = Arc::clone(&shared);
-            let rename_code = code.clone();
             server.fn_handler("/api/rename", Method::Post, move |request| {
-                authenticate(request.uri(), &rename_code)?;
+                ensure_same_origin(request.header("Origin"), request.header("Host"))?;
                 let from = required_query(request.uri(), "from")?;
                 let to = required_query(request.uri(), "to")?;
                 let source = resolve_portal_path(&from).map_err(|error| anyhow!(error))?;
@@ -1455,9 +1394,7 @@ tryAutoUnlock();
             })?;
 
             let status_shared = Arc::clone(&shared);
-            let status_code = code.clone();
             server.fn_handler("/api/status", Method::Get, move |request| {
-                authenticate(request.uri(), &status_code)?;
                 let snapshot = lock(&status_shared).snapshot.clone();
                 let (total_bytes, free_bytes) = sd_space_bytes().unwrap_or((0, 0));
                 let body = format!(
@@ -1480,9 +1417,7 @@ tryAutoUnlock();
             // `maintain_portal_server`, which gates that on the same
             // `via_hotspot` flag this snapshot's `ap_ssid` reflects.
             let scan_shared = Arc::clone(&shared);
-            let scan_code = code.clone();
             server.fn_handler("/api/scan", Method::Get, move |request| {
-                authenticate(request.uri(), &scan_code)?;
                 let body = {
                     let mut guard = lock(&scan_shared);
                     guard.touch_activity();
@@ -1495,9 +1430,7 @@ tryAutoUnlock();
             })?;
 
             let networks_shared = Arc::clone(&shared);
-            let networks_code = code.clone();
             server.fn_handler("/api/networks", Method::Get, move |request| {
-                authenticate(request.uri(), &networks_code)?;
                 let body = {
                     let mut guard = lock(&networks_shared);
                     guard.touch_activity();
@@ -1510,9 +1443,8 @@ tryAutoUnlock();
             })?;
 
             let join_shared = Arc::clone(&shared);
-            let join_code = code.clone();
             server.fn_handler("/api/networks", Method::Post, move |mut request| {
-                authenticate(request.uri(), &join_code)?;
+                ensure_same_origin(request.header("Origin"), request.header("Host"))?;
                 // Drain any request body (none expected; credentials travel
                 // as query parameters like the rest of this tiny API) so the
                 // connection can be reused.
@@ -1534,9 +1466,8 @@ tryAutoUnlock();
             })?;
 
             let delete_net_shared = Arc::clone(&shared);
-            let delete_net_code = code.clone();
             server.fn_handler("/api/networks/delete", Method::Post, move |request| {
-                authenticate(request.uri(), &delete_net_code)?;
+                ensure_same_origin(request.header("Origin"), request.header("Host"))?;
                 let ssid = required_query(request.uri(), "ssid")?;
                 {
                     let mut guard = lock(&delete_net_shared);
@@ -1548,9 +1479,7 @@ tryAutoUnlock();
             })?;
 
             let books_shared = Arc::clone(&shared);
-            let books_code = code.clone();
             server.fn_handler("/api/books", Method::Get, move |request| {
-                authenticate(request.uri(), &books_code)?;
                 let previous = lock(&books_shared).cached_books.clone();
                 let (body, scanned) = books_json(&previous)?;
                 {
@@ -1565,9 +1494,7 @@ tryAutoUnlock();
             })?;
 
             let cover_shared = Arc::clone(&shared);
-            let cover_code = code.clone();
             server.fn_handler("/api/cover", Method::Get, move |request| {
-                authenticate(request.uri(), &cover_code)?;
                 let relative = required_query(request.uri(), "path")?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 let book = book_from_path(&path)?;
@@ -1702,11 +1629,13 @@ tryAutoUnlock();
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn authenticate(uri: &str, expected: &str) -> Result<()> {
-        if query_value(uri, "code").as_deref() == Some(expected) {
+    /// Refuse a change another web page made the browser send (see
+    /// [`is_same_origin_request`]).
+    fn ensure_same_origin(origin: Option<&str>, host: Option<&str>) -> Result<()> {
+        if is_same_origin_request(origin, host) {
             Ok(())
         } else {
-            bail!("session code required")
+            bail!("request from another site refused")
         }
     }
 
@@ -2003,9 +1932,43 @@ mod tests {
     }
 
     #[test]
+    fn changes_are_refused_only_when_another_site_sent_them() {
+        use super::is_same_origin_request as same;
+        // The portal's own page, on the LAN address or the hotspot's.
+        assert!(same(Some("http://192.168.1.10"), Some("192.168.1.10")));
+        assert!(same(Some("http://192.168.71.1"), Some("192.168.71.1")));
+        assert!(same(Some("http://Rustmix.local"), Some("rustmix.local")));
+        // Not a page's script: a tool, or a browser that sends no Origin.
+        assert!(same(None, Some("192.168.1.10")));
+        assert!(same(Some(""), Some("192.168.1.10")));
+        // A page of another site making the browser post here.
+        assert!(!same(Some("https://example.com"), Some("192.168.1.10")));
+        assert!(!same(Some("http://example.com"), Some("192.168.1.10")));
+        assert!(!same(
+            Some("http://192.168.1.10:8080"),
+            Some("192.168.1.10")
+        ));
+        assert!(!same(Some("null"), Some("192.168.1.10")));
+        assert!(!same(Some("http://192.168.1.10"), None));
+    }
+
+    #[test]
+    fn the_portal_page_asks_for_no_code() {
+        let source = include_str!("wifi_transfer.rs");
+        let page_start = source.find("const PORTAL_HTML").unwrap();
+        let page_end = page_start + source[page_start..].find("\"##;").unwrap();
+        let page = &source[page_start..page_end];
+        assert!(!page.contains("code="));
+        assert!(!page.contains("lockCode"));
+        // The app is shown at once and loads its data without unlocking.
+        assert!(page.contains("<div class=\"wrap\" id=\"app\">"));
+        assert!(page.contains("\ninitApp();\n</script>"));
+    }
+
+    #[test]
     fn query_parser_decodes_portal_paths() {
         assert_eq!(
-            query_value("/api/list?code=123456&path=%2FBOOKS", "path").as_deref(),
+            query_value("/api/list?sort=name&path=%2FBOOKS", "path").as_deref(),
             Some("/BOOKS")
         );
     }

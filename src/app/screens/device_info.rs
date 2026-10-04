@@ -2,274 +2,249 @@
 
 use core::convert::Infallible;
 
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Drawable, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle},
-};
-
 use crate::{
     app::{
         i18n::t,
-        state::AppState,
-        typography::{Text, UiTextStyle},
-        widgets::{footer::draw_footer, header::draw_header},
+        state::{AppState, SettingsResetStage},
+        widgets::{
+            footer::{back_only, draw_footer, footer_hints, select_and_back, FooterKey},
+            header::draw_header,
+            layout::{CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE},
+            list::{draw_field, draw_list_row, draw_section_title, ROW_HEIGHT, ROW_STEP},
+            text::draw_paragraph,
+        },
     },
     build_info::{FIRMWARE_VERSION, PRODUCT_NAME},
     orientation::OrientedFrameBuffer,
     panel_refresh::PANEL_PARTIAL_REFRESH_LIMIT,
 };
 
-/// Page 1/3: product firmware and display contract.
+/// Top of the "next page" row, anchored to the bottom of the content area.
+const NEXT_ROW_TOP: i32 = CONTENT_BOTTOM - ROW_HEIGHT;
+
+/// Page 1/3: product firmware and display.
 pub fn render_device_info(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
+    let preferences = state.display;
     let partials = format!(
         "{} / {PANEL_PARTIAL_REFRESH_LIMIT}",
         state.partial_refreshes
     );
+    let unknown = t(locale, "unknown", "sconosciuto");
 
-    // "Info" reads the same in English and Italian chrome, so this header
-    // does not need a locale-branched `t()` call.
     draw_header(display, state, "INFO")?;
 
-    Text::new(
-        t(locale, "Firmware", "Firmware"),
-        Point::new(22, 118),
-        heading,
-    )
-    .draw(display)?;
-    line(
-        display,
-        166,
-        t(locale, "Product", "Prodotto"),
-        PRODUCT_NAME,
-        body,
-    )?;
-    line(
-        display,
-        206,
-        t(locale, "Version", "Versione"),
-        FIRMWARE_VERSION,
-        body,
-    )?;
-    line(
-        display,
-        246,
-        t(locale, "Milestone", "Milestone"),
-        t(locale, "Readability repair", "Correzione leggibilità"),
-        body,
-    )?;
+    let mut baseline = draw_section_title(display, preferences, FIRST_BASELINE, "Firmware")?;
+    let firmware: [(&str, &str); 3] = [
+        (t(locale, "Product", "Prodotto"), PRODUCT_NAME),
+        (t(locale, "Version", "Versione"), FIRMWARE_VERSION),
+        (
+            "Bootloader",
+            state.installed_bootloader.as_deref().unwrap_or(unknown),
+        ),
+    ];
+    for (label, value) in firmware {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
 
-    Text::new(
-        t(locale, "Display", "Display"),
-        Point::new(22, 326),
-        heading,
-    )
-    .draw(display)?;
-    line(
+    baseline = draw_section_title(
         display,
-        374,
-        t(locale, "Logical UI", "UI logica"),
-        t(locale, "480 x 800 portrait", "480 x 800 verticale"),
-        body,
+        preferences,
+        baseline + 22,
+        t(locale, "Screen", "Schermo"),
     )?;
-    line(
-        display,
-        414,
-        t(locale, "Native panel", "Pannello nativo"),
-        t(locale, "800 x 480 mono", "800 x 480 mono"),
-        body,
-    )?;
-    line(
-        display,
-        454,
-        t(locale, "Framebuffer", "Framebuffer"),
-        t(locale, "48,000 bytes / 1-bpp", "48.000 byte / 1-bpp"),
-        body,
-    )?;
-    line(
-        display,
-        494,
-        t(locale, "Partial chain", "Catena parziale"),
-        &partials,
-        body,
-    )?;
+    let screen: [(&str, &str); 2] = [
+        (
+            t(locale, "Resolution", "Risoluzione"),
+            t(
+                locale,
+                "480 x 800, black and white",
+                "480 x 800, bianco e nero",
+            ),
+        ),
+        (
+            t(
+                locale,
+                "Refreshes since last cleaning",
+                "Aggiornamenti dall'ultima pulizia",
+            ),
+            &partials,
+        ),
+    ];
+    for (label, value) in screen {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
 
-    draw_action(
+    // "Restore settings" armed: what it touches is said before the second
+    // SELECT.
+    if state.settings_reset == SettingsResetStage::Armed {
+        draw_paragraph(
+            display,
+            t(
+                locale,
+                "Text size, standby, sleep screen, most used settings and update channel go back to their first values. Language, clock, Wi-Fi and books stay.",
+                "Dimensione del testo, standby, schermata di riposo, voci pi\u{00F9} usate e canale aggiornamenti tornano ai valori iniziali. Lingua, orologio, Wi-Fi e libri restano.",
+            ),
+            CONTENT_LEFT,
+            baseline + 14,
+            preferences.detail_style(),
+            CONTENT_WIDTH,
+            5,
+            4,
+        )?;
+    }
+
+    draw_list_row(
         display,
-        594,
-        t(locale, "Board services", "Servizi scheda"),
-        body,
+        preferences,
+        NEXT_ROW_TOP - ROW_STEP,
+        t(locale, "Memory card", "Scheda di memoria"),
+        "",
+        state.info_selected == 0,
     )?;
-    draw_footer(display, state, t(locale, "SELECT NEXT", "SELECT AVANTI"))?;
-    Ok(())
+    let (reset_label, reset_value) = match state.settings_reset {
+        SettingsResetStage::Idle => (t(locale, "Restore settings", "Ripristina impostazioni"), ""),
+        SettingsResetStage::Armed => (t(locale, "Confirm: restore", "Conferma: ripristina"), ""),
+        SettingsResetStage::Done => (
+            t(locale, "Restore settings", "Ripristina impostazioni"),
+            t(locale, "done", "fatto"),
+        ),
+    };
+    draw_list_row(
+        display,
+        preferences,
+        NEXT_ROW_TOP,
+        reset_label,
+        reset_value,
+        state.info_selected == 1,
+    )?;
+    let hint = if state.settings_reset == SettingsResetStage::Armed {
+        footer_hints(
+            locale,
+            &[
+                (FooterKey::Select, t(locale, "CONFIRM", "CONFERMA")),
+                (FooterKey::Boot, t(locale, "CANCEL", "ANNULLA")),
+            ],
+        )
+    } else if state.info_selected == 1 {
+        select_and_back(locale, t(locale, "RESTORE", "RIPRISTINA"))
+    } else {
+        select_and_back(locale, t(locale, "NEXT", "AVANTI"))
+    };
+    draw_footer(display, state, &hint)
 }
 
-/// Page 2/3: onboard services and read-only storage contract.
+/// Page 2/3: the memory card.
 pub fn render_device_info_board(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let detail = state.display.detail_style();
+    let preferences = state.display;
+    let card = if !state.storage.mounted {
+        t(locale, "Not found", "Non trovata")
+    } else if state.storage.error.is_some() {
+        t(locale, "Read error", "Errore di lettura")
+    } else {
+        t(locale, "Ready", "Pronta")
+    };
 
-    // "Info" reads the same in English and Italian chrome, so this header
-    // does not need a locale-branched `t()` call.
     draw_header(display, state, "INFO")?;
 
-    Text::new(
-        t(locale, "SDMMC storage", "Archiviazione SDMMC"),
-        Point::new(22, 118),
-        heading,
-    )
-    .draw(display)?;
-    line(
+    let mut baseline = draw_section_title(
         display,
-        166,
-        t(locale, "Mount", "Montaggio"),
-        state.storage.status_label(),
-        body,
+        preferences,
+        FIRST_BASELINE,
+        t(locale, "Memory card", "Scheda di memoria"),
     )?;
-    line(
-        display,
-        206,
-        t(locale, "Mode", "Modalità"),
-        t(
-            locale,
-            "4-bit FAT / read-only UI",
-            "FAT a 4 bit / UI sola lettura",
+    let fields: [(&str, &str); 3] = [
+        (t(locale, "Card", "Scheda"), card),
+        (t(locale, "Format", "Formato"), "FAT, SDMMC 4 bit"),
+        (
+            t(locale, "Pins", "Pin"),
+            "CLK16 CMD17 D0=15 D1=7 D2=8 D3=18",
         ),
-        body,
-    )?;
-    Text::new(t(locale, "Pins", "Pin"), Point::new(22, 246), body).draw(display)?;
-    Text::new(
-        "CLK16 CMD17 D0=15 D1=7 D2=8 D3=18",
-        Point::new(22, 280),
-        detail,
-    )
-    .draw(display)?;
+    ];
+    for (label, value) in fields {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
 
-    draw_action(
+    draw_list_row(
         display,
-        348,
-        t(locale, "Runtime services", "Servizi runtime"),
-        body,
+        preferences,
+        NEXT_ROW_TOP,
+        t(locale, "Network and keys", "Rete e tasti"),
+        "",
+        true,
     )?;
-    draw_footer(display, state, t(locale, "SELECT NEXT", "SELECT AVANTI"))?;
-    Ok(())
+    draw_footer(
+        display,
+        state,
+        &select_and_back(locale, t(locale, "NEXT", "AVANTI")),
+    )
 }
 
-/// Page 3/3: network status and stable hardware ownership.
+/// Page 3/3: network status and the keys.
 pub fn render_device_info_runtime(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let detail = state.display.detail_style();
+    let preferences = state.display;
     let timezone = state.regional.timezone_label_for_rtc(state.board.rtc);
 
-    // "Info" reads the same in English and Italian chrome, so this header
-    // does not need a locale-branched `t()` call.
     draw_header(display, state, "INFO")?;
 
-    Text::new(
-        t(locale, "Runtime services", "Servizi runtime"),
-        Point::new(22, 118),
-        heading,
-    )
-    .draw(display)?;
-    line(
+    let mut baseline = draw_section_title(
         display,
-        166,
+        preferences,
+        FIRST_BASELINE,
         t(locale, "Network", "Rete"),
-        state.network.home_badge(),
-        body,
     )?;
-    line(
-        display,
-        206,
-        t(locale, "Display zone", "Fuso orario"),
-        &timezone,
-        body,
-    )?;
-
-    Text::new(
-        t(locale, "Stable ownership", "Risorse hardware stabili"),
-        Point::new(22, 404),
-        heading,
-    )
-    .draw(display)?;
-    line(
-        display,
-        452,
-        t(locale, "EPD busy", "EPD busy"),
-        t(locale, "GPIO3 / ALDO3 managed", "GPIO3 / gestito da ALDO3"),
-        body,
-    )?;
-    line(
-        display,
-        492,
-        t(locale, "Buttons", "Pulsanti"),
-        "UP4 SELECT5 DOWN6",
-        body,
-    )?;
-    line(
-        display,
-        532,
-        t(locale, "Power key", "Tasto accensione"),
-        t(
-            locale,
-            "Hold menu / short sleep",
-            "Pressione lunga menu / breve sospensione",
+    let network: [(&str, &str); 3] = [
+        ("Wi-Fi", state.network.wifi_state.status_text(locale)),
+        (
+            t(locale, "IP address", "Indirizzo IP"),
+            state.network.ipv4_label(),
         ),
-        body,
+        (t(locale, "Time zone", "Fuso orario"), &timezone),
+    ];
+    for (label, value) in network {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
+
+    baseline = draw_section_title(
+        display,
+        preferences,
+        baseline + 22,
+        t(locale, "Keys", "Tasti"),
     )?;
-    Text::new(
-        t(
-            locale,
-            "Press BOOT to return to page 2.",
-            "Premere BOOT per tornare alla pagina 2.",
+    let keys: [(&str, &str); 3] = [
+        (
+            t(locale, "Rocker", "Rotella"),
+            t(
+                locale,
+                "Up, down, press: SELECT",
+                "Su, gi\u{00F9}, pressione: SELECT",
+            ),
         ),
-        Point::new(22, 634),
-        detail,
-    )
-    .draw(display)?;
-    Ok(())
-}
-
-fn line(
-    display: &mut OrientedFrameBuffer<'_>,
-    y: i32,
-    label: &str,
-    value: &str,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    Text::new(label, Point::new(22, y), style).draw(display)?;
-    Text::new(value, Point::new(194, y), style).draw(display)?;
-    Ok(())
-}
-
-fn draw_action(
-    display: &mut OrientedFrameBuffer<'_>,
-    top: i32,
-    label: &str,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    Rectangle::new(Point::new(22, top), Size::new(436, 52))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 4))
-        .draw(display)?;
-    Text::new(">", Point::new(38, top + 34), style).draw(display)?;
-    Text::new(label, Point::new(68, top + 34), style).draw(display)?;
-    Ok(())
+        ("BOOT", t(locale, "Back", "Indietro")),
+        (
+            "Power",
+            t(
+                locale,
+                "Short press: standby. Long press: screen menu",
+                "Pressione breve: standby. Lunga: menu schermo",
+            ),
+        ),
+    ];
+    for (label, value) in keys {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
+    draw_footer(display, state, &back_only(locale))
 }
 
 #[cfg(test)]

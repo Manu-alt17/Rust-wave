@@ -12,38 +12,36 @@ use core::convert::Infallible;
 use embedded_graphics::{
     pixelcolor::BinaryColor,
     prelude::{Drawable, Point, Primitive, Size},
-    primitives::{CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle},
+    primitives::{PrimitiveStyle, Rectangle},
 };
 
 use crate::{
     app::{
+        display::DisplayPreferences,
         i18n::t,
         state::AppState,
-        typography::{Text, UiTextRole, UiTextStyle},
-        widgets::header::draw_header,
+        typography::{Text, UiTextRole},
+        widgets::{
+            footer::{back_only, draw_footer},
+            header::draw_header,
+            layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE, FIRST_ROW_TOP},
+            list::{draw_list_row, draw_row_frame_at, ROW_PAD_X, ROW_STEP},
+            text::{draw_paragraph, draw_text_fit},
+        },
     },
     orientation::OrientedFrameBuffer,
     reading_stats::{book_id_for, format_duration_seconds, BookMonthStats, DayBar},
     regional::Locale,
 };
 
-const CONTENT_LEFT: i32 = 22;
-const CONTENT_WIDTH: i32 = 436;
 const CARD_GAP: i32 = 16;
 const CARD_HEIGHT: i32 = 90;
 const CARD_WIDTH: i32 = (CONTENT_WIDTH - CARD_GAP) / 2;
-const CARD_TOP: i32 = 84;
-const CARD_CORNER: Size = Size::new(16, 16);
-
-const CHART_HEIGHT: i32 = 100;
+const CHART_HEIGHT: i32 = 84;
 const CHART_BAR_GAP: i32 = 8;
-
-const BOOK_ROW_HEIGHT: i32 = 64;
-const BOOK_ROW_GAP: i32 = 12;
-const BOOK_COVER_SIZE: Size = Size::new(40, 54);
-/// Only this many of `books_this_month` fit above the footer at this row
-/// height; the backend keeps up to `BOOKS_THIS_MONTH_LIMIT` (5) but the
-/// screen shows only as many as there is room for.
+/// Only this many of `books_this_month` fit above the footer; the backend
+/// keeps up to `BOOKS_THIS_MONTH_LIMIT` (5) but the screen shows only as
+/// many as there is room for.
 const MAX_VISIBLE_BOOKS: usize = 4;
 
 pub fn render_reading_stats(
@@ -51,99 +49,140 @@ pub fn render_reading_stats(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
+    let preferences = state.display;
     let stats = &state.reading_stats;
-
+    let body = preferences.body_style();
+    let body_line = i32::from(body.line_height());
+    let heading_line = i32::from(preferences.heading_style().line_height());
     draw_header(display, state, t(locale, "STATISTICS", "STATISTICHE"))?;
-    Text::new(
-        t(locale, "< Home", "< Home"),
-        Point::new(CONTENT_LEFT, 64),
-        state.display.detail_style(),
-    )
-    .draw(display)?;
 
     if !stats.available {
-        Text::new(
+        draw_paragraph(
+            display,
             t(
                 locale,
-                "Clock not set yet -- open Clock in Settings.",
-                "Orologio non impostato -- apri Orologio nelle Impostazioni.",
+                "The clock is not set yet: reading time cannot be counted. Set it in Settings, Clock.",
+                "L'orologio non \u{00E8} ancora impostato: il tempo di lettura non si pu\u{00F2} contare. Impostalo in Impostazioni, Orologio.",
             ),
-            Point::new(CONTENT_LEFT, 120),
-            state.display.body_style(),
-        )
-        .draw(display)?;
-        return Ok(());
+            CONTENT_LEFT,
+            FIRST_BASELINE,
+            body,
+            CONTENT_WIDTH,
+            5,
+            6,
+        )?;
+        return draw_footer(display, state, &back_only(locale));
     }
 
     draw_stat_card(
         display,
-        Point::new(CONTENT_LEFT, CARD_TOP),
+        Point::new(CONTENT_LEFT, FIRST_ROW_TOP),
         t(locale, "This week", "Questa settimana"),
         &format_duration_seconds(u64::from(stats.week_seconds)),
-        state.display,
+        preferences,
     )?;
     draw_stat_card(
         display,
-        Point::new(CONTENT_LEFT + CARD_WIDTH + CARD_GAP, CARD_TOP),
-        t(locale, "Streak", "Streak"),
+        Point::new(CONTENT_LEFT + CARD_WIDTH + CARD_GAP, FIRST_ROW_TOP),
+        t(locale, "Streak", "Serie"),
         &streak_value_label(locale, stats.streak_days),
-        state.display,
+        preferences,
     )?;
 
-    let body = state.display.body_style();
+    // Everything below is stacked by line height, so the three text sizes
+    // never push one line into the next.
+    let mut baseline = FIRST_ROW_TOP + CARD_HEIGHT + 10 + body_line;
     let today_month_line = format!(
-        "{}: {} - {}: {}",
+        "{}: {} \u{00B7} {}: {}",
         t(locale, "Today", "Oggi"),
         format_duration_seconds(u64::from(stats.today_seconds)),
         t(locale, "This month", "Questo mese"),
         format_duration_seconds(u64::from(stats.month_seconds)),
     );
-    Text::new(&today_month_line, Point::new(CONTENT_LEFT, 192), body).draw(display)?;
-
-    let speed_line = speed_and_remaining_label(locale, stats);
-    Text::new(&speed_line, Point::new(CONTENT_LEFT, 216), body).draw(display)?;
-
-    Text::new(
-        t(locale, "Last 7 days", "Ultimi 7 giorni"),
-        Point::new(CONTENT_LEFT, 240),
-        state.display.heading_style(),
-    )
-    .draw(display)?;
-    draw_week_bar_chart(
+    draw_text_fit(
         display,
-        Point::new(CONTENT_LEFT, 252),
-        &stats.last_7_days,
-        locale,
-        state.display,
+        &today_month_line,
+        Point::new(CONTENT_LEFT, baseline),
+        body,
+        CONTENT_WIDTH,
     )?;
-
-    Text::new(
-        t(locale, "Books read this month", "Libri letti questo mese"),
-        Point::new(CONTENT_LEFT, 412),
-        state.display.heading_style(),
-    )
-    .draw(display)?;
-
-    let mut row_top = 424;
-    if stats.books_this_month.is_empty() {
-        Text::new(
-            t(
-                locale,
-                "No books finished yet this month.",
-                "Nessun libro letto questo mese.",
-            ),
-            Point::new(CONTENT_LEFT, row_top + 26),
-            state.display.body_style(),
-        )
-        .draw(display)?;
-    } else {
-        for book in stats.books_this_month.iter().take(MAX_VISIBLE_BOOKS) {
-            draw_book_row(display, row_top, book, state)?;
-            row_top += BOOK_ROW_HEIGHT + BOOK_ROW_GAP;
-        }
+    baseline += body_line + 4;
+    draw_text_fit(
+        display,
+        &speed_label(locale, stats),
+        Point::new(CONTENT_LEFT, baseline),
+        body,
+        CONTENT_WIDTH,
+    )?;
+    if let Some(seconds) = stats.remaining_book_seconds {
+        baseline += body_line + 4;
+        let remaining = format!(
+            "{} {} {}",
+            t(locale, "About", "Circa"),
+            format_duration_seconds(seconds),
+            t(locale, "left in this book", "rimanenti in questo libro")
+        );
+        draw_text_fit(
+            display,
+            &remaining,
+            Point::new(CONTENT_LEFT, baseline),
+            body,
+            CONTENT_WIDTH,
+        )?;
     }
 
-    Ok(())
+    baseline += heading_line + 10;
+    draw_text_fit(
+        display,
+        t(locale, "Last 7 days", "Ultimi 7 giorni"),
+        Point::new(CONTENT_LEFT, baseline),
+        preferences.heading_style(),
+        CONTENT_WIDTH,
+    )?;
+    let chart_top = baseline + 10;
+    draw_week_bar_chart(
+        display,
+        Point::new(CONTENT_LEFT, chart_top),
+        &stats.last_7_days,
+        locale,
+        preferences,
+    )?;
+
+    baseline = chart_top + CHART_HEIGHT + 24 + heading_line + 8;
+    draw_text_fit(
+        display,
+        t(locale, "Books this month", "Libri di questo mese"),
+        Point::new(CONTENT_LEFT, baseline),
+        preferences.heading_style(),
+        CONTENT_WIDTH,
+    )?;
+    if stats.books_this_month.is_empty() {
+        draw_paragraph(
+            display,
+            t(
+                locale,
+                "No reading recorded this month.",
+                "Nessuna lettura registrata questo mese.",
+            ),
+            CONTENT_LEFT,
+            baseline + body_line + 12,
+            body,
+            CONTENT_WIDTH,
+            2,
+            6,
+        )?;
+    } else {
+        let rows_top = baseline + 12;
+        for (index, book) in stats
+            .books_this_month
+            .iter()
+            .take(MAX_VISIBLE_BOOKS)
+            .enumerate()
+        {
+            draw_book_row(display, rows_top + index as i32 * ROW_STEP, book, state)?;
+        }
+    }
+    draw_footer(display, state, &back_only(locale))
 }
 
 fn draw_stat_card(
@@ -151,31 +190,34 @@ fn draw_stat_card(
     top_left: Point,
     label: &str,
     value: &str,
-    preferences: crate::app::display::DisplayPreferences,
+    preferences: DisplayPreferences,
 ) -> Result<(), Infallible> {
-    RoundedRectangle::new(
-        Rectangle::new(top_left, Size::new(CARD_WIDTH as u32, CARD_HEIGHT as u32)),
-        CornerRadii::new(CARD_CORNER),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-    .draw(display)?;
-
-    Text::new(
+    draw_row_frame_at(
+        display,
+        top_left.x,
+        top_left.y,
+        CARD_WIDTH,
+        CARD_HEIGHT,
+        false,
+    )?;
+    let inner_width = CARD_WIDTH - 2 * ROW_PAD_X;
+    draw_text_fit(
+        display,
         label,
-        Point::new(top_left.x + 14, top_left.y + 26),
+        Point::new(top_left.x + ROW_PAD_X, top_left.y + 28),
         preferences.body_style(),
-    )
-    .draw(display)?;
-    Text::new(
+        inner_width,
+    )?;
+    draw_text_fit(
+        display,
         value,
-        Point::new(top_left.x + 14, top_left.y + 68),
+        Point::new(top_left.x + ROW_PAD_X, top_left.y + 70),
         preferences.text_style(UiTextRole::Large, BinaryColor::On),
+        inner_width,
     )
-    .draw(display)?;
-    Ok(())
 }
 
-/// Shared with the Home dashboard's Oggi/Streak summary row (see
+/// Shared with the Home dashboard's today/streak summary row (see
 /// `screens::home::draw_today_streak_row`).
 pub(crate) fn streak_value_label(locale: Locale, days: u32) -> String {
     match days {
@@ -185,29 +227,13 @@ pub(crate) fn streak_value_label(locale: Locale, days: u32) -> String {
     }
 }
 
-/// "Speed: N chars/min" line, with a "~Xh YYm left" clause appended once the
-/// current book's remaining time is known (see
-/// `ReaderUiState::continue_reading_progress`, refreshed alongside this
-/// snapshot).
-fn speed_and_remaining_label(
-    locale: Locale,
-    stats: &crate::reading_stats::ReadingStatsSnapshot,
-) -> String {
+/// "Speed: N chars/min", or that there is not enough reading yet to tell.
+fn speed_label(locale: Locale, stats: &crate::reading_stats::ReadingStatsSnapshot) -> String {
     let speed = stats.chars_per_minute.map_or_else(
-        || t(locale, "Not enough data yet", "Dati insufficienti").to_string(),
-        |value| format!("{value} {}", t(locale, "chars/min", "car/min")),
+        || t(locale, "not enough data yet", "dati insufficienti").to_string(),
+        |value| format!("{value} {}", t(locale, "chars/min", "caratteri/min")),
     );
-    let base = format!("{}: {speed}", t(locale, "Speed", "Velocità"));
-    stats.remaining_book_seconds.map_or_else(
-        || base.clone(),
-        |seconds| {
-            format!(
-                "{base} - ~{} {}",
-                format_duration_seconds(seconds),
-                t(locale, "left in this book", "rimanenti in questo libro")
-            )
-        },
-    )
+    format!("{}: {speed}", t(locale, "Speed", "Velocit\u{00E0}"))
 }
 
 /// Bars for the last 7 calendar days ending today, tallest scaled to
@@ -218,7 +244,7 @@ fn draw_week_bar_chart(
     top_left: Point,
     bars: &[DayBar; 7],
     locale: Locale,
-    preferences: crate::app::display::DisplayPreferences,
+    preferences: DisplayPreferences,
 ) -> Result<(), Infallible> {
     let bar_width = (CONTENT_WIDTH - CHART_BAR_GAP * 6) / 7;
     let max_seconds = bars
@@ -228,7 +254,6 @@ fn draw_week_bar_chart(
         .unwrap_or(0)
         .max(1);
     let detail = preferences.detail_style();
-
     for (index, bar) in bars.iter().enumerate() {
         let x = top_left.x + index as i32 * (bar_width + CHART_BAR_GAP);
         if bar.total_seconds == 0 {
@@ -239,7 +264,9 @@ fn draw_week_bar_chart(
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)?;
         } else {
-            let bar_height = (CHART_HEIGHT * bar.total_seconds as i32 / max_seconds as i32).max(4);
+            let bar_height = (i64::from(CHART_HEIGHT) * i64::from(bar.total_seconds)
+                / i64::from(max_seconds))
+            .max(4) as i32;
             Rectangle::new(
                 Point::new(x, top_left.y + CHART_HEIGHT - bar_height),
                 Size::new(bar_width as u32, bar_height as u32),
@@ -247,7 +274,6 @@ fn draw_week_bar_chart(
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
         }
-
         let label = weekday_initial(locale, bar.weekday);
         let label_width = detail.text_width(label);
         Text::new(
@@ -290,6 +316,8 @@ fn weekday_initial(locale: Locale, weekday: u8) -> &'static str {
     }
 }
 
+/// One book read this month: its title, and the time spent on it with the
+/// reading percentage. Not selectable, so never drawn selected.
 fn draw_book_row(
     display: &mut OrientedFrameBuffer<'_>,
     top: i32,
@@ -297,54 +325,17 @@ fn draw_book_row(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    Rectangle::new(
-        Point::new(CONTENT_LEFT, top),
-        Size::new(CONTENT_WIDTH as u32, BOOK_ROW_HEIGHT as u32),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-    .draw(display)?;
-
-    let cover_top_left = Point::new(
-        CONTENT_LEFT + 10,
-        top + (BOOK_ROW_HEIGHT - BOOK_COVER_SIZE.height as i32) / 2,
-    );
-    Rectangle::new(cover_top_left, BOOK_COVER_SIZE)
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(display)?;
-
-    let text_left = cover_top_left.x + BOOK_COVER_SIZE.width as i32 + 14;
-    let text_right = CONTENT_LEFT + CONTENT_WIDTH - 30;
-    let text_width = (text_right - text_left).max(0);
-
-    let heading = state.display.body_style();
-    let detail = state.display.detail_style();
-
     let (title, percent) = resolve_book_title(state, book.book_id).unwrap_or_else(|| {
         (
             t(locale, "Unknown book", "Libro sconosciuto").to_string(),
             None,
         )
     });
-    Text::new(
-        &truncate_to_width(heading, &title, text_width),
-        Point::new(text_left, top + 26),
-        heading,
-    )
-    .draw(display)?;
-
     let time_label = format_duration_seconds(u64::from(book.total_seconds));
-    let subtitle = percent.map_or(time_label.clone(), |percent| {
-        format!("{time_label} - {}%", percent.min(100))
+    let value = percent.map_or(time_label.clone(), |percent| {
+        format!("{time_label} \u{00B7} {}%", percent.min(100))
     });
-    Text::new(
-        &truncate_to_width(detail, &subtitle, text_width),
-        Point::new(text_left, top + 48),
-        detail,
-    )
-    .draw(display)?;
-
-    Text::new(">", Point::new(text_right + 6, top + 38), heading).draw(display)?;
-    Ok(())
+    draw_list_row(display, state.display, top, &title, &value, false)
 }
 
 /// Resolve a logged `book_id` back to a title and last-known reading
@@ -366,24 +357,6 @@ fn resolve_book_title(state: &AppState, book_id: u32) -> Option<(String, Option<
             ) == book_id
         })
         .map(|location| (location.title.clone(), location.reading_percent))
-}
-
-/// Trim `text` to fit within `max_width` pixels under `style`, appending an
-/// ellipsis. Mirrors `truncate_to_width` in `screens/category.rs`,
-/// duplicated rather than shared since the two draw into unrelated bounds.
-fn truncate_to_width(style: UiTextStyle, text: &str, max_width: i32) -> String {
-    if max_width <= 0 || style.text_width(text) <= max_width {
-        return text.to_string();
-    }
-    let mut chars: Vec<char> = text.chars().collect();
-    while !chars.is_empty() {
-        chars.pop();
-        let candidate: String = chars.iter().collect::<String>() + "...";
-        if style.text_width(&candidate) <= max_width {
-            return candidate;
-        }
-    }
-    "...".into()
 }
 
 #[cfg(test)]

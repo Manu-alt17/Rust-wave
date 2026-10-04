@@ -1,8 +1,9 @@
-//! Read-only SDMMC storage-browser model.
+//! SDMMC storage-browser model.
 //!
-//! ESP-IDF mounts the SD card at [`SD_MOUNT_POINT`]. This module intentionally
-//! owns only read-only directory scans and bounded text previews. It never
-//! creates, renames, deletes or writes files.
+//! ESP-IDF mounts the SD card at [`SD_MOUNT_POINT`]. This module owns
+//! directory scans, bounded text previews and the one change the browser
+//! can make to the card: deleting a single file, after a confirmation. It
+//! never creates, renames or writes files, and never deletes a folder.
 
 use std::{
     fs::{self, File},
@@ -39,13 +40,10 @@ pub const STORAGE_IO_RETRY_ATTEMPTS: usize = 3;
 /// Delay between read-only retry attempts.
 pub const STORAGE_IO_RETRY_DELAY_MS: u64 = 120;
 
-/// Read-only browser-entry category.
+/// Browser-entry category. Going up a folder or back to Home is BOOT's
+/// job (see [`StorageBrowser::go_back`]), not a row of the list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageEntryKind {
-    /// Synthetic root row that returns to Home.
-    BackToHome,
-    /// Synthetic row that navigates to the parent directory.
-    ParentDirectory,
     /// Synthetic row that retries a failed read-only directory scan.
     RetryScan,
     /// Filesystem directory.
@@ -59,8 +57,6 @@ impl StorageEntryKind {
     #[must_use]
     pub const fn badge(self) -> &'static str {
         match self {
-            Self::BackToHome => "BACK",
-            Self::ParentDirectory => "UP",
             Self::RetryScan => "RETRY",
             Self::Directory => "DIR",
             Self::File => "FILE",
@@ -75,8 +71,6 @@ impl StorageEntryKind {
         match locale {
             Locale::English => self.badge(),
             Locale::Italian => match self {
-                Self::BackToHome => "TORNA",
-                Self::ParentDirectory => "SU",
                 Self::RetryScan => "RIPROVA",
                 Self::Directory => "CART",
                 Self::File => "FILE",
@@ -94,22 +88,6 @@ pub struct StorageEntry {
 }
 
 impl StorageEntry {
-    fn back_to_home() -> Self {
-        Self {
-            name: "Back to Home".into(),
-            kind: StorageEntryKind::BackToHome,
-            size_bytes: None,
-        }
-    }
-
-    fn parent_directory() -> Self {
-        Self {
-            name: "..".into(),
-            kind: StorageEntryKind::ParentDirectory,
-            size_bytes: None,
-        }
-    }
-
     fn retry_scan() -> Self {
         Self {
             name: "Retry SD scan".into(),
@@ -202,6 +180,23 @@ pub struct StorageSnapshot {
     pub error: Option<String>,
     /// Diagnostics for the most recent read-only directory scan.
     pub scan: DirectoryScanStats,
+    /// Whether the list shows the card's top folder: BOOT then leaves the
+    /// browser instead of going up.
+    pub at_root: bool,
+    /// Name of the file a held SELECT asked to delete, until SELECT
+    /// confirms or anything else cancels.
+    pub pending_delete: Option<String>,
+    /// How the last delete went, until the list changes again.
+    pub notice: Option<StorageNotice>,
+}
+
+/// Outcome of a delete, for the screen to word in the user's language.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StorageNotice {
+    /// The named file is gone.
+    Deleted(String),
+    /// The named file is still there; the second field says why.
+    DeleteFailed(String, String),
 }
 
 impl Default for StorageSnapshot {
@@ -209,12 +204,15 @@ impl Default for StorageSnapshot {
         Self {
             mounted: false,
             current_path: SD_MOUNT_POINT.into(),
-            entries: vec![StorageEntry::back_to_home()],
+            entries: Vec::new(),
             selected: 0,
             page_start: 0,
             preview: None,
             error: None,
             scan: DirectoryScanStats::default(),
+            at_root: true,
+            pending_delete: None,
+            notice: None,
         }
     }
 }
@@ -245,8 +243,15 @@ impl StorageSnapshot {
     /// Visible rows for the current page.
     #[must_use]
     pub fn visible_entries(&self) -> &[StorageEntry] {
-        let end = (self.page_start + STORAGE_PAGE_SIZE).min(self.entries.len());
-        &self.entries[self.page_start..end]
+        let start = self.page_start.min(self.entries.len());
+        let end = (start + STORAGE_PAGE_SIZE).min(self.entries.len());
+        &self.entries[start..end]
+    }
+
+    /// The row under the cursor.
+    #[must_use]
+    pub fn selected_entry(&self) -> Option<&StorageEntry> {
+        self.entries.get(self.selected)
     }
 
     /// Selected row index relative to the current page.
@@ -265,10 +270,13 @@ pub enum StorageUiOutcome {
     PreviewOpened,
     PreviewClosed,
     RetryRequested,
-    ReturnHome,
+    /// A file was deleted, or the attempt failed: see the snapshot's notice.
+    DeleteFinished,
+    /// A delete waiting for its confirmation was dropped.
+    DeleteCancelled,
 }
 
-/// Stateful read-only directory browser.
+/// Stateful directory browser.
 #[derive(Debug)]
 pub struct StorageBrowser {
     root: PathBuf,
@@ -280,6 +288,8 @@ pub struct StorageBrowser {
     preview: Option<FilePreview>,
     error: Option<String>,
     scan: DirectoryScanStats,
+    pending_delete: Option<String>,
+    notice: Option<StorageNotice>,
 }
 
 impl StorageBrowser {
@@ -297,6 +307,8 @@ impl StorageBrowser {
             preview: None,
             error: None,
             scan: DirectoryScanStats::default(),
+            pending_delete: None,
+            notice: None,
         };
         browser.refresh();
         browser
@@ -314,6 +326,9 @@ impl StorageBrowser {
             preview: self.preview.clone(),
             error: self.error.clone(),
             scan: self.scan,
+            at_root: self.current == self.root,
+            pending_delete: self.pending_delete.clone(),
+            notice: self.notice.clone(),
         }
     }
 
@@ -322,13 +337,10 @@ impl StorageBrowser {
     pub fn refresh(&mut self) {
         self.preview = None;
         self.error = None;
+        self.pending_delete = None;
+        self.notice = None;
         self.scan = DirectoryScanStats::default();
         self.entries.clear();
-        if self.current == self.root {
-            self.entries.push(StorageEntry::back_to_home());
-        } else {
-            self.entries.push(StorageEntry::parent_directory());
-        }
 
         if !self.mounted {
             self.error = Some("Insert a FAT-formatted SD card and reboot.".into());
@@ -367,6 +379,15 @@ impl StorageBrowser {
 
     /// Apply one debounced app button while the Files route is active.
     pub fn apply_button(&mut self, event: ButtonEvent) -> StorageUiOutcome {
+        // A delete waiting for its confirmation: SELECT deletes, the rocker
+        // cancels without moving.
+        if let Some(name) = self.pending_delete.take() {
+            return if event == ButtonEvent::Select {
+                self.delete_file(&name)
+            } else {
+                StorageUiOutcome::DeleteCancelled
+            };
+        }
         if self.preview.is_some() {
             if event == ButtonEvent::Select {
                 self.preview = None;
@@ -380,6 +401,7 @@ impl StorageBrowser {
                 if self.entries.is_empty() {
                     return StorageUiOutcome::None;
                 }
+                self.notice = None;
                 self.selected = self
                     .selected
                     .checked_sub(1)
@@ -391,6 +413,7 @@ impl StorageBrowser {
                 if self.entries.is_empty() {
                     return StorageUiOutcome::None;
                 }
+                self.notice = None;
                 self.selected = (self.selected + 1) % self.entries.len();
                 self.update_page_start();
                 StorageUiOutcome::SelectionChanged
@@ -404,21 +427,9 @@ impl StorageBrowser {
             return StorageUiOutcome::None;
         };
         match entry.kind {
-            StorageEntryKind::BackToHome => StorageUiOutcome::ReturnHome,
             StorageEntryKind::RetryScan => {
                 self.refresh();
                 StorageUiOutcome::RetryRequested
-            }
-            StorageEntryKind::ParentDirectory => {
-                if let Some(parent) = self.current.parent() {
-                    if parent.starts_with(&self.root) {
-                        self.current = parent.to_path_buf();
-                    }
-                }
-                self.selected = 0;
-                self.page_start = 0;
-                self.refresh();
-                StorageUiOutcome::DirectoryChanged
             }
             StorageEntryKind::Directory => {
                 let candidate = self.current.join(&entry.name);
@@ -447,6 +458,85 @@ impl StorageBrowser {
                 }
             }
         }
+    }
+
+    /// BOOT: drop a delete waiting for its confirmation, else close the
+    /// preview, else go up one folder with the cursor on the folder just
+    /// left. `false` at the top folder, where BOOT leaves the browser.
+    pub fn go_back(&mut self) -> bool {
+        if self.pending_delete.take().is_some() {
+            return true;
+        }
+        if self.preview.take().is_some() {
+            return true;
+        }
+        if self.current == self.root {
+            return false;
+        }
+        let left = self
+            .current
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        match self.current.parent() {
+            Some(parent) if parent.starts_with(&self.root) => {
+                self.current = parent.to_path_buf();
+            }
+            _ => self.current = self.root.clone(),
+        }
+        self.selected = 0;
+        self.page_start = 0;
+        self.refresh();
+        if let Some(index) = left.and_then(|left| {
+            self.entries
+                .iter()
+                .position(|entry| entry.kind == StorageEntryKind::Directory && entry.name == left)
+        }) {
+            self.selected = index;
+            self.update_page_start();
+        }
+        true
+    }
+
+    /// Held SELECT on a file: ask to delete it. `true` when the request was
+    /// taken; folders and the preview do not take it.
+    pub fn request_delete(&mut self) -> bool {
+        if self.preview.is_some() {
+            return false;
+        }
+        match self.entries.get(self.selected) {
+            Some(entry) if entry.kind == StorageEntryKind::File => {
+                self.notice = None;
+                self.pending_delete = Some(entry.name.clone());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Delete the file `name` of the current folder and read the folder
+    /// again; the cursor stays where the file was.
+    fn delete_file(&mut self, name: &str) -> StorageUiOutcome {
+        let candidate = self.current.join(name);
+        let result = if candidate.starts_with(&self.root) && candidate.is_file() {
+            fs::remove_file(&candidate)
+        } else {
+            Err(io::Error::new(io::ErrorKind::NotFound, "not a file"))
+        };
+        let selected = self.selected;
+        self.refresh();
+        self.selected = selected;
+        self.normalize_selection();
+        self.notice = Some(match result {
+            Ok(()) => {
+                info!("rustmix-wave=storage-delete status=deleted name={name:?}");
+                StorageNotice::Deleted(name.to_string())
+            }
+            Err(error) => {
+                warn!("rustmix-wave=storage-delete status=failed name={name:?} error={error}");
+                StorageNotice::DeleteFailed(name.to_string(), error.to_string())
+            }
+        });
+        StorageUiOutcome::DeleteFinished
     }
 
     fn normalize_selection(&mut self) {
@@ -611,7 +701,6 @@ fn read_preview(root: &Path, path: &Path) -> io::Result<FilePreview> {
 
 const fn storage_sort_rank(kind: StorageEntryKind) -> u8 {
     match kind {
-        StorageEntryKind::BackToHome | StorageEntryKind::ParentDirectory => 0,
         StorageEntryKind::RetryScan => 1,
         StorageEntryKind::Directory => 2,
         StorageEntryKind::File => 3,
@@ -648,7 +737,8 @@ mod tests {
     };
 
     use super::{
-        retry_readonly_io, StorageBrowser, StorageEntryKind, StorageUiOutcome, MAX_PREVIEW_BYTES,
+        retry_readonly_io, StorageBrowser, StorageEntryKind, StorageNotice, StorageUiOutcome,
+        MAX_PREVIEW_BYTES,
     };
     use crate::buttons::ButtonEvent;
 
@@ -667,8 +757,10 @@ mod tests {
         let browser = StorageBrowser::new("/missing-sdcard", false);
         let snapshot = browser.snapshot();
         assert!(!snapshot.mounted);
-        assert_eq!(snapshot.entries.len(), 1);
-        assert_eq!(snapshot.entries[0].kind, StorageEntryKind::BackToHome);
+        assert!(snapshot.entries.is_empty());
+        assert!(snapshot.error.is_some());
+        assert!(snapshot.at_root);
+        assert!(snapshot.visible_entries().is_empty());
     }
 
     #[test]
@@ -689,39 +781,94 @@ mod tests {
         fs::write(root.join("a-file.txt"), b"hello").unwrap();
         let browser = StorageBrowser::new(&root, true);
         let snapshot = browser.snapshot();
-        assert_eq!(snapshot.entries[0].kind, StorageEntryKind::BackToHome);
-        assert_eq!(snapshot.entries[1].kind, StorageEntryKind::Directory);
-        assert_eq!(snapshot.entries[2].kind, StorageEntryKind::File);
+        assert_eq!(snapshot.entries[0].kind, StorageEntryKind::Directory);
+        assert_eq!(snapshot.entries[1].kind, StorageEntryKind::File);
         assert_eq!(snapshot.scan.raw_entries, 2);
         assert_eq!(snapshot.scan.retained_entries, 2);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn enters_directory_and_returns_to_parent() {
+    fn boot_goes_up_one_folder_and_leaves_only_from_the_top() {
         let root = fixture_root("navigate");
-        fs::create_dir(root.join("books")).unwrap();
+        fs::create_dir(root.join("audio")).unwrap();
+        fs::create_dir_all(root.join("books").join("inner")).unwrap();
         let mut browser = StorageBrowser::new(&root, true);
+        assert!(browser.snapshot().at_root);
+        // "audio" sorts first: move to "books" and enter it, then "inner".
+        browser.apply_button(ButtonEvent::Down);
+        assert_eq!(
+            browser.apply_button(ButtonEvent::Select),
+            StorageUiOutcome::DirectoryChanged
+        );
+        assert_eq!(
+            browser.apply_button(ButtonEvent::Select),
+            StorageUiOutcome::DirectoryChanged
+        );
+        // The separator inside the card follows the host the test runs on.
+        let shown = |browser: &StorageBrowser| browser.snapshot().current_path.replace('\\', "/");
+        assert!(shown(&browser).ends_with("/books/inner"));
+        assert!(!browser.snapshot().at_root);
+        assert!(browser.snapshot().entries.is_empty());
+
+        assert!(browser.go_back());
+        assert!(shown(&browser).ends_with("/books"));
+        assert!(browser.go_back());
+        let snapshot = browser.snapshot();
+        assert!(snapshot.at_root);
+        // The cursor is on the folder just left, not back at the top.
+        assert_eq!(snapshot.selected_entry().unwrap().name, "books");
+        assert!(!browser.go_back());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_file_is_deleted_only_after_the_confirming_select() {
+        let root = fixture_root("delete");
+        fs::create_dir(root.join("keep")).unwrap();
+        fs::write(root.join("a.txt"), b"one").unwrap();
+        fs::write(root.join("b.txt"), b"two").unwrap();
+        let mut browser = StorageBrowser::new(&root, true);
+
+        // A folder does not take the request.
+        assert!(!browser.request_delete());
+        browser.apply_button(ButtonEvent::Down);
+        assert!(browser.request_delete());
+        assert_eq!(browser.snapshot().pending_delete.as_deref(), Some("a.txt"));
+
+        // The rocker and BOOT cancel; the file stays.
         assert_eq!(
             browser.apply_button(ButtonEvent::Down),
-            StorageUiOutcome::SelectionChanged
+            StorageUiOutcome::DeleteCancelled
         );
+        assert_eq!(browser.snapshot().selected, 1);
+        assert!(browser.request_delete());
+        assert!(browser.go_back());
+        assert!(browser.snapshot().pending_delete.is_none());
+        assert!(root.join("a.txt").exists());
+
+        assert!(browser.request_delete());
         assert_eq!(
             browser.apply_button(ButtonEvent::Select),
-            StorageUiOutcome::DirectoryChanged
+            StorageUiOutcome::DeleteFinished
         );
+        assert!(!root.join("a.txt").exists());
+        assert!(root.join("b.txt").exists());
+        let snapshot = browser.snapshot();
         assert_eq!(
-            browser.snapshot().entries[0].kind,
-            StorageEntryKind::ParentDirectory
+            snapshot.notice,
+            Some(StorageNotice::Deleted("a.txt".into()))
         );
-        assert_eq!(
-            browser.apply_button(ButtonEvent::Select),
-            StorageUiOutcome::DirectoryChanged
-        );
-        assert_eq!(
-            browser.snapshot().entries[0].kind,
-            StorageEntryKind::BackToHome
-        );
+        // The cursor stays in place, now on the next file.
+        assert_eq!(snapshot.selected_entry().unwrap().name, "b.txt");
+        assert_eq!(snapshot.entries.len(), 2);
+
+        // The preview does not take the request either.
+        browser.apply_button(ButtonEvent::Select);
+        assert!(browser.snapshot().preview.is_some());
+        assert!(!browser.request_delete());
+        assert!(browser.go_back());
+        assert!(browser.snapshot().preview.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -730,7 +877,6 @@ mod tests {
         let root = fixture_root("preview");
         fs::write(root.join("notes.txt"), vec![b'a'; MAX_PREVIEW_BYTES + 20]).unwrap();
         let mut browser = StorageBrowser::new(&root, true);
-        browser.apply_button(ButtonEvent::Down);
         assert_eq!(
             browser.apply_button(ButtonEvent::Select),
             StorageUiOutcome::PreviewOpened
@@ -751,7 +897,6 @@ mod tests {
         let root = fixture_root("binary");
         fs::write(root.join("image.bin"), [0, 1, 2, 3]).unwrap();
         let mut browser = StorageBrowser::new(&root, true);
-        browser.apply_button(ButtonEvent::Down);
         browser.apply_button(ButtonEvent::Select);
         let preview = browser.snapshot().preview.unwrap();
         assert!(preview.binary);
@@ -783,12 +928,7 @@ mod tests {
         let mut browser = StorageBrowser::new("/definitely-missing-sdcard-root", true);
         let snapshot = browser.snapshot();
         assert_eq!(snapshot.status_label(), "SD RETRY");
-        assert_eq!(snapshot.entries[0].kind, StorageEntryKind::BackToHome);
-        assert_eq!(snapshot.entries[1].kind, StorageEntryKind::RetryScan);
-        assert_eq!(
-            browser.apply_button(ButtonEvent::Down),
-            StorageUiOutcome::SelectionChanged
-        );
+        assert_eq!(snapshot.entries[0].kind, StorageEntryKind::RetryScan);
         assert_eq!(
             browser.apply_button(ButtonEvent::Select),
             StorageUiOutcome::RetryRequested

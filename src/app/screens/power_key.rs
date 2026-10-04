@@ -1,19 +1,18 @@
-//! Global Power-key display-maintenance menu.
+//! Global Power-key menu: clean the screen, restart the device.
 
 use core::convert::Infallible;
-
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Drawable, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle},
-};
 
 use crate::{
     app::{
         i18n::t,
         state::AppState,
-        typography::{Text, UiTextStyle},
-        widgets::{footer::draw_footer, header::draw_header},
+        widgets::{
+            footer::{draw_footer, select_and_back},
+            header::draw_header,
+            layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE},
+            list::{draw_list_row, draw_section_title, ROW_STEP},
+            text::draw_paragraph,
+        },
     },
     orientation::OrientedFrameBuffer,
 };
@@ -23,90 +22,70 @@ pub fn render_power_key_menu(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
+    let preferences = state.display;
+    let body = preferences.body_style();
+    let body_line = i32::from(body.line_height());
 
     draw_header(display, state, t(locale, "POWER KEY", "TASTO POWER"))?;
 
-    Text::new(
-        t(locale, "Screen refresh", "Aggiornamento schermo"),
-        Point::new(22, 128),
-        heading,
-    )
-    .draw(display)?;
-    Text::new(
+    let baseline = draw_section_title(
+        display,
+        preferences,
+        FIRST_BASELINE,
+        t(locale, "Screen cleaning", "Pulizia dello schermo"),
+    )?;
+    let after_text = draw_paragraph(
+        display,
         t(
             locale,
-            "Run a clean global refresh to clear e-paper ghosting.",
-            "Esegui un aggiornamento completo per eliminare gli aloni dell'e-paper.",
+            "A full refresh clears the ghosting left on the screen.",
+            "Un aggiornamento completo elimina gli aloni rimasti sullo schermo.",
         ),
-        Point::new(22, 174),
+        CONTENT_LEFT,
+        baseline,
         body,
-    )
-    .draw(display)?;
+        CONTENT_WIDTH,
+        3,
+        6,
+    )?;
 
-    draw_action(
-        display,
-        246,
+    let rows_top = after_text - body_line + 10;
+    let rows = [
         t(locale, "Clear ghosting now", "Elimina aloni ora"),
-        state.power_key_menu.selected == 0,
-        body,
-    )?;
-    draw_action(
-        display,
-        326,
+        t(locale, "Restart", "Riavvia"),
         t(locale, "Cancel", "Annulla"),
-        state.power_key_menu.selected == 1,
-        body,
-    )?;
+    ];
+    for (index, label) in rows.into_iter().enumerate() {
+        draw_list_row(
+            display,
+            preferences,
+            rows_top + index as i32 * ROW_STEP,
+            label,
+            "",
+            state.power_key_menu.selected == index,
+        )?;
+    }
 
-    Rectangle::new(Point::new(22, 454), Size::new(436, 104))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(display)?;
-    Text::new(
-        t(locale, "Long Power press", "Pressione lunga tasto"),
-        Point::new(44, 500),
-        heading,
-    )
-    .draw(display)?;
-    Text::new(
+    draw_paragraph(
+        display,
         t(
             locale,
-            "Enter sleep-image mode",
-            "Attiva modalità immagine sospensione",
+            "Power key: a short press switches the device off (standby, no battery used), a long press opens this menu.",
+            "Tasto Power: la pressione breve spegne il dispositivo (standby, senza consumo), quella lunga apre questo menu.",
         ),
-        Point::new(44, 534),
+        CONTENT_LEFT,
+        rows_top + rows.len() as i32 * ROW_STEP + 30,
         body,
-    )
-    .draw(display)?;
+        CONTENT_WIDTH,
+        5,
+        6,
+    )?;
 
-    draw_footer(display, state, t(locale, "SELECT RUN", "SELECT ESEGUI"))?;
-    Ok(())
-}
-
-fn draw_action(
-    display: &mut OrientedFrameBuffer<'_>,
-    top: i32,
-    label: &str,
-    selected: bool,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    let border = if selected {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
-    } else {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-    };
-    Rectangle::new(Point::new(22, top), Size::new(436, 62))
-        .into_styled(border)
-        .draw(display)?;
-    Text::new(
-        if selected { ">" } else { " " },
-        Point::new(38, top + 40),
-        style,
+    draw_footer(
+        display,
+        state,
+        &select_and_back(locale, t(locale, "RUN", "ESEGUI")),
     )
-    .draw(display)?;
-    Text::new(label, Point::new(68, top + 40), style).draw(display)?;
-    Ok(())
 }
 
 #[cfg(test)]

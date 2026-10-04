@@ -21,6 +21,9 @@ pub mod state;
 pub mod typography;
 pub mod widgets;
 
+#[cfg(test)]
+mod ux_audit;
+
 pub use router::ScreenRoute;
 pub use state::AppState;
 
@@ -396,7 +399,6 @@ mod tests {
                 state.update_wifi_transfer_snapshot(crate::wifi_transfer::WifiTransferSnapshot {
                     state: crate::wifi_transfer::WifiTransferState::Ready,
                     url: Some("http://192.168.1.10/".into()),
-                    code: Some("244126".into()),
                     last_action: "Portal ready".into(),
                     last_bytes: 0,
                     ..Default::default()
@@ -409,7 +411,6 @@ mod tests {
                 state.update_wifi_transfer_snapshot(crate::wifi_transfer::WifiTransferSnapshot {
                     state: crate::wifi_transfer::WifiTransferState::Ready,
                     url: Some("http://192.168.71.1/".into()),
-                    code: Some("713284".into()),
                     ap_ssid: Some("RUSTMIX-5609".into()),
                     ap_password: Some("SN72D48N9NNA".into()),
                     join: crate::wifi_transfer::JoinAttemptState::Idle,
@@ -609,6 +610,15 @@ mod tests {
             ("files", |state| {
                 state.home_selected = home_index(ScreenRoute::Files);
                 state.apply(crate::buttons::ButtonEvent::Select);
+            }),
+            ("upload", |state| {
+                state.network.ipv4_address = Some("192.168.1.42".into());
+                state.network.ssid = Some("CasaMia".into());
+                state.router.navigate_to(ScreenRoute::Upload);
+            }),
+            ("upload-usb", |state| {
+                state.upload_selected = 1;
+                state.router.navigate_to(ScreenRoute::Upload);
             }),
             ("usb-disk", |state| {
                 state.router.navigate_to(ScreenRoute::UsbDisk);

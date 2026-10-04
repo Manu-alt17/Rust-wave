@@ -8,6 +8,7 @@ use embedded_graphics::{
     prelude::{Drawable, Point, Primitive, Size},
     primitives::{
         Circle, CornerRadii, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle,
+        Triangle,
     },
 };
 
@@ -18,7 +19,9 @@ use embedded_iconoir::{
             navigation::{FastArrowDownBox, FastArrowRightBox},
         },
         size48px::{
-            activities::BookmarkBook, editor::List, organization::BookmarkEmpty,
+            activities::{BookmarkBook, Percentage},
+            editor::List,
+            organization::BookmarkEmpty,
             system::Settings as SettingsIcon,
         },
     },
@@ -32,20 +35,36 @@ use crate::{
         state::AppState,
         typography::{Text, TextBounds, UiTextStyle},
         widgets::{
-            footer::draw_footer,
+            footer::{
+                back_action, back_only, draw_footer, draw_footer_paged, footer_hints,
+                select_and_back, FooterKey,
+            },
             header::draw_header,
             home_tile::{
                 draw_icon_tile, draw_iconoir_icon, COMPACT_TILE_SIZE, TILE_GAP_X, TILE_GAP_Y,
             },
+            layout::{
+                CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_RIGHT, CONTENT_WIDTH, FIRST_BASELINE,
+                FIRST_ROW_TOP, SCREEN_WIDTH,
+            },
+            list::{
+                centered_baseline, draw_list_row, draw_row_frame, draw_section_title, page_window,
+                ROW_GAP, ROW_HEIGHT, ROW_PAD_X, ROW_STEP,
+            },
             status_glyphs::{draw_battery_icon, BATTERY_SIZE},
+            text::{
+                draw_paragraph, draw_text_centered, draw_text_fit, truncate_to_width,
+                wrap_to_width, ELLIPSIS,
+            },
         },
     },
     cover_cache::{CachedThumbnail, THUMB_HEIGHT, THUMB_WIDTH},
     orientation::{DisplayOrientation, OrientedFrameBuffer},
     reader::{
         eligible_word_spans, BookFont, BookFontSize, LibraryBookAction, ParagraphAlignment,
-        ReaderBook, ReaderCachedPage, ReaderDictionaryMode, ReaderLoadingStage, ReaderOption,
-        ReaderOrientation, ReaderPreferences, ReaderSession, ReadingPreference, ReadingTheme,
+        ReaderBook, ReaderCachedPage, ReaderDictionaryMode, ReaderLoadingStage, ReaderLocation,
+        ReaderOption, ReaderOrientation, ReaderPreferences, ReaderSession, ReaderUiState,
+        ReadingPreference, ReadingTheme, READER_BODY_MARGIN_PX,
     },
     regional::Locale,
 };
@@ -55,87 +74,61 @@ pub fn render_continue_reading(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
+    let preferences = state.display;
     draw_header(display, state, t(locale, "CONTINUE", "CONTINUA"))?;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    if let Some(session) = state.reader.session.as_ref() {
-        Text::new(
-            &truncate(&session.book.title, 38),
-            Point::new(24, 186),
-            heading,
+    let (title, detail, action) = if let Some(session) = state.reader.session.as_ref() {
+        let page = session.current_absolute_page() + 1;
+        (
+            session.book.title.as_str(),
+            match locale {
+                Locale::English => format!("You are on page {page}."),
+                Locale::Italian => format!("Sei a pagina {page}."),
+            },
+            t(locale, "RESUME", "RIPRENDI"),
         )
-        .draw(display)?;
-        let page_line = match locale {
-            Locale::English => format!(
-                "Runtime page {} is ready.",
-                session.current_absolute_page() + 1
-            ),
-            Locale::Italian => format!("Pagina {} pronta.", session.current_absolute_page() + 1),
-        };
-        Text::new(&page_line, Point::new(24, 236), body).draw(display)?;
-        Text::new(
-            t(
-                locale,
-                "SELECT resumes the open page.",
-                "SELECT riprende la pagina aperta.",
-            ),
-            Point::new(24, 280),
-            body,
-        )
-        .draw(display)?;
     } else if let Some(resume) = state.reader.resume.as_ref() {
-        Text::new(&truncate(&resume.title, 38), Point::new(24, 186), heading).draw(display)?;
-        let saved_line = match locale {
-            Locale::English => format!("Saved page {} is ready to restore.", resume.page_index + 1),
-            Locale::Italian => format!(
-                "Pagina salvata {} pronta per il ripristino.",
-                resume.page_index + 1
-            ),
-        };
-        Text::new(&saved_line, Point::new(24, 236), body).draw(display)?;
-        Text::new(
-            t(
-                locale,
-                "SELECT loads the saved position.",
-                "SELECT carica la posizione salvata.",
-            ),
-            Point::new(24, 280),
-            body,
+        let page = resume.page_index + 1;
+        (
+            resume.title.as_str(),
+            match locale {
+                Locale::English => format!("Saved position: page {page}."),
+                Locale::Italian => format!("Posizione salvata: pagina {page}."),
+            },
+            t(locale, "RESUME", "RIPRENDI"),
         )
-        .draw(display)?;
     } else {
-        Text::new(
-            t(locale, "No saved book", "Nessun libro salvato"),
-            Point::new(24, 186),
-            heading,
-        )
-        .draw(display)?;
-        Text::new(
+        (
+            t(locale, "No book in progress", "Nessun libro in lettura"),
             t(
                 locale,
-                "Open Library and choose a TXT book.",
-                "Apri Libreria e scegli un libro TXT.",
-            ),
-            Point::new(24, 236),
-            body,
+                "Open the Library and choose a book. The last page read is saved on the SD card.",
+                "Apri la Libreria e scegli un libro. L'ultima pagina letta viene salvata sulla scheda SD.",
+            )
+            .to_string(),
+            t(locale, "LIBRARY", "LIBRERIA"),
         )
-        .draw(display)?;
-        Text::new(
-            t(
-                locale,
-                "The last-read page is stored on the SD card.",
-                "L'ultima pagina letta è salvata sulla scheda SD.",
-            ),
-            Point::new(24, 280),
-            body,
-        )
-        .draw(display)?;
-    }
-    draw_footer(
+    };
+    let next = draw_paragraph(
         display,
-        state,
-        t(locale, "SELECT RESUME", "SELECT RIPRENDI"),
-    )
+        title,
+        CONTENT_LEFT,
+        FIRST_BASELINE,
+        preferences.heading_style(),
+        CONTENT_WIDTH,
+        3,
+        2,
+    )?;
+    draw_paragraph(
+        display,
+        &detail,
+        CONTENT_LEFT,
+        next + 8,
+        preferences.body_style(),
+        CONTENT_WIDTH,
+        4,
+        6,
+    )?;
+    draw_footer(display, state, &select_and_back(locale, action))
 }
 
 /// Left margin of the cover grid, matching the Home dashboard grid's margin.
@@ -468,18 +461,37 @@ pub fn render_library(
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
     let reader = &state.reader;
-    let body = state.display.body_style();
+    let preferences = state.display;
     draw_header(display, state, t(locale, "LIBRARY", "LIBRERIA"))?;
 
     let (entries, in_progress_count) = library_grid_entries(reader);
     if entries.is_empty() {
-        let message = reader.library_error.as_deref().unwrap_or(t(
-            locale,
-            "Copy TXT or EPUB books into /RUSTMIX/BOOKS.",
-            "Copia libri TXT o EPUB in /RUSTMIX/BOOKS.",
-        ));
-        Text::new(&truncate(message, 54), Point::new(26, 148), body).draw(display)?;
-        return Ok(());
+        let (title, message) = match reader.library_error.as_deref() {
+            Some(error) => (
+                t(locale, "Library unavailable", "Libreria non disponibile"),
+                error,
+            ),
+            None => (
+                t(locale, "No books yet", "Nessun libro"),
+                t(
+                    locale,
+                    "Copy EPUB or TXT books into the /RUSTMIX/BOOKS folder of the SD card, or send them from your phone with Upload.",
+                    "Copia libri EPUB o TXT nella cartella /RUSTMIX/BOOKS della scheda SD, oppure inviali dal telefono con Carica.",
+                ),
+            ),
+        };
+        let next = draw_section_title(display, preferences, FIRST_BASELINE, title)?;
+        draw_paragraph(
+            display,
+            message,
+            CONTENT_LEFT,
+            next,
+            preferences.body_style(),
+            CONTENT_WIDTH,
+            6,
+            6,
+        )?;
+        return draw_footer(display, state, &back_only(locale));
     }
 
     let blocks = library_blocks(entries.len(), in_progress_count);
@@ -552,36 +564,26 @@ pub fn render_library(
     Ok(())
 }
 
-/// Library footer: the same round "hold SELECT" glyph the Reader page's own
-/// footer uses ([`draw_dot`]), sandwiched between "Tieni"/"Hold" and
-/// "Opzioni"/"Options" — the only way to reach the per-book actions overlay
-/// (mark completed / bookmarks) is a long SELECT press on a cover, which
+/// Library footer: SELECT opens the book, and holding it is the only way to
+/// the per-book actions (mark read or unread, bookmarks, delete), which
 /// nothing else on this screen hints at.
 fn draw_library_footer(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let style = state.display.footer_style();
-    let color = BinaryColor::On;
-    let baseline = 782;
-
-    Rectangle::new(Point::new(14, 746), Size::new(452, 1))
-        .into_styled(PrimitiveStyle::with_fill(color))
-        .draw(display)?;
-
-    let cursor =
-        Text::new(t(locale, "Hold", "Tieni"), Point::new(18, baseline), style).draw(display)?;
-    let dot_left = cursor.x + ICON_TEXT_GAP;
-    draw_dot(display, dot_left, baseline, color)?;
-    let text_left = dot_left + DOT_SIZE + ICON_TEXT_GAP;
-    Text::new(
-        t(locale, "Options", "Opzioni"),
-        Point::new(text_left, baseline),
-        style,
+    draw_footer(
+        display,
+        state,
+        &footer_hints(
+            locale,
+            &[
+                (FooterKey::Select, t(locale, "OPEN", "APRI")),
+                (FooterKey::Hold, t(locale, "OPTIONS", "OPZIONI")),
+                (FooterKey::Boot, back_action(locale)),
+            ],
+        ),
     )
-    .draw(display)?;
-    Ok(())
 }
 
 /// Section header: an uppercase caption with a full-width underline beneath
@@ -724,7 +726,7 @@ fn draw_placeholder_title(
     // Clear of the placeholder's spine line on the left.
     let (margin_left, margin_right, padding) = (16, 10, 8);
     let text_width = i32::from(THUMB_WIDTH) - margin_left - margin_right - 2 * padding;
-    let lines = wrap_to_width(title.trim(), style, text_width, PLACEHOLDER_TITLE_LINES);
+    let lines = wrap_to_width(style, title.trim(), text_width, PLACEHOLDER_TITLE_LINES);
     if lines.is_empty() {
         return Ok(());
     }
@@ -754,62 +756,6 @@ fn draw_placeholder_title(
         Text::new(line, Point::new(x, y), style).draw(display)?;
     }
     Ok(())
-}
-
-/// Break `text` into at most `max_lines` lines no wider than `max_width`,
-/// at spaces where possible and inside a word only when the word alone is
-/// too wide. Text that does not fit ends its last line with an ellipsis.
-fn wrap_to_width(text: &str, style: UiTextStyle, max_width: i32, max_lines: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut overflow = false;
-    'words: for word in text.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_string()
-        } else {
-            format!("{current} {word}")
-        };
-        if style.text_width(&candidate) <= max_width {
-            current = candidate;
-            continue;
-        }
-        if !current.is_empty() {
-            lines.push(std::mem::take(&mut current));
-            if lines.len() == max_lines {
-                overflow = true;
-                break;
-            }
-        }
-        for character in word.chars() {
-            current.push(character);
-            if style.text_width(&current) > max_width {
-                current.pop();
-                lines.push(std::mem::replace(&mut current, character.to_string()));
-                if lines.len() == max_lines {
-                    overflow = true;
-                    break 'words;
-                }
-            }
-        }
-    }
-    if !overflow && !current.is_empty() {
-        if lines.len() == max_lines {
-            overflow = true;
-        } else {
-            lines.push(current);
-        }
-    }
-    if overflow {
-        if let Some(last) = lines.last_mut() {
-            while !last.is_empty() && style.text_width(&format!("{last}…")) > max_width {
-                last.pop();
-            }
-            let trimmed = last.trim_end().len();
-            last.truncate(trimmed);
-            last.push('…');
-        }
-    }
-    lines
 }
 
 /// The status bar and its label share one line — the label beside the bar's
@@ -1046,84 +992,121 @@ fn draw_library_scroll_hint(display: &mut OrientedFrameBuffer<'_>) -> Result<(),
     )
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct LibraryEntryColumns {
-    badge: String,
-    suffix: String,
-}
+/// Rows a list starting right under the header shows per page.
+const LIST_ROWS_PER_PAGE: usize = 10;
+/// Top of the first row of a list under a one-line title.
+const TITLED_ROWS_TOP: i32 = FIRST_BASELINE + 24;
+/// Rows a list under a one-line title shows per page.
+const TITLED_ROWS_PER_PAGE: usize = 9;
 
-fn bookmark_entry_columns(
-    reader: &crate::reader::ReaderUiState,
-    bookmark: &crate::reader::ReaderLocation,
-    locale: Locale,
-) -> LibraryEntryColumns {
+/// Where a bookmark points, in words: the chapter and its page for an EPUB,
+/// the page for a text file.
+fn bookmark_row_label(reader: &ReaderUiState, bookmark: &ReaderLocation, locale: Locale) -> String {
     if let Some(chapter) = reader.bookmark_display_chapter_page(bookmark) {
-        let badge = match locale {
-            Locale::English => format!("CH {}", chapter.chapter_number),
-            Locale::Italian => format!("CAP {}", chapter.chapter_number),
-        };
-        LibraryEntryColumns {
-            badge,
-            suffix: format!("P {}", chapter.page_text()),
+        match locale {
+            Locale::English => format!(
+                "Chapter {}, page {}",
+                chapter.chapter_number,
+                chapter.page_text()
+            ),
+            Locale::Italian => format!(
+                "Capitolo {}, pagina {}",
+                chapter.chapter_number,
+                chapter.page_text()
+            ),
         }
     } else {
-        LibraryEntryColumns {
-            badge: t(locale, "PAGE", "PAGINA").into(),
-            suffix: reader.bookmark_display_page(bookmark).to_string(),
-        }
+        format!(
+            "{} {}",
+            t(locale, "Page", "Pagina"),
+            reader.bookmark_display_page(bookmark)
+        )
     }
 }
 
+/// The page of bookmark rows that holds `selected`, each with how far into
+/// the book it is. Returns `(page, pages)` for the footer.
+fn draw_bookmark_rows(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+    bookmarks: &[ReaderLocation],
+    selected: usize,
+    rows_top: i32,
+    per_page: usize,
+) -> Result<(usize, usize), Infallible> {
+    let locale = state.regional.locale;
+    let selected = selected.min(bookmarks.len().saturating_sub(1));
+    let (first, end, page, pages) = page_window(selected, bookmarks.len(), per_page);
+    for (row, bookmark) in bookmarks[first..end].iter().enumerate() {
+        let percent = bookmark
+            .reading_percent
+            .map_or_else(String::new, |percent| format!("{}%", percent.min(100)));
+        draw_list_row(
+            display,
+            state.display,
+            rows_top + row as i32 * ROW_STEP,
+            &bookmark_row_label(&state.reader, bookmark, locale),
+            &percent,
+            first + row == selected,
+        )?;
+    }
+    Ok((page, pages))
+}
+
+/// Footer of a bookmark list: open with SELECT, delete by holding it.
+fn bookmark_list_hint(locale: Locale) -> String {
+    footer_hints(
+        locale,
+        &[
+            (FooterKey::Select, t(locale, "OPEN", "APRI")),
+            (FooterKey::Hold, t(locale, "DELETE", "ELIMINA")),
+            (FooterKey::Boot, back_action(locale)),
+        ],
+    )
+}
+
+/// Bookmarks of the open book (`ScreenRoute::ReaderBookmarks`), a page of
+/// rows at a time.
 pub fn render_bookmarks(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
+    let preferences = state.display;
     draw_header(display, state, t(locale, "BOOKMARKS", "SEGNALIBRI"))?;
-    let body = state.display.body_style();
-    if state.reader.bookmarks.is_empty() {
-        Text::new(
-            t(locale, "No saved bookmarks", "Nessun segnalibro salvato"),
-            Point::new(24, 164),
-            state.display.heading_style(),
-        )
-        .draw(display)?;
-        Text::new(
+    let bookmarks = state.reader.session_bookmarks();
+    if bookmarks.is_empty() {
+        let next = draw_section_title(
+            display,
+            preferences,
+            FIRST_BASELINE,
+            t(locale, "No bookmarks", "Nessun segnalibro"),
+        )?;
+        draw_paragraph(
+            display,
             t(
                 locale,
-                "Open a Reader page, choose Reader Options,",
-                "Apri una pagina, scegli Opzioni lettore,",
+                "To add one, open Options from the reading page and choose Mark page.",
+                "Per aggiungerne uno, apri le Opzioni dalla pagina di lettura e scegli Segna pagina.",
             ),
-            Point::new(24, 218),
-            body,
-        )
-        .draw(display)?;
-        Text::new(
-            t(
-                locale,
-                "then select Add / Remove Bookmark.",
-                "poi seleziona Aggiungi/Rimuovi segnalibro.",
-            ),
-            Point::new(24, 260),
-            body,
-        )
-        .draw(display)?;
-    } else {
-        for (index, bookmark) in state.reader.bookmarks.iter().take(8).enumerate() {
-            let top = 118 + index as i32 * 64;
-            let columns = bookmark_entry_columns(&state.reader, bookmark, locale);
-            draw_row(
-                display,
-                state,
-                top,
-                state.reader.bookmarks_selected == index,
-                &truncate(&bookmark.title, 23),
-                columns.badge.as_str(),
-                columns.suffix.as_str(),
-            )?;
-        }
+            CONTENT_LEFT,
+            next,
+            preferences.body_style(),
+            CONTENT_WIDTH,
+            4,
+            6,
+        )?;
+        return draw_footer(display, state, &back_only(locale));
     }
-    Ok(())
+    let position = draw_bookmark_rows(
+        display,
+        state,
+        &bookmarks,
+        state.reader.bookmarks_selected,
+        FIRST_ROW_TOP,
+        LIST_ROWS_PER_PAGE,
+    )?;
+    draw_footer_paged(display, state, &bookmark_list_hint(locale), Some(position))
 }
 
 /// Book title shown under the header on the book-actions overlay and its
@@ -1139,137 +1122,242 @@ fn book_actions_target_title(state: &AppState) -> String {
     )
 }
 
-/// Library long-press overlay (`ScreenRoute::LibraryBookActions`): two
-/// actions for the book held on in the Library grid — mark it finished
-/// outright, or drill into its own bookmarks instead of the old flat,
-/// every-book list (see `render_library_book_bookmarks`).
+/// File size in the unit a reader expects, with the locale's decimal mark.
+fn book_size_label(bytes: u64, locale: Locale) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{} KB", bytes.div_ceil(1024))
+    } else {
+        let tenths = bytes.saturating_mul(10) / (1024 * 1024);
+        let mark = t(locale, ".", ",");
+        format!("{}{mark}{} MB", tenths / 10, tenths % 10)
+    }
+}
+
+/// Library long-press overlay (`ScreenRoute::LibraryBookActions`): the
+/// actions for the book held on in the Library grid — mark it finished or
+/// never read, list its bookmarks, or delete its file. Deleting takes a
+/// second SELECT: the row then asks to confirm.
 pub fn render_library_book_actions(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
+    let preferences = state.display;
+    let reader = &state.reader;
     draw_header(display, state, t(locale, "BOOK OPTIONS", "OPZIONI LIBRO"))?;
-    let heading = state.display.heading_style();
-    Text::new(
-        &truncate(&book_actions_target_title(state), 36),
-        Point::new(24, 106),
-        heading,
-    )
-    .draw(display)?;
-
-    for (index, action) in LibraryBookAction::ALL.iter().enumerate() {
-        let top = 168 + index as i32 * 66;
-        draw_row(
+    let next = draw_paragraph(
+        display,
+        &book_actions_target_title(state),
+        CONTENT_LEFT,
+        FIRST_BASELINE,
+        preferences.heading_style(),
+        CONTENT_WIDTH,
+        2,
+        2,
+    )?;
+    let info_baseline = next - 4;
+    if let Some(book) = reader.book_actions_target.as_ref() {
+        let status = match reader.book_actions_target_percent() {
+            None | Some(0) => t(locale, "New", "Nuovo").to_string(),
+            Some(percent) if percent >= 100 => t(locale, "Completed", "Completato").to_string(),
+            Some(percent) => match locale {
+                Locale::English => format!("{percent}% read"),
+                Locale::Italian => format!("Letto al {percent}%"),
+            },
+        };
+        let info = format!(
+            "{} \u{00B7} {} \u{00B7} {status}",
+            book.format.badge(),
+            book_size_label(book.size_bytes, locale)
+        );
+        draw_text_fit(
             display,
-            state,
-            top,
-            state.reader.book_actions_selected == index,
-            action.label_i18n(locale),
-            "",
-            "",
+            &info,
+            Point::new(CONTENT_LEFT, info_baseline),
+            preferences.detail_style(),
+            CONTENT_WIDTH,
         )?;
     }
-    Ok(())
+
+    let rows_top = info_baseline + 16;
+    for (index, action) in LibraryBookAction::ALL.iter().enumerate() {
+        let label = if *action == LibraryBookAction::Delete && reader.book_delete_armed {
+            t(
+                locale,
+                "Confirm: delete the book",
+                "Conferma: elimina il libro",
+            )
+        } else {
+            action.label_i18n(locale)
+        };
+        draw_list_row(
+            display,
+            preferences,
+            rows_top + index as i32 * ROW_STEP,
+            label,
+            "",
+            reader.book_actions_selected == index,
+        )?;
+    }
+
+    let note_baseline = rows_top + LibraryBookAction::ALL.len() as i32 * ROW_STEP + 24;
+    let note = if let Some(error) = reader.book_actions_error.as_deref() {
+        Some(match locale {
+            Locale::English => format!("Could not delete the book: {error}"),
+            Locale::Italian => format!("Impossibile eliminare il libro: {error}"),
+        })
+    } else if reader.book_delete_armed {
+        Some(
+            t(
+                locale,
+                "The file is removed from the SD card. This cannot be undone.",
+                "Il file viene rimosso dalla scheda SD. L'operazione non si può annullare.",
+            )
+            .to_string(),
+        )
+    } else {
+        None
+    };
+    if let Some(note) = note {
+        draw_paragraph(
+            display,
+            &note,
+            CONTENT_LEFT,
+            note_baseline,
+            preferences.body_style(),
+            CONTENT_WIDTH,
+            4,
+            6,
+        )?;
+    }
+
+    let hint = if reader.book_delete_armed {
+        footer_hints(
+            locale,
+            &[
+                (FooterKey::Select, t(locale, "DELETE", "ELIMINA")),
+                (FooterKey::Boot, t(locale, "CANCEL", "ANNULLA")),
+            ],
+        )
+    } else {
+        select_and_back(locale, t(locale, "CONFIRM", "CONFERMA"))
+    };
+    draw_footer(display, state, &hint)
 }
 
 /// One book's bookmarks (`ScreenRoute::LibraryBookBookmarks`), reached from
-/// [`render_library_book_actions`] — the chapter/page each row shows comes
-/// from the same [`bookmark_entry_columns`] helper `render_bookmarks` uses,
-/// just without a title column since every row here is already the same
-/// book.
+/// [`render_library_book_actions`]: the same rows as [`render_bookmarks`]
+/// under the book's title.
 pub fn render_library_book_bookmarks(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
+    let preferences = state.display;
     draw_header(display, state, t(locale, "BOOKMARKS", "SEGNALIBRI"))?;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    Text::new(
-        &truncate(&book_actions_target_title(state), 36),
-        Point::new(24, 106),
-        heading,
-    )
-    .draw(display)?;
+    let next = draw_section_title(
+        display,
+        preferences,
+        FIRST_BASELINE,
+        &book_actions_target_title(state),
+    )?;
 
     let bookmarks = state.reader.book_actions_bookmarks();
     if bookmarks.is_empty() {
-        Text::new(
-            t(locale, "No saved bookmarks", "Nessun segnalibro salvato"),
-            Point::new(24, 164),
-            heading,
-        )
-        .draw(display)?;
-        Text::new(
+        draw_paragraph(
+            display,
             t(
                 locale,
-                "Open this book, then Reader Options,",
-                "Apri questo libro, poi Opzioni lettore,",
+                "This book has no bookmarks. To add one, open it and choose Mark page in Options.",
+                "Questo libro non ha segnalibri. Per aggiungerne uno, aprilo e scegli Segna pagina nelle Opzioni.",
             ),
-            Point::new(24, 218),
-            body,
-        )
-        .draw(display)?;
-        Text::new(
-            t(
-                locale,
-                "then select Add / Remove Bookmark.",
-                "poi seleziona Aggiungi/Rimuovi segnalibro.",
-            ),
-            Point::new(24, 260),
-            body,
-        )
-        .draw(display)?;
-    } else {
-        for (index, bookmark) in bookmarks.iter().take(8).enumerate() {
-            let top = 164 + index as i32 * 64;
-            let columns = bookmark_entry_columns(&state.reader, bookmark, locale);
-            draw_row(
-                display,
-                state,
-                top,
-                state.reader.book_bookmarks_selected == index,
-                columns.badge.as_str(),
-                columns.suffix.as_str(),
-                "",
-            )?;
-        }
+            CONTENT_LEFT,
+            next,
+            preferences.body_style(),
+            CONTENT_WIDTH,
+            4,
+            6,
+        )?;
+        return draw_footer(display, state, &back_only(locale));
     }
-    Ok(())
+    let position = draw_bookmark_rows(
+        display,
+        state,
+        &bookmarks,
+        state.reader.book_bookmarks_selected,
+        TITLED_ROWS_TOP,
+        TITLED_ROWS_PER_PAGE,
+    )?;
+    draw_footer_paged(display, state, &bookmark_list_hint(locale), Some(position))
 }
 
+/// Book opening (`ScreenRoute::ReaderLoading`): the title, the stage and a
+/// progress bar. The reason is shown only when the book could not be
+/// opened; BOOT cancels at any time.
 pub fn render_loading(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
+    let preferences = state.display;
+    let body = preferences.body_style();
     draw_header(display, state, t(locale, "OPENING BOOK", "APERTURA"))?;
-    let body = state.display.body_style();
-    let heading = state.display.heading_style();
     let loading = state.reader.loading.as_ref();
     let title = loading.map_or(t(locale, "Book", "Libro"), |value| {
         value.book.title.as_str()
     });
     let stage = loading.map_or(ReaderLoadingStage::OpeningFile, |value| value.stage);
-    Text::new(&truncate(title, 36), Point::new(24, 172), heading).draw(display)?;
-    Text::new(stage.label_i18n(locale), Point::new(24, 234), body).draw(display)?;
-    draw_progress(display, stage.progress())?;
-    let message = loading.map_or(
-        t(locale, "Preparing reader...", "Preparazione lettore..."),
-        |value| value.message.as_str(),
+    let failed = matches!(
+        stage,
+        ReaderLoadingStage::Failed | ReaderLoadingStage::UnsupportedEpub
     );
-    Text::new(&truncate(message, 52), Point::new(24, 352), body).draw(display)?;
-    Text::new(
-        t(
-            locale,
-            "The current page opens before full indexing.",
-            "La pagina attuale si apre prima dell'indicizzazione completa.",
-        ),
-        Point::new(24, 406),
+
+    let next = draw_paragraph(
+        display,
+        title,
+        CONTENT_LEFT,
+        FIRST_BASELINE,
+        preferences.heading_style(),
+        CONTENT_WIDTH,
+        3,
+        2,
+    )?;
+    let stage_baseline = next + 12;
+    draw_text_fit(
+        display,
+        stage.label_i18n(locale),
+        Point::new(CONTENT_LEFT, stage_baseline),
         body,
+        CONTENT_WIDTH,
+    )?;
+    let bar_top = stage_baseline + 18;
+    draw_progress(display, bar_top, stage.progress())?;
+
+    if failed {
+        if let Some(reason) = loading
+            .map(|value| value.message.trim())
+            .filter(|reason| !reason.is_empty())
+        {
+            draw_paragraph(
+                display,
+                reason,
+                CONTENT_LEFT,
+                bar_top + LOADING_BAR_HEIGHT + 36,
+                body,
+                CONTENT_WIDTH,
+                6,
+                6,
+            )?;
+        }
+        return draw_footer(display, state, &back_only(locale));
+    }
+    draw_footer(
+        display,
+        state,
+        &footer_hints(locale, &[(FooterKey::Boot, t(locale, "CANCEL", "ANNULLA"))]),
     )
-    .draw(display)?;
-    Ok(())
 }
 
 /// Top margin above the reading-progress bar, in logical pixels.
@@ -1301,8 +1389,9 @@ pub fn render_page(
         state.reader.preferences.theme,
     );
 
+    let bookmarked = state.reader.current_page_is_bookmarked();
     if !full_screen {
-        draw_reading_progress(display, state, session, width)?;
+        draw_reading_progress(display, state, session, width, bookmarked)?;
     }
 
     if let Some(page) = session.current_cached_page() {
@@ -1358,6 +1447,9 @@ pub fn render_page(
     if !full_screen {
         draw_reader_footer(display, state, width, height, footer_line)?;
     }
+    if bookmarked {
+        draw_bookmark_ribbon(display, width)?;
+    }
 
     // HighContrast is a night mode: the page is drawn exactly as Classic,
     // then the whole panel is flipped to white-on-black so the e-paper
@@ -1366,6 +1458,42 @@ pub fn render_page(
         display.invert_all();
     }
     Ok(())
+}
+
+/// Width of the bookmark ribbon on a marked page.
+const BOOKMARK_RIBBON_WIDTH: i32 = 8;
+/// Height of the bookmark ribbon, notch included.
+const BOOKMARK_RIBBON_HEIGHT: i32 = 22;
+/// Gap between the ribbon and the panel's right edge: inside the page
+/// margin, clear of the book text.
+const BOOKMARK_RIBBON_RIGHT_GAP: i32 = 6;
+/// Room the progress label leaves between itself and the ribbon.
+const BOOKMARK_RIBBON_LABEL_GAP: i32 = 4;
+
+/// A ribbon hanging from the top right corner of a page that has a
+/// bookmark, so the mark shows while reading, full screen included.
+fn draw_bookmark_ribbon(
+    display: &mut OrientedFrameBuffer<'_>,
+    width: i32,
+) -> Result<(), Infallible> {
+    let left = width - BOOKMARK_RIBBON_RIGHT_GAP - BOOKMARK_RIBBON_WIDTH;
+    Rectangle::new(
+        Point::new(left, 0),
+        Size::new(BOOKMARK_RIBBON_WIDTH as u32, BOOKMARK_RIBBON_HEIGHT as u32),
+    )
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+    .draw(display)?;
+    // The swallowtail notch at the ribbon's end.
+    Triangle::new(
+        Point::new(left, BOOKMARK_RIBBON_HEIGHT),
+        Point::new(left + BOOKMARK_RIBBON_WIDTH - 1, BOOKMARK_RIBBON_HEIGHT),
+        Point::new(
+            left + BOOKMARK_RIBBON_WIDTH / 2,
+            BOOKMARK_RIBBON_HEIGHT - BOOKMARK_RIBBON_WIDTH / 2,
+        ),
+    )
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+    .draw(display)
 }
 
 /// Diagnostic for field reports of pages that rendered fine once and later
@@ -1483,7 +1611,7 @@ fn draw_inline_image_placeholder(
     .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
     .draw(display)?;
     if !alt.is_empty() {
-        let label = truncate(alt, 48);
+        let label = truncate_to_width(body_style, alt, box_bounds.width() - 16);
         let label_width = body_style.text_width(&label);
         let left = box_bounds.left + (box_bounds.right - box_bounds.left - label_width).max(0) / 2;
         let baseline = slot_top + slot_height / 2 + i32::from(body_style.line_height()) / 2;
@@ -1503,6 +1631,7 @@ fn draw_reading_progress(
     state: &AppState,
     session: &crate::reader::ReaderSession,
     width: i32,
+    bookmarked: bool,
 ) -> Result<(), Infallible> {
     let style = state.display.body_style();
     let percent_label = session.reading_percent_label();
@@ -1515,7 +1644,13 @@ fn draw_reading_progress(
     );
     let label_width = style.text_width(&label);
     let track_left = 14;
-    let track_right = (width - 14 - 10 - label_width).max(track_left + 4);
+    // A marked page keeps the corner clear for its ribbon.
+    let ribbon_room = if bookmarked {
+        BOOKMARK_RIBBON_WIDTH + BOOKMARK_RIBBON_LABEL_GAP
+    } else {
+        0
+    };
+    let track_right = (width - 14 - ribbon_room - 10 - label_width).max(track_left + 4);
     let track_radii = CornerRadii::new(Size::new(
         PROGRESS_HEIGHT as u32 / 2,
         PROGRESS_HEIGHT as u32 / 2,
@@ -1654,9 +1789,26 @@ fn draw_dictionary_mode_overlay(
     .draw_clipped(display, clip)?;
 
     if let Some((word, definition)) = definition {
-        draw_dictionary_definition_panel(display, state, body, word, definition)?;
+        let definition = localized_dictionary_message(definition, state.regional.locale);
+        draw_dictionary_definition_panel(display, state, body, word, &definition)?;
     }
     Ok(())
+}
+
+/// The Reader's own dictionary status messages in the user's language. A
+/// definition comes from the dictionary itself and is shown as it is.
+fn localized_dictionary_message(message: &str, locale: Locale) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    if locale == Locale::English {
+        return Cow::Borrowed(message);
+    }
+    if message == "Word not found in dictionary." {
+        return Cow::Borrowed("Parola non trovata nel dizionario.");
+    }
+    match message.strip_prefix("Dictionary: ") {
+        Some(reason) => Cow::Owned(format!("Dizionario non disponibile: {reason}")),
+        None => Cow::Borrowed(message),
+    }
 }
 
 /// Horizontal padding between the selected text and the pill's rounded ends.
@@ -1745,7 +1897,9 @@ struct DefinitionPanelLayout {
 
 /// Picks the largest of `text_styles` (largest first) whose fully wrapped
 /// definition fits the reading body; the last style is used regardless, and
-/// its panel may then cover the whole body. Nothing is ever dropped.
+/// its panel may then cover the whole body. A definition of the length the
+/// dictionary produces always fits whole; only a text longer than the body
+/// can hold is cut, with an ellipsis.
 fn definition_panel_layout(
     heading: UiTextStyle,
     text_styles: [UiTextStyle; 2],
@@ -1771,7 +1925,20 @@ fn definition_panel_layout(
             break;
         }
     }
-    let (text, lines, line_step, height) = chosen.expect("two candidate styles");
+    let (text, mut lines, line_step, _) = chosen.expect("two candidate styles");
+    // A text too long for the whole body even in the smaller style is cut
+    // short there, never drawn through the footer and off the panel.
+    let fixed_height = 2 * DEFINITION_PANEL_PADDING
+        + heading_lines.len() as i32 * heading_step
+        + DEFINITION_PANEL_HEADING_GAP;
+    let room = ((max_height - fixed_height) / line_step).max(1) as usize;
+    if lines.len() > room {
+        lines.truncate(room);
+        if let Some(last) = lines.last_mut() {
+            *last = truncate_to_width(text, &format!("{last}{ELLIPSIS}"), max_width);
+        }
+    }
+    let height = fixed_height + lines.len() as i32 * line_step;
     DefinitionPanelLayout {
         heading,
         heading_lines,
@@ -2082,6 +2249,15 @@ pub fn render_options(
                 selected,
                 preferences,
             )?,
+            ReaderOption::GoTo => draw_icon_tile(
+                display,
+                top_left,
+                OPTIONS_TILE_SIZE,
+                label,
+                &Percentage::new(color),
+                selected,
+                preferences,
+            )?,
             ReaderOption::ReadingPreferences => draw_icon_tile(
                 display,
                 top_left,
@@ -2096,7 +2272,7 @@ pub fn render_options(
     draw_footer(
         display,
         state,
-        t(locale, "SELECT ACTIVATE", "SELECT ATTIVA"),
+        &select_and_back(locale, t(locale, "CHOOSE", "SCEGLI")),
     )
 }
 
@@ -2119,7 +2295,7 @@ fn render_preference_list(
     let locale = state.regional.locale;
     draw_header(display, state, t(locale, "PREFERENCES", "PREFERENZE"))?;
     for (index, preference) in ReadingPreference::ALL.iter().copied().enumerate() {
-        let badge = match preference {
+        let value = match preference {
             ReadingPreference::ReadingTheme => state.reader.preferences.theme.label_i18n(locale),
             ReadingPreference::Orientation => {
                 state.reader.preferences.orientation.label_i18n(locale)
@@ -2142,31 +2318,32 @@ fn render_preference_list(
             }
             ReadingPreference::FullScreen => t(locale, "Off", "Non attivo"),
         };
-        draw_row(
+        draw_list_row(
             display,
-            state,
-            152 + index as i32 * 78,
-            state.reader.preferences_selected == index,
+            state.display,
+            FIRST_ROW_TOP + index as i32 * ROW_STEP,
             preference.label_i18n(locale),
-            badge,
-            "",
+            value,
+            state.reader.preferences_selected == index,
         )?;
     }
-    draw_footer(display, state, t(locale, "SELECT EDIT", "SELECT MODIFICA"))
+    draw_footer(
+        display,
+        state,
+        &select_and_back(locale, t(locale, "EDIT", "MODIFICA")),
+    )
 }
 
-/// Fixed sample paragraph shown while previewing Paragraph Alignment —
-/// long enough that Justified visibly stretches its non-final lines.
-const ALIGNMENT_SAMPLE_EN: [&str; 2] = [
-    "The quick brown fox jumps over the lazy dog while",
-    "reading is a quiet pleasure.",
-];
-/// Italian counterpart of [`ALIGNMENT_SAMPLE_EN`], kept to a similar length
-/// and line break so the alignment preview looks the same either way.
-const ALIGNMENT_SAMPLE_IT: [&str; 2] = [
-    "La volpe marrone salta veloce sopra il cane pigro",
-    "mentre la lettura è un piacere tranquillo.",
-];
+/// Sample paragraph shown while previewing Paragraph Alignment: long enough
+/// to wrap at every book font size, so Justified visibly stretches its
+/// non-final lines.
+const ALIGNMENT_SAMPLE_EN: &str =
+    "The quick brown fox jumps over the lazy dog while reading is a quiet pleasure.";
+/// Italian counterpart of [`ALIGNMENT_SAMPLE_EN`], of a similar length.
+const ALIGNMENT_SAMPLE_IT: &str =
+    "La volpe marrone salta veloce sopra il cane pigro mentre la lettura è un piacere tranquillo.";
+/// Most lines of the alignment sample shown.
+const ALIGNMENT_SAMPLE_LINES: usize = 5;
 
 /// One row's editor: SELECT on the list opens this with `candidate` seeded
 /// from the current `preferences`; UP/DOWN browse `candidate` further
@@ -2198,17 +2375,21 @@ fn render_preference_editor(
     draw_footer(
         display,
         state,
-        t(locale, "SELECT CONFIRM", "SELECT CONFERMA"),
+        &footer_hints(
+            locale,
+            &[
+                (FooterKey::Select, t(locale, "CONFIRM", "CONFERMA")),
+                (FooterKey::Boot, t(locale, "CANCEL", "ANNULLA")),
+            ],
+        ),
     )
 }
 
-/// Row footprint shared by every icon-option row (Orientation, Paragraph
-/// Alignment): same 440-wide box as the plain-text list rows (`draw_row`),
-/// just with a small `size24px` glyph inset on the left before the label.
-const ICON_ROW_HEIGHT: i32 = 50;
+/// Icon-option rows (Orientation, Paragraph Alignment): the shared list row
+/// with a small `size24px` glyph before the label.
 const ICON_ROW_ICON_SIZE: i32 = 24;
-const ICON_ROW_ICON_LEFT: i32 = 32;
-const ICON_ROW_LABEL_LEFT: i32 = 74;
+/// Gap between an icon-option row's glyph and its label.
+const ICON_ROW_ICON_GAP: i32 = 14;
 
 /// Draw one icon+label option row. `icon` is a different concrete
 /// `embedded-iconoir` type per call site, so callers pass it in already
@@ -2225,28 +2406,27 @@ where
     I: embedded_graphics::image::ImageDrawable<Color = BinaryColor>,
 {
     let body = state.display.body_style();
-    let style = if selected {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
-    } else {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-    };
-    Rectangle::new(Point::new(20, top), Size::new(440, ICON_ROW_HEIGHT as u32))
-        .into_styled(style)
-        .draw(display)?;
+    draw_row_frame(display, top, ROW_HEIGHT, selected)?;
+    let icon_left = CONTENT_LEFT + ROW_PAD_X;
     draw_iconoir_icon(
         display,
-        Point::new(
-            ICON_ROW_ICON_LEFT,
-            top + (ICON_ROW_HEIGHT - ICON_ROW_ICON_SIZE) / 2,
-        ),
+        Point::new(icon_left, top + (ROW_HEIGHT - ICON_ROW_ICON_SIZE) / 2),
         icon,
     )?;
-    Text::new(label, Point::new(ICON_ROW_LABEL_LEFT, top + 32), body).draw(display)?;
-    Ok(())
+    let label_left = icon_left + ICON_ROW_ICON_SIZE + ICON_ROW_ICON_GAP;
+    draw_text_fit(
+        display,
+        label,
+        Point::new(label_left, centered_baseline(body, top, ROW_HEIGHT)),
+        body,
+        CONTENT_RIGHT - ROW_PAD_X - label_left,
+    )
 }
 
-const EDITOR_ROW_TOP: i32 = 150;
-const EDITOR_ROW_STEP: i32 = 66;
+/// Top of an editor's first candidate row.
+const EDITOR_ROW_TOP: i32 = FIRST_ROW_TOP;
+/// Distance from one candidate row's top to the next.
+const EDITOR_ROW_STEP: i32 = ROW_STEP;
 
 fn render_orientation_editor(
     display: &mut OrientedFrameBuffer<'_>,
@@ -2299,7 +2479,7 @@ fn render_toggle_editor(
         } else {
             t(locale, "Off", "Non attivo")
         };
-        draw_row(display, state, top, value == enabled, label, "", "")?;
+        draw_list_row(display, state.display, top, label, "", value == enabled)?;
     }
     Ok(())
 }
@@ -2355,16 +2535,25 @@ fn render_alignment_editor(
         }
     }
 
+    // The sample wraps to the page's own text width in the candidate book
+    // font, so it shows what the alignment does to real lines.
     let body_style = reader_body_style(candidate.book_font, candidate.font_size, candidate.theme);
-    let sample_top = EDITOR_ROW_TOP + alignments.len() as i32 * EDITOR_ROW_STEP + 20;
-    let bounds = TextBounds::new(24, sample_top, 456, sample_top + 110);
+    let sample_top = EDITOR_ROW_TOP + alignments.len() as i32 * EDITOR_ROW_STEP + 14;
+    let bounds = TextBounds::new(
+        READER_BODY_MARGIN_PX,
+        sample_top,
+        SCREEN_WIDTH - READER_BODY_MARGIN_PX,
+        CONTENT_BOTTOM,
+    );
     let line_step = i32::from(body_style.line_height()) + 2;
-    let alignment_sample = match locale {
-        Locale::English => ALIGNMENT_SAMPLE_EN,
-        Locale::Italian => ALIGNMENT_SAMPLE_IT,
-    };
-    for (index, line) in alignment_sample.iter().enumerate() {
-        let paragraph_end = index + 1 == alignment_sample.len();
+    let lines = wrap_to_width(
+        body_style,
+        t(locale, ALIGNMENT_SAMPLE_EN, ALIGNMENT_SAMPLE_IT),
+        bounds.width(),
+        ALIGNMENT_SAMPLE_LINES,
+    );
+    for (index, line) in lines.iter().enumerate() {
+        let paragraph_end = index + 1 == lines.len();
         let (rendered, left) = aligned_reader_line(
             line,
             paragraph_end,
@@ -2379,9 +2568,18 @@ fn render_alignment_editor(
     Ok(())
 }
 
-/// One text-sample row per candidate, used by both Book Font Size and Book
-/// Font: a real specimen rendered with `reader_body_style`, not a mockup, so
-/// what's previewed is exactly what the page will look like.
+/// Padding above the label and below the specimen of a specimen row.
+const SPECIMEN_PAD_Y: i32 = 12;
+/// Gap between a specimen row's label and its specimen.
+const SPECIMEN_LABEL_GAP: i32 = 8;
+/// Letters with an ascender and a descender, to measure a line's ink.
+const SPECIMEN_INK_SAMPLE: &str = "Hg";
+
+/// One text-sample row per candidate, used by Book Font Size, Book Font and
+/// Reading Theme: a real specimen rendered with `reader_body_style`, not a
+/// mockup, so what's previewed is exactly what the page will look like. The
+/// row is as tall as its label and its specimen need, so a large specimen
+/// never runs into the label above it. Returns the row's height.
 fn draw_specimen_row(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
@@ -2389,25 +2587,32 @@ fn draw_specimen_row(
     selected: bool,
     label: &str,
     specimen_style: UiTextStyle,
-) -> Result<(), Infallible> {
+) -> Result<i32, Infallible> {
     let locale = state.regional.locale;
     let ui_body = state.display.body_style();
-    let style = if selected {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
-    } else {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-    };
-    Rectangle::new(Point::new(20, top), Size::new(440, 64))
-        .into_styled(style)
-        .draw(display)?;
-    Text::new(label, Point::new(36, top + 26), ui_body).draw(display)?;
-    Text::new(
+    let (label_top, label_bottom) = ui_body.text_ink_bounds(SPECIMEN_INK_SAMPLE);
+    let (specimen_top, specimen_bottom) = specimen_style.text_ink_bounds(SPECIMEN_INK_SAMPLE);
+    let label_baseline = top + SPECIMEN_PAD_Y - label_top;
+    let specimen_baseline = label_baseline + label_bottom + SPECIMEN_LABEL_GAP - specimen_top;
+    let height = specimen_baseline + specimen_bottom + SPECIMEN_PAD_Y - top;
+    draw_row_frame(display, top, height, selected)?;
+    let left = CONTENT_LEFT + ROW_PAD_X;
+    let width = CONTENT_WIDTH - 2 * ROW_PAD_X;
+    draw_text_fit(
+        display,
+        label,
+        Point::new(left, label_baseline),
+        ui_body,
+        width,
+    )?;
+    draw_text_fit(
+        display,
         t(locale, "Aa Reading sample", "Aa Esempio di lettura"),
-        Point::new(36, top + 52),
+        Point::new(left, specimen_baseline),
         specimen_style,
-    )
-    .draw_clipped(display, TextBounds::new(36, top, 448, top + 64))?;
-    Ok(())
+        width,
+    )?;
+    Ok(height)
 }
 
 fn render_font_size_editor(
@@ -2422,16 +2627,18 @@ fn render_font_size_editor(
         BookFontSize::XXLarge,
         BookFontSize::XXXLarge,
     ];
-    for (index, size) in sizes.into_iter().enumerate() {
+    let mut top = EDITOR_ROW_TOP;
+    for size in sizes {
         let specimen_style = reader_body_style(candidate.book_font, size, candidate.theme);
-        draw_specimen_row(
+        let height = draw_specimen_row(
             display,
             state,
-            150 + index as i32 * 78,
+            top,
             size == candidate.font_size,
             size.label_i18n(locale),
             specimen_style,
         )?;
+        top += height + ROW_GAP;
     }
     Ok(())
 }
@@ -2443,19 +2650,25 @@ fn render_font_editor(
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
     let fonts = [BookFont::Literata, BookFont::AtkinsonHyperlegible];
-    for (index, font) in fonts.into_iter().enumerate() {
+    let mut top = EDITOR_ROW_TOP;
+    for font in fonts {
         let specimen_style = reader_body_style(font, candidate.font_size, candidate.theme);
-        draw_specimen_row(
+        let height = draw_specimen_row(
             display,
             state,
-            150 + index as i32 * 78,
+            top,
             font == candidate.book_font,
             font.label_i18n(locale),
             specimen_style,
         )?;
+        top += height + ROW_GAP;
     }
     Ok(())
 }
+
+/// Inset of the High Contrast preview's inverted area from its row's edge:
+/// enough to stay inside the rounded border, even the thick selected one.
+const THEME_PREVIEW_INSET: i32 = 8;
 
 fn render_theme_editor(
     display: &mut OrientedFrameBuffer<'_>,
@@ -2464,10 +2677,10 @@ fn render_theme_editor(
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
     let themes = [ReadingTheme::Classic, ReadingTheme::HighContrast];
-    for (index, theme) in themes.into_iter().enumerate() {
-        let top = 150 + index as i32 * 78;
+    let mut top = EDITOR_ROW_TOP;
+    for theme in themes {
         let specimen_style = reader_body_style(candidate.book_font, candidate.font_size, theme);
-        draw_specimen_row(
+        let height = draw_specimen_row(
             display,
             state,
             top,
@@ -2478,76 +2691,147 @@ fn render_theme_editor(
         // Same inversion `render_page` applies for HighContrast, limited to
         // the inside of the row's selection border so the preview matches.
         if theme == ReadingTheme::HighContrast {
-            display
-                .invert_logical_rect(&Rectangle::new(Point::new(24, top + 4), Size::new(432, 56)));
+            display.invert_logical_rect(&Rectangle::new(
+                Point::new(
+                    CONTENT_LEFT + THEME_PREVIEW_INSET,
+                    top + THEME_PREVIEW_INSET,
+                ),
+                Size::new(
+                    (CONTENT_WIDTH - 2 * THEME_PREVIEW_INSET) as u32,
+                    (height - 2 * THEME_PREVIEW_INSET) as u32,
+                ),
+            ));
         }
+        top += height + ROW_GAP;
     }
     Ok(())
 }
 
+/// Height of the card that holds the "Go to" percentage.
+const GOTO_CARD_HEIGHT: i32 = 150;
+
+/// "Go to" (`ScreenRoute::ReaderGoTo`): a percentage of the book, moved
+/// with the rocker in steps, with the chapter it falls in.
+pub fn render_goto(
+    display: &mut OrientedFrameBuffer<'_>,
+    state: &AppState,
+) -> Result<(), Infallible> {
+    let locale = state.regional.locale;
+    let preferences = state.display;
+    let body = preferences.body_style();
+    draw_header(display, state, t(locale, "GO TO", "VAI A"))?;
+
+    let card_top = FIRST_ROW_TOP;
+    draw_row_frame(display, card_top, GOTO_CARD_HEIGHT, true)?;
+    let large = preferences.large_style();
+    draw_text_centered(
+        display,
+        &format!("{}%", state.reader.goto_percent),
+        CONTENT_LEFT,
+        CONTENT_WIDTH,
+        centered_baseline(large, card_top, GOTO_CARD_HEIGHT),
+        large,
+    )?;
+
+    let mut baseline = card_top + GOTO_CARD_HEIGHT + 36;
+    if let Some(chapter) = state.reader.goto_chapter_label() {
+        baseline = draw_paragraph(
+            display,
+            chapter,
+            CONTENT_LEFT,
+            baseline,
+            preferences.heading_style(),
+            CONTENT_WIDTH,
+            2,
+            2,
+        )? + 10;
+    }
+    let step = crate::reader::READER_GOTO_STEP_PERCENT;
+    let hint = match locale {
+        Locale::English => {
+            format!("UP and DOWN move by {step}%. 0% is the first page, 100% the last.")
+        }
+        Locale::Italian => format!(
+            "SU e GI\u{00D9} spostano del {step}%. 0% \u{00E8} la prima pagina, 100% l'ultima."
+        ),
+    };
+    draw_paragraph(
+        display,
+        &hint,
+        CONTENT_LEFT,
+        baseline,
+        body,
+        CONTENT_WIDTH,
+        4,
+        6,
+    )?;
+    draw_footer(
+        display,
+        state,
+        &select_and_back(locale, t(locale, "GO", "VAI")),
+    )
+}
+
+/// Table of contents (`ScreenRoute::ReaderToc`), a page of rows at a time,
+/// with the chapter being read marked.
 pub fn render_toc(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
+    let preferences = state.display;
     draw_header(display, state, t(locale, "CONTENTS", "INDICE"))?;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
     let toc = state.reader.toc_entries();
     if toc.is_empty() {
-        Text::new(
-            t(locale, "No structured TOC", "Nessun indice strutturato"),
-            Point::new(24, 196),
-            heading,
-        )
-        .draw(display)?;
-        Text::new(
+        let next = draw_section_title(
+            display,
+            preferences,
+            FIRST_BASELINE,
+            t(locale, "No table of contents", "Nessun indice"),
+        )?;
+        draw_paragraph(
+            display,
             t(
                 locale,
-                "Ordinary TXT files do not provide a formal",
-                "I file TXT normali non hanno un indice",
+                "This book has no table of contents. Plain text files never have one; EPUB books show theirs here.",
+                "Questo libro non ha un indice. I file di testo non lo prevedono; i libri EPUB mostrano qui il loro.",
             ),
-            Point::new(24, 254),
-            body,
-        )
-        .draw(display)?;
-        Text::new(
-            t(
-                locale,
-                "table of contents. EPUB books expose their",
-                "formale. I libri EPUB mostrano qui le loro",
-            ),
-            Point::new(24, 296),
-            body,
-        )
-        .draw(display)?;
-        Text::new(
-            t(
-                locale,
-                "navigation entries on this screen.",
-                "voci di navigazione.",
-            ),
-            Point::new(24, 338),
-            body,
-        )
-        .draw(display)?;
-        return Ok(());
+            CONTENT_LEFT,
+            next,
+            preferences.body_style(),
+            CONTENT_WIDTH,
+            5,
+            6,
+        )?;
+        return draw_footer(display, state, &back_only(locale));
     }
 
-    let first = state.reader.toc_selected.saturating_sub(7);
-    for (row, entry) in toc.iter().skip(first).take(8).enumerate() {
+    let current = state.reader.current_toc_index();
+    let selected = state.reader.toc_selected.min(toc.len() - 1);
+    let (first, end, page, pages) = page_window(selected, toc.len(), LIST_ROWS_PER_PAGE);
+    for (row, entry) in toc[first..end].iter().enumerate() {
         let index = first + row;
-        draw_row(
+        let label = entry.label.trim();
+        let fallback = format!("{} {}", t(locale, "Chapter", "Capitolo"), index + 1);
+        draw_list_row(
             display,
-            state,
-            120 + row as i32 * 64,
-            state.reader.toc_selected == index,
-            &truncate(&entry.label, 27),
-            t(locale, "CH", "CAP"),
-            &(index + 1).to_string(),
+            preferences,
+            FIRST_ROW_TOP + row as i32 * ROW_STEP,
+            if label.is_empty() { &fallback } else { label },
+            if current == Some(index) {
+                t(locale, "here", "qui")
+            } else {
+                ""
+            },
+            index == selected,
         )?;
     }
-    Ok(())
+    draw_footer_paged(
+        display,
+        state,
+        &select_and_back(locale, t(locale, "GO", "VAI")),
+        Some((page, pages)),
+    )
 }
 
 fn aligned_reader_line(
@@ -2595,60 +2879,43 @@ fn justify_reader_line(
     output
 }
 
-fn draw_row(
-    display: &mut OrientedFrameBuffer<'_>,
-    state: &AppState,
-    top: i32,
-    selected: bool,
-    label: &str,
-    badge: &str,
-    suffix: &str,
-) -> Result<(), Infallible> {
-    let body = state.display.body_style();
-    let style = if selected {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
-    } else {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-    };
-    Rectangle::new(Point::new(20, top), Size::new(440, 50))
-        .into_styled(style)
-        .draw(display)?;
-    Text::new(
-        if selected { ">" } else { " " },
-        Point::new(32, top + 32),
-        body,
-    )
-    .draw(display)?;
-    Text::new(label, Point::new(58, top + 32), body).draw(display)?;
-    Text::new(badge, Point::new(338, top + 32), body).draw(display)?;
-    Text::new(suffix, Point::new(402, top + 32), body).draw(display)?;
-    Ok(())
-}
+/// Height of the book-opening progress bar.
+const LOADING_BAR_HEIGHT: i32 = 28;
 
-fn draw_progress(display: &mut OrientedFrameBuffer<'_>, percent: u8) -> Result<(), Infallible> {
-    Rectangle::new(Point::new(24, 278), Size::new(432, 38))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
-        .draw(display)?;
-    let width = 4 * percent as u32;
-    Rectangle::new(Point::new(30, 284), Size::new(width.min(420), 26))
+/// The book-opening progress bar, across the content width.
+fn draw_progress(
+    display: &mut OrientedFrameBuffer<'_>,
+    top: i32,
+    percent: u8,
+) -> Result<(), Infallible> {
+    RoundedRectangle::new(
+        Rectangle::new(
+            Point::new(CONTENT_LEFT, top),
+            Size::new(CONTENT_WIDTH as u32, LOADING_BAR_HEIGHT as u32),
+        ),
+        CornerRadii::new(Size::new(10, 10)),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
+    .draw(display)?;
+    let fill = (CONTENT_WIDTH - 12) * i32::from(percent.min(100)) / 100;
+    if fill > 0 {
+        RoundedRectangle::new(
+            Rectangle::new(
+                Point::new(CONTENT_LEFT + 6, top + 6),
+                Size::new(fill as u32, (LOADING_BAR_HEIGHT - 12) as u32),
+            ),
+            CornerRadii::new(Size::new(5, 5)),
+        )
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
         .draw(display)?;
-    Ok(())
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.into();
     }
-    let mut output: String = value.chars().take(max_chars.saturating_sub(3)).collect();
-    output.push_str("...");
-    output
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        aligned_reader_line, bookmark_entry_columns, definition_panel_layout, library_grid_entries,
+        aligned_reader_line, bookmark_row_label, definition_panel_layout, library_grid_entries,
         library_visible_books, reader_body_style, render_bookmarks, render_continue_reading,
         render_library, render_library_book_actions, render_library_book_bookmarks, render_loading,
         render_options, render_preferences, render_toc, LibraryCellStatus, ReaderBodyGeometry,
@@ -2732,7 +2999,7 @@ mod tests {
     }
 
     #[test]
-    fn epub_bookmark_columns_show_chapter_and_chapter_page_total() {
+    fn bookmark_rows_say_the_chapter_and_page_in_words() {
         let bookmark = ReaderLocation {
             path: "NOVEL.EPU".into(),
             title: "Novel".into(),
@@ -2750,18 +3017,21 @@ mod tests {
         };
         let reader = crate::reader::ReaderUiState::default();
         assert_eq!(
-            bookmark_entry_columns(&reader, &bookmark, Locale::English),
-            super::LibraryEntryColumns {
-                badge: "CH 4".into(),
-                suffix: "P 3/12".into(),
-            }
+            bookmark_row_label(&reader, &bookmark, Locale::English),
+            "Chapter 4, page 3/12"
         );
         assert_eq!(
-            bookmark_entry_columns(&reader, &bookmark, Locale::Italian),
-            super::LibraryEntryColumns {
-                badge: "CAP 4".into(),
-                suffix: "P 3/12".into(),
-            }
+            bookmark_row_label(&reader, &bookmark, Locale::Italian),
+            "Capitolo 4, pagina 3/12"
+        );
+        let text_bookmark = ReaderLocation {
+            format: BookFormat::Text,
+            epub_chapter: None,
+            ..bookmark
+        };
+        assert_eq!(
+            bookmark_row_label(&reader, &text_bookmark, Locale::Italian),
+            "Pagina 12"
         );
     }
 
@@ -2851,20 +3121,20 @@ mod tests {
         let style = AppState::default().display.heading_style();
         let width = style.text_width("Il nome del");
         assert_eq!(
-            super::wrap_to_width("Il nome del vento", style, width, 5),
+            super::wrap_to_width(style, "Il nome del vento", width, 5),
             vec!["Il nome del", "vento"]
         );
-        let cut = super::wrap_to_width("Il nome del vento e altre storie", style, width, 2);
+        let cut = super::wrap_to_width(style, "Il nome del vento e altre storie", width, 2);
         assert_eq!(cut.len(), 2);
         assert!(cut[1].ends_with('…'), "{cut:?}");
         assert!(cut.iter().all(|line| style.text_width(line) <= width));
         // A word wider than a line is split inside it.
         let word = "Precipitevolissimevolmente";
-        let split = super::wrap_to_width(word, style, width, 5);
+        let split = super::wrap_to_width(style, word, width, 5);
         assert!(split.len() > 1);
         assert!(split.iter().all(|line| style.text_width(line) <= width));
         assert_eq!(split.concat(), word);
-        assert!(super::wrap_to_width("  ", style, width, 5).is_empty());
+        assert!(super::wrap_to_width(style, "  ", width, 5).is_empty());
     }
 
     #[test]

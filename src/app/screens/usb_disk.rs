@@ -9,15 +9,17 @@ use crate::{
     app::{
         i18n::t,
         state::AppState,
-        typography::{Text, UiTextStyle},
-        widgets::{footer::draw_footer, header::draw_header, home_tile::draw_iconoir_icon},
+        widgets::{
+            footer::{back_action, draw_footer, footer_hints, FooterKey},
+            header::draw_header,
+            home_tile::draw_iconoir_icon,
+            layout::{CONTENT_LEFT, CONTENT_WIDTH},
+            text::{draw_paragraph, draw_text_centered},
+        },
     },
     orientation::OrientedFrameBuffer,
     usb_disk::UsbDiskPhase,
 };
-
-const LEFT: i32 = 22;
-const WIDTH: i32 = 436;
 
 pub fn render_usb_disk(
     display: &mut OrientedFrameBuffer<'_>,
@@ -26,7 +28,7 @@ pub fn render_usb_disk(
     let locale = state.regional.locale;
     let large = state.display.large_style();
     let body = state.display.body_style();
-    draw_header(display, state, t(locale, "CONNECT TO PC", "COLLEGA AL PC"))?;
+    draw_header(display, state, t(locale, "USB CABLE", "VIA CAVO USB"))?;
     draw_iconoir_icon(
         display,
         Point::new((480 - 96) / 2, 84),
@@ -42,7 +44,13 @@ pub fn render_usb_disk(
                 "Collega il dispositivo al computer col cavo USB e premi SELECT: la microSD compare sul computer come un disco, per copiare i libri in BOOKS e gli audiolibri in AUDIO. Nel frattempo il dispositivo non si usa. Finito, espelli il disco dal computer, poi premi un tasto qui: il dispositivo si riavvia e legge i nuovi file.",
             )
             .to_string(),
-            t(locale, "SELECT CONNECT", "SELECT COLLEGA"),
+            footer_hints(
+                locale,
+                &[
+                    (FooterKey::Select, t(locale, "CONNECT", "COLLEGA")),
+                    (FooterKey::Boot, back_action(locale)),
+                ],
+            ),
         ),
         UsbDiskPhase::Active => (
             t(locale, "Connected", "Collegato"),
@@ -52,7 +60,7 @@ pub fn render_usb_disk(
                 "Il computer ora vede la microSD come un disco. Copia i file, espelli il disco dal computer, poi premi SU, GIÙ o SELECT per riavviare.",
             )
             .to_string(),
-            t(locale, "UP/DOWN/SELECT RESTART", "SU/GIÙ/SELECT RIAVVIA"),
+            restart_hint(locale),
         ),
         UsbDiskPhase::Failed(error) => (
             t(locale, "Not connected", "Collegamento non riuscito"),
@@ -64,42 +72,30 @@ pub fn render_usb_disk(
                     "Premi SU, GIÙ o SELECT per riavviare."
                 )
             ),
-            t(locale, "UP/DOWN/SELECT RESTART", "SU/GIÙ/SELECT RIAVVIA"),
+            restart_hint(locale),
         ),
     };
 
-    let title_width = large.text_width(title);
-    Text::new(
-        title,
-        Point::new(LEFT + (WIDTH - title_width) / 2, 236),
-        large,
-    )
-    .draw(display)?;
-    let mut baseline = 290;
-    for line in wrap(body, &text, WIDTH) {
-        Text::new(&line, Point::new(LEFT, baseline), body).draw(display)?;
-        baseline += i32::from(body.line_height()) + 6;
-    }
-    draw_footer(display, state, hint)
+    draw_text_centered(display, title, CONTENT_LEFT, CONTENT_WIDTH, 236, large)?;
+    draw_paragraph(
+        display,
+        &text,
+        CONTENT_LEFT,
+        290,
+        body,
+        CONTENT_WIDTH,
+        14,
+        6,
+    )?;
+    draw_footer(display, state, &hint)
 }
 
-fn wrap(style: UiTextStyle, text: &str, max_width: i32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_string()
-        } else {
-            format!("{current} {word}")
-        };
-        if !current.is_empty() && style.text_width(&candidate) > max_width {
-            lines.push(std::mem::replace(&mut current, word.to_string()));
-        } else {
-            current = candidate;
-        }
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
+/// Any key but BOOT restarts the device once the disk is, or failed to be,
+/// connected.
+fn restart_hint(locale: crate::regional::Locale) -> String {
+    format!(
+        "{} {}",
+        t(locale, "UP/DOWN/SELECT", "SU/GI\u{00D9}/SELECT"),
+        t(locale, "RESTART", "RIAVVIA")
+    )
 }

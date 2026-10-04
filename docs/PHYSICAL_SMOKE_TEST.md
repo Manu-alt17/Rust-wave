@@ -57,7 +57,7 @@ Run this checklist after a release build or any cross-cutting runtime change. Do
 
 ## Connect to PC
 
-1. Settings → Al PC, connect the cable, press SELECT: the computer sees the microSD as a disk, and the serial port disappears.
+1. Home → Carica → Cavo USB, connect the cable, press SELECT: the computer sees the microSD as a disk, and the serial port disappears.
 2. Copy a book and an audiobook, eject the disk on the computer, press a key on the device (not BOOT): it restarts, the serial port is back, and the new book and audiobook are listed.
 3. Repeat, pulling the cable without ejecting: the card must not be formatted.
 

@@ -124,6 +124,27 @@ ATKINSON_STRIKES = [
 ]
 
 
+# Glyphs that FreeType's hinting breaks at one size, redrawn by hand: the ink
+# box's left and top relative to the pen position on the baseline, then its
+# rows ('#' is ink). Keyed by strike name and character. The advance stays
+# the font's own.
+GLYPH_OVERRIDES = {
+    # Inter Medium 12 px: hinting collapses both rings of the percent sign
+    # and drops its slash, leaving two smudges that do not read as '%'.
+    ("INTER_STANDARD_DETAIL", "%"): (2, -9, [
+        ".##....#.",
+        "#..#..#..",
+        "#..#..#..",
+        ".##..#...",
+        "....#....",
+        "...#..##.",
+        "..#..#..#",
+        "..#..#..#",
+        ".#....##.",
+    ]),
+}
+
+
 class Strike:
     def __init__(self, name, path, size, axes, line_height, threshold, hinted_advance, label):
         self.name = name
@@ -179,7 +200,13 @@ class Strike:
                 print(f"  {self.name}: no glyph for U+{ord(ch):04X}, skipped")
                 return
         advance = self.advance(drawn)
-        ink = self.ink(drawn)
+        override = GLYPH_OVERRIDES.get((self.name, ch))
+        if override is not None:
+            left, top, art = override
+            rows = [[cell == "#" for cell in row] for row in art]
+            ink = (left, top, len(art[0]), len(art), rows)
+        else:
+            ink = self.ink(drawn)
         if ink is None:
             self.glyphs[ch] = (0, 0, 0, advance, 0, 0)
             return

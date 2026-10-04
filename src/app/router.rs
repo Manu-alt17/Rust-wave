@@ -18,6 +18,7 @@ pub enum ScreenRoute {
     ReaderOptions,
     ReaderPreferences,
     ReaderToc,
+    ReaderGoTo,
     ReadingStats,
     AudiobookLibrary,
     AudiobookPlayer,
@@ -37,6 +38,9 @@ pub enum ScreenRoute {
     Network,
     NetworkDetails,
     NetworkSaved,
+    /// The Home "Upload" tile: choose between the Wi-Fi portal and the USB
+    /// cable.
+    Upload,
     WifiTransfer,
     UsbDisk,
 }
@@ -57,6 +61,7 @@ impl ScreenRoute {
             Self::ReaderOptions => "Reader Options",
             Self::ReaderPreferences => "Reading Preferences",
             Self::ReaderToc => "Table of Contents",
+            Self::ReaderGoTo => "Go To",
             Self::ReadingStats => "Reading Stats",
             Self::AudiobookLibrary => "Audiobooks",
             Self::AudiobookPlayer => "Audiobook Player",
@@ -76,6 +81,7 @@ impl ScreenRoute {
             Self::Network => "Network",
             Self::NetworkDetails => "Provisioning details",
             Self::NetworkSaved => "Saved Networks",
+            Self::Upload => "Upload",
             Self::WifiTransfer => "Wi-Fi Transfer",
             Self::UsbDisk => "Connect to PC",
         }
@@ -98,7 +104,8 @@ impl ScreenRoute {
             },
             Locale::Italian => match self {
                 Self::Home => "Home",
-                Self::Settings => "Impostazioni",
+                // The same word as the Home tile that opens it.
+                Self::Settings => "Opzioni",
                 Self::ContinueReading => "Continua a leggere",
                 Self::Library => "Libreria",
                 Self::LibraryBookActions => "Opzioni libro",
@@ -109,6 +116,7 @@ impl ScreenRoute {
                 Self::ReaderOptions => "Opzioni lettore",
                 Self::ReaderPreferences => "Preferenze di lettura",
                 Self::ReaderToc => "Indice",
+                Self::ReaderGoTo => "Vai a",
                 Self::ReadingStats => "Statistiche di lettura",
                 Self::AudiobookLibrary => "Audiolibri",
                 Self::AudiobookPlayer => "Lettore audiolibri",
@@ -128,6 +136,7 @@ impl ScreenRoute {
                 Self::Network => "Rete",
                 Self::NetworkDetails => "Dettagli configurazione",
                 Self::NetworkSaved => "Reti salvate",
+                Self::Upload => "Carica",
                 Self::WifiTransfer => "Trasferimento Wi-Fi",
                 Self::UsbDisk => "Collega al PC",
             },
@@ -149,6 +158,7 @@ impl ScreenRoute {
             Self::ReaderOptions => "reader-options",
             Self::ReaderPreferences => "reader-preferences",
             Self::ReaderToc => "reader-toc",
+            Self::ReaderGoTo => "reader-goto",
             Self::ReadingStats => "reading-stats",
             Self::AudiobookLibrary => "audiobook-library",
             Self::AudiobookPlayer => "audiobook-player",
@@ -168,6 +178,7 @@ impl ScreenRoute {
             Self::Network => "network",
             Self::NetworkDetails => "network-details",
             Self::NetworkSaved => "network-saved",
+            Self::Upload => "upload",
             Self::WifiTransfer => "wifi-transfer",
             Self::UsbDisk => "usb-disk",
         }
@@ -190,6 +201,7 @@ impl ScreenRoute {
             Self::ReaderPage
                 | Self::ReaderOptions
                 | Self::ReaderToc
+                | Self::ReaderGoTo
                 | Self::ReaderBookmarks
                 | Self::ReaderPreferences
         )
@@ -209,8 +221,8 @@ impl ScreenRoute {
             Self::ReaderLoading | Self::ReaderPage => Some(Self::Home),
             Self::ReaderOptions => Some(Self::ReaderPage),
             Self::ReaderPreferences => Some(Self::ReaderOptions),
-            Self::ReaderToc => Some(Self::ReaderOptions),
-            Self::Files => Some(Self::Home),
+            Self::ReaderToc | Self::ReaderGoTo => Some(Self::ReaderOptions),
+            Self::Files | Self::Upload => Some(Self::Home),
             Self::PowerKeyMenu => Some(Self::Home),
             Self::Audio
             | Self::Clock
@@ -218,14 +230,16 @@ impl ScreenRoute {
             | Self::Language
             | Self::DeviceInfo
             | Self::OtaUpdate
-            | Self::UsbDisk
             | Self::Network => Some(Self::Settings),
             Self::AudioDetails => Some(Self::Audio),
             Self::ClockSetTime | Self::ClockDetails => Some(Self::Clock),
             Self::DeviceInfoBoard => Some(Self::DeviceInfo),
             Self::DeviceInfoRuntime => Some(Self::DeviceInfoBoard),
             Self::NetworkDetails | Self::NetworkSaved => Some(Self::Network),
-            Self::WifiTransfer => Some(Self::Home),
+            // Both ways of copying files hang off the Upload chooser. The
+            // portal can also be opened from Network, which it then goes
+            // back to (see `AppState::wifi_transfer_return_route`).
+            Self::WifiTransfer | Self::UsbDisk => Some(Self::Upload),
         }
     }
 
@@ -289,7 +303,12 @@ mod tests {
         assert_eq!(ScreenRoute::OtaUpdate.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::Library.parent(), Some(ScreenRoute::Home));
         assert_eq!(ScreenRoute::Home.parent(), None);
-        assert_eq!(ScreenRoute::WifiTransfer.parent(), Some(ScreenRoute::Home));
+        assert_eq!(ScreenRoute::Upload.parent(), Some(ScreenRoute::Home));
+        assert_eq!(
+            ScreenRoute::WifiTransfer.parent(),
+            Some(ScreenRoute::Upload)
+        );
+        assert_eq!(ScreenRoute::UsbDisk.parent(), Some(ScreenRoute::Upload));
         assert_eq!(
             ScreenRoute::NetworkSaved.parent(),
             Some(ScreenRoute::Network)
@@ -319,6 +338,7 @@ mod tests {
         assert!(ScreenRoute::ReaderPage.is_reader_active());
         assert!(ScreenRoute::ReaderOptions.is_reader_active());
         assert!(ScreenRoute::ReaderToc.is_reader_active());
+        assert!(ScreenRoute::ReaderGoTo.is_reader_active());
         assert!(ScreenRoute::ReaderBookmarks.is_reader_active());
         assert!(ScreenRoute::ReaderPreferences.is_reader_active());
         assert!(!ScreenRoute::ReaderLoading.is_reader_active());

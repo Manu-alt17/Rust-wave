@@ -1,8 +1,10 @@
 //! Runtime-only local wall-clock editor for the Clock screen's manual
 //! "Set date & time" action.
 //!
-//! Up/Down adjusts the selected field's value and Select advances to the
-//! next field. The editor
+//! Up/Down adjusts the selected field's value, Select advances to the next
+//! field and BOOT steps back to the previous one. The fields come in the
+//! order a date is said: time zone, day, month, year, hour, minute. The
+//! time zone is first because changing it rewrites the others. The editor
 //! keeps a UTC anchor captured when it opened; picking a different timezone
 //! re-derives the displayed local fields from that same anchor instant
 //! instead of reinterpreting the already-displayed numbers under the new
@@ -42,11 +44,11 @@ const TIMEZONE_OPTIONS: [TimeZoneProfile; 3] = [
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClockEditField {
     Timezone,
+    Day,
+    Month,
+    Year,
     Hour,
     Minute,
-    Year,
-    Month,
-    Day,
     Save,
 }
 
@@ -57,11 +59,11 @@ impl ClockEditField {
     pub const fn from_index(index: usize) -> Self {
         match index % Self::COUNT {
             0 => Self::Timezone,
-            1 => Self::Hour,
-            2 => Self::Minute,
+            1 => Self::Day,
+            2 => Self::Month,
             3 => Self::Year,
-            4 => Self::Month,
-            5 => Self::Day,
+            4 => Self::Hour,
+            5 => Self::Minute,
             _ => Self::Save,
         }
     }
@@ -169,6 +171,16 @@ impl ClockTimeEditor {
         self.field_index = (self.field_index + 1) % ClockEditField::COUNT;
     }
 
+    /// Step back to the previous field. `false` on the first one, where
+    /// there is nothing to step back to and BOOT leaves the editor.
+    pub fn retreat_field(&mut self) -> bool {
+        if self.field_index % ClockEditField::COUNT == 0 {
+            return false;
+        }
+        self.field_index -= 1;
+        true
+    }
+
     pub fn adjust(&mut self, delta: i32) {
         match self.selected_field() {
             ClockEditField::Timezone => {
@@ -243,11 +255,45 @@ mod tests {
     }
 
     #[test]
-    fn opens_on_timezone_then_adjusts_hour_and_minute() {
+    fn fields_follow_the_order_a_date_is_said_after_the_timezone() {
         let mut editor = editor_at(utc(2026, 8, 18, 21, 59), TimeZoneProfile::Utc);
-        assert_eq!(editor.selected_field(), ClockEditField::Timezone);
+        let mut order = Vec::new();
+        for _ in 0..ClockEditField::COUNT {
+            order.push(editor.selected_field());
+            editor.advance_field();
+        }
+        assert_eq!(
+            order,
+            [
+                ClockEditField::Timezone,
+                ClockEditField::Day,
+                ClockEditField::Month,
+                ClockEditField::Year,
+                ClockEditField::Hour,
+                ClockEditField::Minute,
+                ClockEditField::Save,
+            ]
+        );
+    }
+
+    #[test]
+    fn boot_steps_back_one_field_and_stops_at_the_first() {
+        let mut editor = editor_at(utc(2026, 8, 18, 21, 59), TimeZoneProfile::Utc);
+        assert!(!editor.retreat_field());
         editor.advance_field();
-        assert_eq!(editor.selected_field(), ClockEditField::Hour);
+        editor.advance_field();
+        assert_eq!(editor.selected_field(), ClockEditField::Month);
+        assert!(editor.retreat_field());
+        assert_eq!(editor.selected_field(), ClockEditField::Day);
+        assert!(editor.retreat_field());
+        assert_eq!(editor.selected_field(), ClockEditField::Timezone);
+        assert!(!editor.retreat_field());
+    }
+
+    #[test]
+    fn adjusts_hour_and_minute_with_wraparound() {
+        let mut editor = editor_at(utc(2026, 8, 18, 21, 59), TimeZoneProfile::Utc);
+        editor.field_index = ClockEditField::Hour as usize;
         assert_eq!(editor.draft.hour, 21);
         editor.adjust(3);
         assert_eq!(editor.draft.hour, 0);
@@ -260,17 +306,17 @@ mod tests {
     #[test]
     fn wraps_year_month_and_day_within_valid_bounds() {
         let mut editor = editor_at(utc(2000, 1, 1, 0, 0), TimeZoneProfile::Utc);
-        editor.field_index = ClockEditField::Year as usize;
+        editor.field_index = ClockEditField::Day as usize;
         editor.adjust(-1);
-        assert_eq!(editor.draft.year, 2099);
+        assert_eq!(editor.draft.day, 31);
         editor.advance_field();
         assert_eq!(editor.selected_field(), ClockEditField::Month);
         editor.adjust(-1);
         assert_eq!(editor.draft.month, 12);
         editor.advance_field();
-        assert_eq!(editor.selected_field(), ClockEditField::Day);
+        assert_eq!(editor.selected_field(), ClockEditField::Year);
         editor.adjust(-1);
-        assert_eq!(editor.draft.day, 31);
+        assert_eq!(editor.draft.year, 2099);
     }
 
     #[test]
@@ -280,11 +326,12 @@ mod tests {
         editor.field_index = ClockEditField::Month as usize;
         editor.adjust(1); // -> February, clamps day to 29 (leap year)
         assert_eq!((editor.draft.month, editor.draft.day), (2, 29));
-        editor.advance_field(); // Day: leave alone
-        editor.advance_field(); // Save
-        assert_eq!(editor.selected_field(), ClockEditField::Save);
+        editor.advance_field(); // Year
+        editor.adjust(1); // -> 2025, not a leap year: 28
+        assert_eq!((editor.draft.year, editor.draft.day), (2025, 28));
+        editor.field_index = ClockEditField::Save as usize;
         editor.adjust(1); // no-op on Save
-        assert_eq!((editor.draft.month, editor.draft.day), (2, 29));
+        assert_eq!((editor.draft.month, editor.draft.day), (2, 28));
     }
 
     #[test]

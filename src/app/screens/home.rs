@@ -154,7 +154,7 @@ fn draw_today_streak_row(
     let streak_text_left = streak_left + STATS_ICON_SIZE + STATS_ICON_TEXT_GAP;
     let streak_label = format!(
         "{}: {}",
-        t(locale, "Streak", "Streak"),
+        t(locale, "Streak", "Serie"),
         streak_value_label(locale, stats.streak_days),
     );
     Text::new(

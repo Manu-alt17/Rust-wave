@@ -30,8 +30,8 @@ The **Continua** (Continue reading) card at the top shows the book being read: i
 | Libreria (Library) | Your books |
 | Audiolibri (Audiobooks) | Your audiobooks |
 | Stats (Statistics) | Reading statistics |
-| Carica (Upload) | Wi-Fi transfer from a browser, or Wi-Fi setup from a phone |
-| File (Files) | Read-only microSD browser |
+| Carica (Upload) | Copy files onto the card: over Wi-Fi from a browser, or with the USB cable |
+| File (Files) | microSD browser |
 | Opzioni (Settings) | Device settings |
 
 ## 2. Library
@@ -46,8 +46,12 @@ SELECT opens the selected book. Hold SELECT for its actions:
 
 <img src="../screenshots/rendered-book-actions.png" width="360" alt="Book actions">
 
-- **Mark as Completed**
-- **Bookmarks**: the bookmarks saved in that book, to open one directly.
+- **Segna come completato** (Mark as Completed)
+- **Segna come non letto** (Mark as Unread): forgets where the book was left; its bookmarks stay.
+- **Segnalibri** (Bookmarks): the bookmarks saved in that book, to open one directly. Hold SELECT on one to delete it.
+- **Elimina libro** (Delete Book): removes the file from the card, with its position and bookmarks. The row asks to confirm: a second SELECT deletes, BOOT or moving away cancels.
+
+Under the title, the screen shows the format, the size and how much of the book was read.
 
 ## 3. Reader
 
@@ -55,8 +59,10 @@ SELECT opens the selected book. Hold SELECT for its actions:
 
 Up and Down turn the page. An EPUB opens on its cover, when it has one; Down goes on to the text. The bar at the top shows the progress through the book.
 
-- **Dizionario** (Dictionary): press SELECT on a page to choose a word and look it up in the dictionary pack installed under `RUSTMIX/APPS/DICT` (see [`SD_CARD_SETUP.md`](SD_CARD_SETUP.md)).
-- **Opzioni** (Options): hold SELECT for the table of contents, the book's bookmarks, add or remove a bookmark on this page, and the reading preferences.
+- **Dizionario** (Dictionary): press SELECT on a page to choose a line, then a word, and look it up in the dictionary pack installed under `RUSTMIX/APPS/DICT` (see [`SD_CARD_SETUP.md`](SD_CARD_SETUP.md)). The line only picks where to start: past its last word the selection goes on to the next line, and before its first word back to the line above.
+- **Opzioni** (Options): hold SELECT for the table of contents, the book's bookmarks, add or remove a bookmark on this page, **Vai a** (Go to) and the reading preferences.
+
+The table of contents opens on the chapter being read, marked **qui** (here). The bookmark list shows the open book's bookmarks, with the chapter and page and how far into the book each is: SELECT opens one, hold SELECT deletes it. A page that has a bookmark carries a small ribbon in its top right corner. **Vai a** jumps to a point of the book given as a percentage: Up and Down move it by 5% (0% is the first page, 100% the last), an EPUB shows the chapter that point falls in, and SELECT goes there.
 
 <img src="../screenshots/rendered-reader-preferences.png" width="360" alt="Reading preferences">
 
@@ -83,10 +89,12 @@ Audiobooks from `RUSTMIX/AUDIO`: a single MP3 file is one audiobook, and a folde
 | --- | --- |
 | SELECT | Play / pause |
 | Up / Down | Volume |
-| Hold SELECT | Menu: back 30 s, forward 30 s, previous track, next track, stop |
+| Hold SELECT | Menu: back 30 s, forward 30 s, previous track, next track, the track list, the sleep timer, stop |
 | BOOT | Back to the list; playback goes on |
 
 <img src="../screenshots/rendered-audiobook-player-menu.png" width="360" alt="Audiobook player menu">
+
+**Tracce** (Tracks) lists the tracks of the title, the one playing marked: SELECT starts a track from its beginning. **Timer di spegnimento** (Sleep timer) stops playback by itself: each SELECT moves it to 15, 30, 45, 60 minutes or off, and the player shows the minutes left. BOOT goes back one level, from the track list to the menu and from the menu to the player.
 
 The position of every audiobook is saved in `RUSTMIX/AUDIOPOS.TXT`, and the volume, also set from Settings → Audio, in `RUSTMIX/VOLUME.TXT`: both survive standby and restarts. Sound comes from the speaker header on the board. MP3 files (MPEG-1 or 2, layer III) play at their own sample rate, mono or stereo.
 
@@ -96,11 +104,18 @@ The position of every audiobook is saved in `RUSTMIX/AUDIOPOS.TXT`, and the volu
 
 Reading time today, this week and this month, the streak of consecutive days, the reading speed and the last seven days, and the books read most this month. Days follow the time zone set in Settings → Orologio. The time left shown on Home and in the Reader comes from the same reading speed.
 
-## 6. Upload (Wi-Fi transfer)
+## 6. Upload
+
+<img src="../screenshots/rendered-upload.png" width="360" alt="Upload">
+
+**Carica** offers the two ways of copying files onto the card, side by side; under them the screen says what the selected one does. UP and DOWN move between them, SELECT opens it, BOOT goes back.
+
+- **Wi-Fi**: from a browser, without a cable. Described below.
+- **Cavo USB** (USB cable): the microSD as a USB disk on a computer, the quickest way for many or large files. See section 9.
 
 <img src="../screenshots/rendered-wifi-transfer.png" width="360" alt="Wi-Fi transfer">
 
-With a Wi-Fi network configured, the screen shows the address to open in a browser on the same network, and the code the page asks for. From there you can upload books and audiobooks, create folders, rename and delete files. Configuration files (`WIFI.TXT`, `CLOCK.TXT`, `DISPLAY.TXT` and the like) are protected.
+With a Wi-Fi network configured, the screen shows the address to open in a browser on the same network (or a QR code that opens it). The page asks for no code: it is reachable by anyone on that network while the Upload screen is open, and closes when you leave it or after ten minutes without traffic. From there you can upload books and audiobooks, create folders, rename and delete files. Configuration files (`WIFI.TXT`, `CLOCK.TXT`, `DISPLAY.TXT` and the like) are protected.
 
 Without a Wi-Fi network, the device opens its own hotspot and shows a QR code: join it with a phone, and the setup page opens by itself, to add networks (up to 8) and passwords with the phone's keyboard.
 
@@ -108,7 +123,7 @@ Without a Wi-Fi network, the device opens its own hotspot and shows a QR code: j
 
 <img src="../screenshots/rendered-files.png" width="360" alt="Files">
 
-A read-only browser of the whole microSD, with a preview of text files.
+A browser of the whole microSD, with a preview of text files. SELECT opens a folder or previews a file; BOOT closes the preview or goes up one folder, and from the top folder back to Home. Hold SELECT on a file to delete it: the row asks **eliminare?** and a second SELECT deletes, while BOOT or the rocker cancel. Folders cannot be deleted from here.
 
 ## 8. Settings
 
@@ -117,17 +132,22 @@ A read-only browser of the whole microSD, with a preview of text files.
 | Tile | Contents |
 | --- | --- |
 | Rete (Network) | Connection state, saved networks, Wi-Fi setup |
-| Update | Firmware updates over Wi-Fi, from the stable or the beta channel (never checked automatically) |
+| Aggiorna (Update) | Firmware updates over Wi-Fi, from the stable or the beta channel (never checked automatically) |
 | Audio | Codec state, volume, test chime |
-| Orologio (Clock) | Date, time and time zone (Europe/Rome by default, New York, UTC) |
+| Orologio (Clock) | Date, time and time zone (Europe/Rome by default, New York, UTC). The editor goes through time zone, day, month, year, hour and minute; BOOT steps back one field |
 | Schermo (Display) | Interface text size, sleep screen, automatic standby |
 | Lingua (Language) | Italiano, English |
-| Info | Firmware version, board and memory state |
-| Al PC (To PC) | Connect to PC, see below |
+| Info | Firmware version, board and memory state; **Ripristina impostazioni** (Restore settings) |
 
 The sleep screen is what stays on the glass during standby: the images in `RUSTMIX/SLEEP` in turn (default) or at random, or the cover of the book being read. Automatic standby comes after 5, 10 (default), 15, 30 or 60 minutes without input, or never.
 
-Update shows the installed version and the channel. **Stabile** follows the latest stable release; **Beta** the highest version among the recent releases, pre-releases included, so a newer stable release reaches it too. UP or DOWN switches channel and checks it; SELECT checks again, or installs the update found. This firmware is a beta (`1.5.0-beta.2`): it follows Beta until the channel is changed, and the choice is kept in `RUSTMIX/UPDATE.TXT`. Back on Stable the device never installs an older firmware: it waits for a stable release newer than the one it runs.
+Rete lists the connection state and four actions. **Configura da telefono** opens the portal of section 6. **Reti salvate** lists the saved networks, the connected one marked: SELECT on a network opens a menu to connect to it or forget it. If it cannot be joined, the Network screen says so and the device goes back to the saved networks by itself. **Riprova connessione** tries the saved networks again, and **Dettagli** shows the time synchronization and the last error.
+
+Update shows the installed version and the channel. **Stabile** follows the latest stable release; **Beta** the highest version among the recent releases, pre-releases included, so a newer stable release reaches it too. UP and DOWN move between the action and the channel: SELECT on the channel switches it and checks; SELECT on the action checks again, or installs the update found, after a second SELECT to confirm. This firmware is a beta (`1.5.0-beta.2`): it follows Beta until the channel is changed, and the choice is kept in `RUSTMIX/UPDATE.TXT`. Back on Stable the device never installs an older firmware: it waits for a stable release newer than the one it runs.
+
+While an update downloads, the screen shows a bar with the percentage and the megabytes received, redrawn every 10%.
+
+**Ripristina impostazioni**, on Info, puts the interface text size, the automatic standby, the sleep screen, the "most used" settings and the update channel back to their first values, after a second SELECT to confirm. The language, the clock, the Wi-Fi networks, the books and the reading preferences are not touched.
 
 Update also shows the bootloader the device has (ESP-IDF version and build date). When the firmware is up to date and the release carries a different bootloader, the screen offers it: SELECT downloads and checks it, writing nothing; a second SELECT writes it, then the device restarts. The write needs the battery at 50% or the USB cable, and takes under a second: do not switch the device off meanwhile, because a bootloader cut halfway can only be fixed by reflashing over USB.
 
@@ -135,7 +155,7 @@ Update also shows the bootloader the device has (ESP-IDF version and build date)
 
 <img src="../screenshots/rendered-usb-disk.png" width="360" alt="Connect to PC">
 
-Connect the board to a computer with the USB cable and press SELECT: the microSD appears on the computer as a USB disk, to copy books into `RUSTMIX/BOOKS` and audiobooks into `RUSTMIX/AUDIO`. Meanwhile the device is not usable, and the serial port is gone.
+Reached from Home → Carica → Cavo USB. Connect the board to a computer with the USB cable and press SELECT: the microSD appears on the computer as a USB disk, to copy books into `RUSTMIX/BOOKS` and audiobooks into `RUSTMIX/AUDIO`. Meanwhile the device is not usable, and the serial port is gone.
 
 <img src="../screenshots/rendered-usb-disk-active.png" width="360" alt="Connected to PC">
 
@@ -145,7 +165,7 @@ When done, eject the disk on the computer, then press a key on the device (not B
 
 - **Power, short press**: standby. The sleep screen is drawn and the board powers off; Power turns it back on where you left off.
 - **Automatic standby**: see Settings → Schermo.
-- **Power, long press**: display maintenance menu, to clear ghosting with a full refresh. The display also runs one by itself every 50 partial refreshes.
+- **Power, long press**: a menu to clear ghosting with a full refresh (the display also runs one by itself every 50 partial refreshes) and to restart the device (**Riavvia**), which saves the reading and listening positions first. There is no separate "power off": standby already cuts the power.
 - Holding Power for about 6 seconds cuts the power in hardware, like on any device with a PMIC.
 
 ## 11. Screenshot index
@@ -161,6 +181,7 @@ When done, eject the disk on the computer, then press a key on the device (not B
 | [rendered-audiobook-player.png](../screenshots/rendered-audiobook-player.png) | Audiobook player |
 | [rendered-audiobook-player-menu.png](../screenshots/rendered-audiobook-player-menu.png) | Player menu |
 | [rendered-statistics.png](../screenshots/rendered-statistics.png) | Statistics |
+| [rendered-upload.png](../screenshots/rendered-upload.png) | Upload: Wi-Fi or USB cable |
 | [rendered-wifi-transfer.png](../screenshots/rendered-wifi-transfer.png) | Wi-Fi transfer |
 | [rendered-files.png](../screenshots/rendered-files.png) | Files |
 | [rendered-settings.png](../screenshots/rendered-settings.png) | Settings |

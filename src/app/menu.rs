@@ -13,7 +13,7 @@ use super::router::ScreenRoute;
 
 pub const MAIN_CATEGORY_COUNT: usize = 7;
 pub const CATEGORY_COUNT: usize = 1;
-pub const SETTINGS_ENTRY_COUNT: usize = 8;
+pub const SETTINGS_ENTRY_COUNT: usize = 7;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
 /// heading of the Settings grid (see
 /// `screens::category::render_tile_grid`). The section holds the entries
@@ -82,7 +82,7 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         label_en: "Statistics",
         label_it: "Stats",
         subtitle_en: "Reading time, speed and streak",
-        subtitle_it: "Tempo di lettura, velocità e streak",
+        subtitle_it: "Tempo di lettura, velocità e serie",
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::ReadingStats,
@@ -90,17 +90,17 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
     MenuEntry {
         label_en: "Upload",
         label_it: "Carica",
-        subtitle_en: "Wi-Fi transfer, or Wi-Fi setup if not connected yet",
-        subtitle_it: "Trasferimento Wi-Fi, o configurazione Wi-Fi se non ancora connesso",
+        subtitle_en: "Copy files over Wi-Fi or with the USB cable",
+        subtitle_it: "Copia i file via Wi-Fi o con il cavo USB",
         badge_en: "",
         badge_it: "",
-        route: ScreenRoute::WifiTransfer,
+        route: ScreenRoute::Upload,
     },
     MenuEntry {
         label_en: "Files",
         label_it: "File",
-        subtitle_en: "Read-only SD card browser",
-        subtitle_it: "Esplora la scheda SD in sola lettura",
+        subtitle_en: "SD card browser",
+        subtitle_it: "Esplora la scheda SD",
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::Files,
@@ -110,8 +110,8 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         label_it: "Opzioni",
         subtitle_en: "Device services and display",
         subtitle_it: "Servizi del dispositivo e schermo",
-        badge_en: "8",
-        badge_it: "8",
+        badge_en: "7",
+        badge_it: "7",
         route: ScreenRoute::Settings,
     },
     // Kept last rather than first so the grid tiles above keep the leading
@@ -146,9 +146,10 @@ const SETTINGS_ENTRIES: [MenuEntry; SETTINGS_ENTRY_COUNT] = [
     MenuEntry {
         // Short, single-word tile caption in both locales rather than
         // "Software Update"/"Aggiornamento software" -- the full phrase runs
-        // too long for the compact Settings tile's width.
+        // too long for the compact Settings tile's width. The screen's own
+        // header says the same word.
         label_en: "Update",
-        label_it: "Update",
+        label_it: "Aggiorna",
         subtitle_en: "Check GitHub releases and install",
         subtitle_it: "Controlla le release GitHub e installa",
         badge_en: "",
@@ -201,15 +202,6 @@ const SETTINGS_ENTRIES: [MenuEntry; SETTINGS_ENTRY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::DeviceInfo,
-    },
-    MenuEntry {
-        label_en: "To PC",
-        label_it: "Al PC",
-        subtitle_en: "Use the microSD as a USB disk on a computer",
-        subtitle_it: "Usa la microSD come disco USB del computer",
-        badge_en: "",
-        badge_it: "",
-        route: ScreenRoute::UsbDisk,
     },
 ];
 

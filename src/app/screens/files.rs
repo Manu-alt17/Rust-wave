@@ -1,114 +1,193 @@
-//! SDMMC read-only file-browser screen.
+//! SDMMC file-browser screen: folders, a text preview, deleting a file.
 
 use core::convert::Infallible;
 
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Drawable, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle},
-};
-
-use crate::app::{i18n::t, typography::Text};
+use embedded_graphics::prelude::Point;
 
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
-        widgets::{footer::draw_footer, header::draw_header},
+        typography::Text,
+        widgets::{
+            footer::{
+                back_action, draw_footer, draw_footer_paged, footer_hints, select_and_back,
+                FooterKey,
+            },
+            header::draw_header,
+            layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE},
+            list::{draw_list_row, draw_row_frame, ROW_PAD_X, ROW_STEP},
+            text::{draw_paragraph, draw_text_fit, truncate_start_to_width, truncate_to_width},
+        },
     },
     orientation::OrientedFrameBuffer,
-    storage::{FilePreview, StorageEntryKind},
+    storage::{FilePreview, StorageEntryKind, StorageNotice, STORAGE_PAGE_SIZE},
 };
 
-/// Draw the read-only SDMMC browser or the bounded text-preview panel.
+/// Baseline of the current-folder line under the header.
+const PATH_BASELINE: i32 = FIRST_BASELINE - 12;
+/// Top of the first entry row.
+const LIST_TOP: i32 = PATH_BASELINE + 16;
+
+/// Draw the SDMMC browser or the bounded text-preview panel.
 pub fn render_files(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
+    let preferences = state.display;
     let storage = &state.storage;
     if let Some(preview) = &storage.preview {
         return render_preview(display, state, preview);
     }
-
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let detail = state.display.detail_style();
+    let body = preferences.body_style();
 
     draw_header(display, state, t(locale, "FILES", "FILE"))?;
 
+    // Where the list is: the end of a long path matters most.
     Text::new(
-        t(locale, "Directory", "Cartella"),
-        Point::new(22, 106),
-        heading,
+        &truncate_start_to_width(body, &storage.current_path, CONTENT_WIDTH),
+        Point::new(CONTENT_LEFT, PATH_BASELINE),
+        body,
     )
     .draw(display)?;
-    if let Some(error) = &storage.error {
-        Text::new(&truncate_label(error, 68), Point::new(22, 134), body).draw(display)?;
-    } else if storage.scan.retained_entries == 0 {
-        Text::new(
-            t(
-                locale,
-                "No files or directories found on this SD card.",
-                "Nessun file o cartella trovato su questa scheda SD.",
-            ),
-            Point::new(22, 134),
-            body,
-        )
-        .draw(display)?;
-    } else {
-        Text::new(
-            t(
-                locale,
-                "Directories first, then files. No write operations.",
-                "Prima le cartelle, poi i file. Nessuna operazione di scrittura.",
-            ),
-            Point::new(22, 134),
-            body,
-        )
-        .draw(display)?;
-    }
 
     let selected_on_page = storage.selected_on_page();
-    for (index, entry) in storage.visible_entries().iter().enumerate() {
-        let top = 164 + (index as i32 * 66);
+    let visible = storage.visible_entries();
+    let delete_question = t(locale, "delete?", "eliminare?");
+    for (index, entry) in visible.iter().enumerate() {
         let selected = index == selected_on_page;
-        let outline = if selected {
-            PrimitiveStyle::with_stroke(BinaryColor::On, 3)
-        } else {
-            PrimitiveStyle::with_stroke(BinaryColor::On, 1)
+        let (name, note): (&str, String) = match entry.kind {
+            // The synthetic row carries an English name; show it localized.
+            StorageEntryKind::RetryScan => (
+                t(locale, "Read the card again", "Rileggi la scheda"),
+                String::new(),
+            ),
+            StorageEntryKind::Directory => (
+                entry.name.as_str(),
+                t(locale, "folder", "cartella").to_string(),
+            ),
+            StorageEntryKind::File if selected && storage.pending_delete.is_some() => {
+                (entry.name.as_str(), delete_question.to_string())
+            }
+            StorageEntryKind::File => (entry.name.as_str(), entry.size_label()),
         };
-        Rectangle::new(Point::new(22, top), Size::new(436, 54))
-            .into_styled(outline)
-            .draw(display)?;
-        Text::new(
-            if selected { ">" } else { " " },
-            Point::new(36, top + 32),
-            heading,
-        )
-        .draw(display)?;
-        // The synthetic rows carry an English name; show them localized.
-        let name = match entry.kind {
-            StorageEntryKind::BackToHome => t(locale, "Back to Home", "Torna alla Home"),
-            StorageEntryKind::RetryScan => t(locale, "Retry SD scan", "Rileggi la scheda SD"),
-            _ => entry.name.as_str(),
-        };
-        Text::new(&truncate_label(name, 29), Point::new(62, top + 23), heading).draw(display)?;
-        Text::new(
-            entry.kind.badge_i18n(locale),
-            Point::new(62, top + 43),
-            detail,
-        )
-        .draw(display)?;
-        let size_label = if entry.kind == StorageEntryKind::File {
-            entry.size_label()
-        } else {
-            entry.kind.badge_i18n(locale).to_string()
-        };
-        Text::new(&size_label, Point::new(382, top + 32), detail).draw(display)?;
+        draw_list_row(
+            display,
+            preferences,
+            LIST_TOP + index as i32 * ROW_STEP,
+            name,
+            &note,
+            selected,
+        )?;
     }
 
-    Ok(())
+    // Under the rows: how a delete went, what went wrong, or that there is
+    // nothing to show.
+    let message = if let Some(notice) = &storage.notice {
+        Some(match notice {
+            StorageNotice::Deleted(name) => {
+                format!("{} {name}", t(locale, "Deleted:", "Eliminato:"))
+            }
+            StorageNotice::DeleteFailed(name, error) => format!(
+                "{} {name} ({error})",
+                t(locale, "Could not delete", "Impossibile eliminare")
+            ),
+        })
+    } else if !storage.mounted {
+        Some(
+            t(
+                locale,
+                "No memory card found. Insert a FAT-formatted microSD and restart the device.",
+                "Scheda di memoria non trovata. Inserisci una microSD formattata FAT e riavvia il dispositivo.",
+            )
+            .to_string(),
+        )
+    } else if let Some(error) = &storage.error {
+        Some(error.clone())
+    } else if storage.scan.retained_entries == 0 {
+        Some(
+            if storage.at_root {
+                t(
+                    locale,
+                    "No files or folders on this memory card.",
+                    "Nessun file o cartella su questa scheda di memoria.",
+                )
+            } else {
+                t(
+                    locale,
+                    "This folder is empty.",
+                    "Questa cartella \u{00E8} vuota.",
+                )
+            }
+            .to_string(),
+        )
+    } else {
+        None
+    };
+    if let Some(message) = message {
+        draw_paragraph(
+            display,
+            &message,
+            CONTENT_LEFT,
+            LIST_TOP + visible.len() as i32 * ROW_STEP + 26,
+            body,
+            CONTENT_WIDTH,
+            3,
+            6,
+        )?;
+    }
+
+    // BOOT goes up a folder and, from the top one, back to Home.
+    let boot = if storage.at_root {
+        back_action(locale)
+    } else {
+        t(locale, "UP", "SU")
+    };
+    let hint = if storage.pending_delete.is_some() {
+        footer_hints(
+            locale,
+            &[
+                (FooterKey::Select, t(locale, "DELETE", "ELIMINA")),
+                (FooterKey::Boot, t(locale, "CANCEL", "ANNULLA")),
+            ],
+        )
+    } else {
+        match storage.selected_entry().map(|entry| entry.kind) {
+            Some(StorageEntryKind::File) => footer_hints(
+                locale,
+                &[
+                    (FooterKey::Select, t(locale, "OPEN", "APRI")),
+                    (FooterKey::Hold, t(locale, "DELETE", "ELIMINA")),
+                    (FooterKey::Boot, boot),
+                ],
+            ),
+            Some(StorageEntryKind::RetryScan) => footer_hints(
+                locale,
+                &[
+                    (FooterKey::Select, t(locale, "RETRY", "RIPROVA")),
+                    (FooterKey::Boot, boot),
+                ],
+            ),
+            Some(StorageEntryKind::Directory) => footer_hints(
+                locale,
+                &[
+                    (FooterKey::Select, t(locale, "OPEN", "APRI")),
+                    (FooterKey::Boot, boot),
+                ],
+            ),
+            None => footer_hints(locale, &[(FooterKey::Boot, boot)]),
+        }
+    };
+    let pages = storage.entries.len().max(1).div_ceil(STORAGE_PAGE_SIZE);
+    let page = storage.page_start / STORAGE_PAGE_SIZE + 1;
+    draw_footer_paged(display, state, &hint, Some((page, pages)))
 }
+
+/// Characters a preview line may hold before it is cut to the frame width.
+const PREVIEW_LINE_CHARS: usize = 72;
+/// Lines of the preview frame.
+const PREVIEW_LINES: usize = 20;
 
 fn render_preview(
     display: &mut OrientedFrameBuffer<'_>,
@@ -116,58 +195,74 @@ fn render_preview(
     preview: &FilePreview,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let detail = state.display.detail_style();
+    let preferences = state.display;
+    let body = preferences.body_style();
+    let detail = preferences.detail_style();
 
     draw_header(display, state, t(locale, "FILE PREVIEW", "ANTEPRIMA"))?;
-    Text::new(
-        &truncate_label(&preview.name, 52),
-        Point::new(22, 106),
-        heading,
-    )
-    .draw(display)?;
-    Text::new(
-        if preview.binary {
-            t(
-                locale,
-                "Binary content is intentionally not rendered.",
-                "Il contenuto binario non viene visualizzato di proposito.",
-            )
-        } else if preview.truncated {
-            t(
-                locale,
-                "Preview capped at 384 bytes. File remains unchanged.",
-                "Anteprima limitata a 384 byte. Il file resta invariato.",
-            )
-        } else {
-            t(
-                locale,
-                "Text preview. File remains unchanged.",
-                "Anteprima testo. Il file resta invariato.",
-            )
-        },
-        Point::new(22, 136),
+    draw_text_fit(
+        display,
+        &preview.name,
+        Point::new(CONTENT_LEFT, PATH_BASELINE),
         body,
+        CONTENT_WIDTH,
+    )?;
+
+    let frame_top = LIST_TOP;
+    let line_step = i32::from(detail.line_height()) + 6;
+    let frame_height = PREVIEW_LINES as i32 * line_step + 22;
+    draw_row_frame(display, frame_top, frame_height, false)?;
+    let text_left = CONTENT_LEFT + ROW_PAD_X;
+    let text_width = CONTENT_WIDTH - 2 * ROW_PAD_X;
+    if preview.binary {
+        draw_paragraph(
+            display,
+            t(
+                locale,
+                "This file is not text: there is nothing to preview.",
+                "Questo file non \u{00E8} testo: non c'\u{00E8} nulla da mostrare in anteprima.",
+            ),
+            text_left,
+            frame_top + 30,
+            body,
+            text_width,
+            4,
+            6,
+        )?;
+    } else {
+        for (index, line) in preview
+            .display_lines(PREVIEW_LINES, PREVIEW_LINE_CHARS)
+            .iter()
+            .enumerate()
+        {
+            Text::new(
+                &truncate_to_width(detail, line, text_width),
+                Point::new(text_left, frame_top + 28 + index as i32 * line_step),
+                detail,
+            )
+            .draw(display)?;
+        }
+    }
+    if preview.truncated {
+        draw_paragraph(
+            display,
+            t(
+                locale,
+                "Only the beginning of the file is shown.",
+                "\u{00C8} mostrato solo l'inizio del file.",
+            ),
+            CONTENT_LEFT,
+            frame_top + frame_height + 28,
+            body,
+            CONTENT_WIDTH,
+            2,
+            6,
+        )?;
+    }
+
+    draw_footer(
+        display,
+        state,
+        &select_and_back(locale, t(locale, "CLOSE", "CHIUDI")),
     )
-    .draw(display)?;
-
-    Rectangle::new(Point::new(22, 164), Size::new(436, 498))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(display)?;
-    for (index, line) in preview.display_lines(18, 52).iter().enumerate() {
-        Text::new(line, Point::new(34, 192 + (index as i32 * 24)), detail).draw(display)?;
-    }
-
-    draw_footer(display, state, t(locale, "SELECT CLOSE", "SELECT CHIUDI"))?;
-    Ok(())
-}
-
-fn truncate_label(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.into();
-    }
-    let mut output: String = value.chars().take(max_chars.saturating_sub(3)).collect();
-    output.push_str("...");
-    output
 }

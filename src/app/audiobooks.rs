@@ -3,8 +3,13 @@
 //! engine and feeds the results back in, and takes the player's requests
 //! out with [`AudiobookUiState::take_request`].
 
+use std::time::{Duration, Instant};
+
 use crate::{
-    audiobook::{Audiobook, AudiobookPositions, NowPlaying, PlayerRequest, PlayerState},
+    audiobook::{
+        Audiobook, AudiobookPositions, AudiobookTrack, ListeningPosition, NowPlaying,
+        PlayerRequest, PlayerState,
+    },
     buttons::ButtonEvent,
     regional::Locale,
 };
@@ -22,15 +27,25 @@ pub enum PlayerMenuItem {
     Forward30,
     PreviousTrack,
     NextTrack,
+    /// Open the list of tracks, to start one directly.
+    Tracks,
+    /// Cycle the timer that stops playback by itself.
+    SleepTimer,
     Stop,
 }
 
+/// Minutes the sleep timer offers, in the order SELECT cycles them; 0 is
+/// off.
+pub const SLEEP_TIMER_MINUTES: [u16; 5] = [0, 15, 30, 45, 60];
+
 impl PlayerMenuItem {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Back30,
         Self::Forward30,
         Self::PreviousTrack,
         Self::NextTrack,
+        Self::Tracks,
+        Self::SleepTimer,
         Self::Stop,
     ];
 
@@ -45,22 +60,29 @@ impl PlayerMenuItem {
             (Self::PreviousTrack, Locale::Italian) => "Traccia precedente",
             (Self::NextTrack, Locale::English) => "Next track",
             (Self::NextTrack, Locale::Italian) => "Traccia successiva",
+            (Self::Tracks, Locale::English) => "Tracks",
+            (Self::Tracks, Locale::Italian) => "Tracce",
+            (Self::SleepTimer, Locale::English) => "Sleep timer",
+            (Self::SleepTimer, Locale::Italian) => "Timer di spegnimento",
             (Self::Stop, Locale::English) => "Stop",
             (Self::Stop, Locale::Italian) => "Ferma",
         }
     }
 
-    const fn request(self) -> PlayerRequest {
+    /// What the item asks of the audio engine; `None` for the ones the
+    /// screen handles itself.
+    const fn request(self) -> Option<PlayerRequest> {
         match self {
-            Self::Back30 => PlayerRequest::SeekBy {
+            Self::Back30 => Some(PlayerRequest::SeekBy {
                 seconds: -PLAYER_SKIP_SECONDS,
-            },
-            Self::Forward30 => PlayerRequest::SeekBy {
+            }),
+            Self::Forward30 => Some(PlayerRequest::SeekBy {
                 seconds: PLAYER_SKIP_SECONDS,
-            },
-            Self::PreviousTrack => PlayerRequest::SkipTrack { forward: false },
-            Self::NextTrack => PlayerRequest::SkipTrack { forward: true },
-            Self::Stop => PlayerRequest::Stop,
+            }),
+            Self::PreviousTrack => Some(PlayerRequest::SkipTrack { forward: false }),
+            Self::NextTrack => Some(PlayerRequest::SkipTrack { forward: true }),
+            Self::Stop => Some(PlayerRequest::Stop),
+            Self::Tracks | Self::SleepTimer => None,
         }
     }
 }
@@ -74,6 +96,14 @@ pub struct AudiobookUiState {
     pub now_playing: NowPlaying,
     /// Selected row while the player menu is open.
     pub menu: Option<usize>,
+    /// Selected row of the track list while it is open from the menu.
+    pub track_list: Option<usize>,
+    /// Minutes the sleep timer was set to; 0 while it is off.
+    pub sleep_timer_minutes: u16,
+    sleep_timer_deadline: Option<Instant>,
+    /// Whole minutes the sleep timer has left, rounded up, as of the last
+    /// [`Self::tick_sleep_timer`].
+    pub sleep_timer_remaining: Option<u16>,
     /// Position the player screen was last drawn with.
     drawn_position_ms: u64,
     request: Option<PlayerRequest>,
@@ -150,20 +180,45 @@ impl AudiobookUiState {
     }
 
     /// Player: SELECT plays or pauses, Up/Down set the volume. With the
-    /// menu open, Up/Down move through it and SELECT runs the entry.
+    /// menu open, Up/Down move through it and SELECT runs the entry; with
+    /// the track list open, SELECT starts the track under the cursor.
     pub fn apply_player(&mut self, event: ButtonEvent) {
+        if let Some(selected) = self.track_list {
+            let count = self.playing_tracks().len();
+            match event {
+                _ if count == 0 => self.track_list = None,
+                ButtonEvent::Up => {
+                    self.track_list = Some(selected.checked_sub(1).unwrap_or(count - 1));
+                }
+                ButtonEvent::Down => self.track_list = Some((selected + 1) % count),
+                ButtonEvent::Select => {
+                    self.play_track(selected.min(count - 1));
+                    self.track_list = None;
+                    self.menu = None;
+                }
+            }
+            return;
+        }
         if let Some(selected) = self.menu {
             let count = PlayerMenuItem::ALL.len();
             match event {
                 ButtonEvent::Up => self.menu = Some(selected.checked_sub(1).unwrap_or(count - 1)),
                 ButtonEvent::Down => self.menu = Some((selected + 1) % count),
-                ButtonEvent::Select => {
-                    let item = PlayerMenuItem::ALL[selected];
-                    self.request = Some(item.request());
-                    if item == PlayerMenuItem::Stop {
-                        self.menu = None;
+                ButtonEvent::Select => match PlayerMenuItem::ALL[selected] {
+                    PlayerMenuItem::Tracks => {
+                        if !self.playing_tracks().is_empty() {
+                            self.track_list = Some(self.now_playing.track);
+                        }
                     }
-                }
+                    PlayerMenuItem::SleepTimer => self.cycle_sleep_timer(Instant::now()),
+                    item => {
+                        self.request = item.request();
+                        if item == PlayerMenuItem::Stop {
+                            self.menu = None;
+                            self.clear_sleep_timer();
+                        }
+                    }
+                },
             }
             return;
         }
@@ -188,11 +243,93 @@ impl AudiobookUiState {
     /// Long SELECT on the player opens its menu.
     pub fn open_menu(&mut self) {
         self.menu = Some(0);
+        self.track_list = None;
     }
 
-    /// BOOT with the menu open closes it; `false` when it was not open.
+    /// BOOT steps back one level: from the track list to the menu, from the
+    /// menu to the player. `false` when neither was open.
     pub fn close_menu(&mut self) -> bool {
+        if self.track_list.take().is_some() {
+            return true;
+        }
         self.menu.take().is_some()
+    }
+
+    /// Tracks of the loaded title, for the track list. Empty when no title
+    /// is loaded or the library no longer has it.
+    #[must_use]
+    pub fn playing_tracks(&self) -> &[AudiobookTrack] {
+        self.book(&self.now_playing.key)
+            .map_or(&[], |book| book.tracks.as_slice())
+    }
+
+    /// Start track `index` of the loaded title from its beginning: the
+    /// title is opened again at that position.
+    fn play_track(&mut self, index: usize) {
+        if !self.now_playing.is_loaded() {
+            return;
+        }
+        let key = self.now_playing.key.clone();
+        self.positions.set(
+            &key,
+            ListeningPosition {
+                track: index,
+                byte_offset: 0,
+                position_ms: 0,
+            },
+        );
+        self.now_playing.state = PlayerState::Loading;
+        self.now_playing.error = None;
+        self.request = Some(PlayerRequest::Open { key });
+    }
+
+    /// Move the sleep timer to its next setting, counted from `now`.
+    pub fn cycle_sleep_timer(&mut self, now: Instant) {
+        let current = SLEEP_TIMER_MINUTES
+            .iter()
+            .position(|minutes| *minutes == self.sleep_timer_minutes)
+            .unwrap_or(0);
+        let minutes = SLEEP_TIMER_MINUTES[(current + 1) % SLEEP_TIMER_MINUTES.len()];
+        if minutes == 0 {
+            self.clear_sleep_timer();
+        } else {
+            self.sleep_timer_minutes = minutes;
+            self.sleep_timer_deadline = Some(now + Duration::from_secs(u64::from(minutes) * 60));
+            self.sleep_timer_remaining = Some(minutes);
+        }
+    }
+
+    fn clear_sleep_timer(&mut self) {
+        self.sleep_timer_minutes = 0;
+        self.sleep_timer_deadline = None;
+        self.sleep_timer_remaining = None;
+    }
+
+    /// Advance the sleep timer to `now`. When it is up, playback is asked
+    /// to stop (take the request with [`Self::take_request`]) and the timer
+    /// turns off. Returns whether what the player screen shows changed: the
+    /// minutes left, or the timer ending.
+    pub fn tick_sleep_timer(&mut self, now: Instant) -> bool {
+        let Some(deadline) = self.sleep_timer_deadline else {
+            return false;
+        };
+        if now >= deadline {
+            self.clear_sleep_timer();
+            if matches!(
+                self.now_playing.state,
+                PlayerState::Loading | PlayerState::Playing | PlayerState::Paused
+            ) {
+                self.request = Some(PlayerRequest::Stop);
+            }
+            return true;
+        }
+        let seconds = deadline.duration_since(now).as_secs();
+        let remaining = Some(seconds.div_ceil(60).min(u64::from(u16::MAX)) as u16);
+        if remaining == self.sleep_timer_remaining {
+            return false;
+        }
+        self.sleep_timer_remaining = remaining;
+        true
     }
 
     /// Take the engine's latest state; remembers the position. Returns
@@ -343,6 +480,100 @@ mod tests {
             state.take_request(),
             Some(PlayerRequest::Open { key: "A".into() })
         );
+    }
+
+    #[test]
+    fn the_track_list_starts_the_chosen_track_from_its_beginning() {
+        let mut state = AudiobookUiState::default();
+        state.set_library(Ok(vec![book("A", 3)]));
+        state.now_playing = NowPlaying {
+            key: "A".into(),
+            track: 1,
+            track_count: 3,
+            state: PlayerState::Playing,
+            ..NowPlaying::default()
+        };
+        state.open_menu();
+        state.menu = PlayerMenuItem::ALL
+            .iter()
+            .position(|item| *item == PlayerMenuItem::Tracks);
+        state.apply_player(ButtonEvent::Select);
+        // Opens on the track being played; nothing is asked of the engine.
+        assert_eq!(state.track_list, Some(1));
+        assert_eq!(state.take_request(), None);
+        state.apply_player(ButtonEvent::Down);
+        state.apply_player(ButtonEvent::Down);
+        assert_eq!(state.track_list, Some(0));
+        state.apply_player(ButtonEvent::Up);
+        assert_eq!(state.track_list, Some(2));
+        // BOOT steps back to the menu, then to the player.
+        assert!(state.close_menu());
+        assert_eq!(state.track_list, None);
+        assert!(state.menu.is_some());
+        state.apply_player(ButtonEvent::Select);
+        state.apply_player(ButtonEvent::Down);
+        assert_eq!(state.track_list, Some(2));
+        state.apply_player(ButtonEvent::Select);
+        assert_eq!(
+            state.take_request(),
+            Some(PlayerRequest::Open { key: "A".into() })
+        );
+        assert_eq!(
+            state.positions.get("A"),
+            Some(ListeningPosition {
+                track: 2,
+                byte_offset: 0,
+                position_ms: 0
+            })
+        );
+        assert_eq!(state.track_list, None);
+        assert_eq!(state.menu, None);
+    }
+
+    #[test]
+    fn the_sleep_timer_cycles_counts_down_and_stops_playback() {
+        use std::time::{Duration, Instant};
+
+        let mut state = AudiobookUiState::default();
+        state.now_playing = NowPlaying {
+            key: "A".into(),
+            state: PlayerState::Playing,
+            ..NowPlaying::default()
+        };
+        let start = Instant::now();
+        assert!(!state.tick_sleep_timer(start));
+        state.cycle_sleep_timer(start);
+        assert_eq!(state.sleep_timer_minutes, 15);
+        assert_eq!(state.sleep_timer_remaining, Some(15));
+        // Nothing to redraw until a minute has gone.
+        assert!(!state.tick_sleep_timer(start + Duration::from_secs(30)));
+        assert!(state.tick_sleep_timer(start + Duration::from_secs(61)));
+        assert_eq!(state.sleep_timer_remaining, Some(14));
+        assert_eq!(state.take_request(), None);
+        // When it is up, playback stops and the timer is off again.
+        assert!(state.tick_sleep_timer(start + Duration::from_secs(15 * 60)));
+        assert_eq!(state.take_request(), Some(PlayerRequest::Stop));
+        assert_eq!(state.sleep_timer_minutes, 0);
+        assert_eq!(state.sleep_timer_remaining, None);
+        assert!(!state.tick_sleep_timer(start + Duration::from_secs(16 * 60)));
+
+        // SELECT goes through every setting and back to off.
+        for expected in [15, 30, 45, 60, 0] {
+            state.cycle_sleep_timer(start);
+            assert_eq!(state.sleep_timer_minutes, expected);
+        }
+        // Stopping by hand turns the timer off too.
+        state.cycle_sleep_timer(start);
+        state.open_menu();
+        state.menu = Some(PlayerMenuItem::ALL.len() - 1);
+        state.apply_player(ButtonEvent::Select);
+        assert_eq!(state.take_request(), Some(PlayerRequest::Stop));
+        assert_eq!(state.sleep_timer_minutes, 0);
+        // A timer that ends with nothing playing asks for nothing.
+        state.now_playing.state = PlayerState::Stopped;
+        state.cycle_sleep_timer(start);
+        assert!(state.tick_sleep_timer(start + Duration::from_secs(15 * 60)));
+        assert_eq!(state.take_request(), None);
     }
 
     #[test]

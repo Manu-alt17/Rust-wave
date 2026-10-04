@@ -2,17 +2,17 @@
 
 use core::convert::Infallible;
 
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Drawable, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle},
-};
-
 use crate::{
     app::{
+        i18n::t,
         state::AppState,
-        typography::Text,
-        widgets::{footer::draw_footer, header::draw_header},
+        widgets::{
+            footer::{draw_footer, select_and_back},
+            header::draw_header,
+            layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_ROW_TOP},
+            list::{draw_list_row, ROW_STEP},
+            text::draw_paragraph,
+        },
     },
     orientation::OrientedFrameBuffer,
 };
@@ -22,59 +22,34 @@ pub fn render_language(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
+    let preferences = state.display;
 
-    draw_header(
+    draw_header(display, state, t(locale, "LANGUAGE", "LINGUA"))?;
+    draw_list_row(
         display,
-        state,
-        crate::app::i18n::t(locale, "LANGUAGE", "LINGUA"),
+        preferences,
+        FIRST_ROW_TOP,
+        t(locale, "Language", "Lingua"),
+        locale.display_label(),
+        true,
     )?;
-    Text::new(
-        crate::app::i18n::t(locale, "Display language", "Lingua dell'interfaccia"),
-        Point::new(22, 114),
-        heading,
-    )
-    .draw(display)?;
-
-    let border = PrimitiveStyle::with_stroke(BinaryColor::On, 4);
-    Rectangle::new(Point::new(22, 156), Size::new(436, 70))
-        .into_styled(border)
-        .draw(display)?;
-    Text::new(">", Point::new(38, 199), body).draw(display)?;
-    Text::new(
-        crate::app::i18n::t(locale, "Language", "Lingua"),
-        Point::new(68, 199),
-        body,
-    )
-    .draw(display)?;
-    Text::new(locale.display_label(), Point::new(258, 199), body).draw(display)?;
-
-    Text::new(
-        crate::app::i18n::t(
+    draw_paragraph(
+        display,
+        t(
             locale,
-            "Chrome text (menus, labels) shows accents as plain letters;",
-            "Il testo dell'interfaccia (menu, etichette) mostra gli accenti come lettere semplici;",
+            "The language of menus and messages. Books stay in their own language.",
+            "La lingua di menu e messaggi. I libri restano nella loro lingua.",
         ),
-        Point::new(22, 300),
-        body,
-    )
-    .draw(display)?;
-    Text::new(
-        crate::app::i18n::t(
-            locale,
-            "book text in the Reader keeps full accented characters.",
-            "il testo dei libri nel Lettore mantiene gli accenti completi.",
-        ),
-        Point::new(22, 330),
-        body,
-    )
-    .draw(display)?;
-
+        CONTENT_LEFT,
+        FIRST_ROW_TOP + ROW_STEP + 30,
+        preferences.body_style(),
+        CONTENT_WIDTH,
+        4,
+        6,
+    )?;
     draw_footer(
         display,
         state,
-        crate::app::i18n::t(locale, "SELECT SWITCH", "SELECT CAMBIA"),
-    )?;
-    Ok(())
+        &select_and_back(locale, t(locale, "CHANGE", "CAMBIA")),
+    )
 }

@@ -2,18 +2,17 @@
 
 use core::convert::Infallible;
 
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Drawable, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle},
-};
-
 use crate::{
     app::{
         i18n::t,
         state::AppState,
-        typography::{Text, UiTextStyle},
-        widgets::{footer::draw_footer, header::draw_header},
+        widgets::{
+            footer::{back_only, draw_footer, select_and_back},
+            header::draw_header,
+            layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE},
+            list::{draw_field, draw_list_row, draw_section_title, ROW_STEP},
+            text::draw_paragraph,
+        },
     },
     audio::{
         AUDIO_AMP_ENABLE_GPIO, AUDIO_BCLK_GPIO, AUDIO_DIN_GPIO, AUDIO_DOUT_GPIO, AUDIO_MCLK_GPIO,
@@ -28,39 +27,27 @@ pub fn render_audio(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
+    let preferences = state.display;
     let audio = &state.audio;
     let volume = format!("{}%", audio.volume_percent);
-    let amp = if audio.amplifier_enabled {
-        t(locale, "ON", "ON")
-    } else {
-        t(locale, "OFF", "OFF")
-    };
     let mute = if audio.muted {
         t(locale, "Muted", "Silenziato")
     } else {
-        t(locale, "Active", "Attivo")
+        t(locale, "On", "Attivo")
     };
 
-    draw_header(display, state, t(locale, "AUDIO", "AUDIO"))?;
+    draw_header(display, state, "AUDIO")?;
 
-    Text::new(
-        t(locale, "Playback controls", "Controlli di riproduzione"),
-        Point::new(22, 112),
-        heading,
-    )
-    .draw(display)?;
-    line(display, 156, t(locale, "Status", "Stato"), mute, body)?;
-    line(display, 190, t(locale, "Volume", "Volume"), &volume, body)?;
-    line(
+    let mut baseline = draw_field(
         display,
-        224,
-        t(locale, "Amplifier", "Amplificatore"),
-        amp,
-        body,
+        preferences,
+        FIRST_BASELINE,
+        t(locale, "Sound", "Audio"),
+        mute,
     )?;
+    baseline = draw_field(display, preferences, baseline, "Volume", &volume)?;
 
+    let rows_top = baseline - i32::from(preferences.body_style().line_height()) + 10;
     let labels = [
         t(locale, "Play test chime", "Riproduci suono di prova"),
         t(locale, "Stop playback", "Interrompi riproduzione"),
@@ -71,19 +58,23 @@ pub fn render_audio(
         } else {
             t(locale, "Mute", "Silenzia")
         },
-        t(locale, "Audio details", "Dettagli audio"),
+        t(locale, "Details", "Dettagli"),
     ];
     for (index, label) in labels.into_iter().enumerate() {
-        draw_action(
+        draw_list_row(
             display,
-            272 + index as i32 * 58,
+            preferences,
+            rows_top + index as i32 * ROW_STEP,
             label,
+            "",
             state.audio_action_selected == index,
-            body,
         )?;
     }
-    draw_footer(display, state, t(locale, "SELECT RUN", "SELECT ESEGUI"))?;
-    Ok(())
+    draw_footer(
+        display,
+        state,
+        &select_and_back(locale, t(locale, "RUN", "ESEGUI")),
+    )
 }
 
 pub fn render_audio_details(
@@ -91,140 +82,81 @@ pub fn render_audio_details(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let detail = state.display.detail_style();
+    let preferences = state.display;
     let audio = &state.audio;
     let address = audio.codec_address_label();
     let volume = format!("{}%", audio.volume_percent);
-    let amp = if audio.amplifier_enabled {
-        t(locale, "ON", "ON")
-    } else {
-        t(locale, "OFF", "OFF")
-    };
+    let amp = if audio.amplifier_enabled { "ON" } else { "OFF" };
     let mute = if audio.muted {
-        t(locale, "MUTED", "SILENZIATO")
+        t(locale, "Muted", "Silenziato")
     } else {
-        t(locale, "ACTIVE", "ATTIVO")
+        t(locale, "On", "Attivo")
     };
     let sample_rate = format!("{AUDIO_SAMPLE_RATE_HZ} Hz");
     let tx_pins =
         format!("M{AUDIO_MCLK_GPIO} B{AUDIO_BCLK_GPIO} W{AUDIO_WS_GPIO} D{AUDIO_DOUT_GPIO}");
     let rx_input = match locale {
-        Locale::English => format!("DIN GPIO{AUDIO_DIN_GPIO} deferred"),
-        Locale::Italian => format!("DIN GPIO{AUDIO_DIN_GPIO} rinviato"),
+        Locale::English => format!("GPIO{AUDIO_DIN_GPIO}, unused"),
+        Locale::Italian => format!("GPIO{AUDIO_DIN_GPIO}, non usato"),
     };
     let amplifier_pin = format!("GPIO{AUDIO_AMP_ENABLE_GPIO} {amp}");
 
     draw_header(display, state, t(locale, "AUDIO INFO", "INFO AUDIO"))?;
 
-    Text::new(t(locale, "Codec", "Codec"), Point::new(22, 114), heading).draw(display)?;
-    line(
-        display,
-        158,
-        t(locale, "Device", "Dispositivo"),
-        "ES8311 BSP-REF58",
-        body,
-    )?;
-    line(
-        display,
-        192,
-        t(locale, "Address", "Indirizzo"),
-        &address,
-        body,
-    )?;
-    line(
-        display,
-        226,
-        t(locale, "I2S mode", "Modalità I2S"),
-        "TX ONLY / S16 STEREO",
-        body,
-    )?;
-    line(
-        display,
-        260,
-        t(locale, "Sample rate", "Frequenza di campionamento"),
-        &sample_rate,
-        body,
-    )?;
+    let mut baseline = draw_section_title(display, preferences, FIRST_BASELINE, "Codec")?;
+    let codec: [(&str, &str); 4] = [
+        (t(locale, "Device", "Dispositivo"), "ES8311"),
+        (t(locale, "Address", "Indirizzo"), &address),
+        (
+            t(locale, "I2S mode", "Modalit\u{00E0} I2S"),
+            "TX, S16 stereo",
+        ),
+        (
+            t(locale, "Sample rate", "Frequenza di campionamento"),
+            &sample_rate,
+        ),
+    ];
+    for (label, value) in codec {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
 
-    Text::new(
-        t(locale, "Routing", "Instradamento"),
-        Point::new(22, 324),
-        heading,
-    )
-    .draw(display)?;
-    line(display, 368, t(locale, "TX pins", "Pin TX"), &tx_pins, body)?;
-    line(
+    baseline = draw_section_title(
         display,
-        402,
-        t(locale, "RX input", "Ingresso RX"),
-        &rx_input,
-        body,
+        preferences,
+        baseline + 22,
+        t(locale, "Routing", "Collegamenti"),
     )?;
-    line(
-        display,
-        436,
-        t(locale, "Amplifier", "Amplificatore"),
-        &amplifier_pin,
-        body,
-    )?;
-    line(display, 470, t(locale, "Mute", "Silenzia"), mute, body)?;
-    line(display, 504, t(locale, "Volume", "Volume"), &volume, body)?;
+    let routing: [(&str, &str); 5] = [
+        (t(locale, "TX pins", "Pin TX"), &tx_pins),
+        (t(locale, "RX input", "Ingresso RX"), &rx_input),
+        (t(locale, "Amplifier", "Amplificatore"), &amplifier_pin),
+        (t(locale, "Sound", "Audio"), mute),
+        ("Volume", &volume),
+    ];
+    for (label, value) in routing {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
 
-    Text::new(
+    baseline = draw_section_title(
+        display,
+        preferences,
+        baseline + 22,
         t(locale, "Last error", "Ultimo errore"),
-        Point::new(22, 568),
-        heading,
-    )
-    .draw(display)?;
-    Text::new(
+    )?;
+    draw_paragraph(
+        display,
         audio
             .error
             .as_deref()
-            .unwrap_or(t(locale, "none", "nessuno")),
-        Point::new(22, 606),
-        detail,
-    )
-    .draw(display)?;
-    Ok(())
-}
-
-fn line(
-    display: &mut OrientedFrameBuffer<'_>,
-    y: i32,
-    label: &str,
-    value: &str,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    Text::new(label, Point::new(22, y), style).draw(display)?;
-    Text::new(value, Point::new(170, y), style).draw(display)?;
-    Ok(())
-}
-
-fn draw_action(
-    display: &mut OrientedFrameBuffer<'_>,
-    top: i32,
-    label: &str,
-    selected: bool,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    let border = if selected {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
-    } else {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-    };
-    Rectangle::new(Point::new(22, top), Size::new(436, 48))
-        .into_styled(border)
-        .draw(display)?;
-    Text::new(
-        if selected { ">" } else { " " },
-        Point::new(38, top + 31),
-        style,
-    )
-    .draw(display)?;
-    Text::new(label, Point::new(68, top + 31), style).draw(display)?;
-    Ok(())
+            .unwrap_or(t(locale, "None", "Nessuno")),
+        CONTENT_LEFT,
+        baseline,
+        preferences.body_style(),
+        CONTENT_WIDTH,
+        4,
+        4,
+    )?;
+    draw_footer(display, state, &back_only(locale))
 }
 
 #[cfg(test)]

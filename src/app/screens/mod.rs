@@ -20,6 +20,7 @@ pub mod ota;
 pub mod power_key;
 pub mod reader;
 pub mod reading_stats;
+pub mod upload;
 pub mod usb_disk;
 
 /// Draw the active screen selected by the router.
@@ -40,6 +41,7 @@ pub fn render_active_screen(
         ScreenRoute::ReaderOptions => reader::render_options(display, state),
         ScreenRoute::ReaderPreferences => reader::render_preferences(display, state),
         ScreenRoute::ReaderToc => reader::render_toc(display, state),
+        ScreenRoute::ReaderGoTo => reader::render_goto(display, state),
         ScreenRoute::ReadingStats => reading_stats::render_reading_stats(display, state),
         ScreenRoute::AudiobookLibrary => audiobooks::render_audiobook_library(display, state),
         ScreenRoute::AudiobookPlayer => audiobooks::render_audiobook_player(display, state),
@@ -49,6 +51,7 @@ pub fn render_active_screen(
         ScreenRoute::Network => network::render_network(display, state),
         ScreenRoute::NetworkDetails => network::render_network_details(display, state),
         ScreenRoute::NetworkSaved => network::render_network_saved(display, state),
+        ScreenRoute::Upload => upload::render_upload(display, state),
         ScreenRoute::WifiTransfer => network::render_wifi_transfer(display, state),
         ScreenRoute::Audio => audio::render_audio(display, state),
         ScreenRoute::AudioDetails => audio::render_audio_details(display, state),

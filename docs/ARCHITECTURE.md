@@ -7,7 +7,7 @@ Rustmix Wave is a host-testable Rust library plus a narrow ESP-IDF firmware inte
 1. `src/main.rs` owns ESP-IDF integration, peripheral handles, the event loop, logging and cross-domain coordination.
 2. `src/lib.rs` exports host-testable modules.
 3. `src/app/state.rs` owns UI state transitions and routes requests to the firmware loop.
-4. `src/app/screens/` renders screens without owning hardware.
+4. `src/app/screens/` renders screens without owning hardware, on the shared widgets of `src/app/widgets/`: text is measured, wrapped or cut in `text.rs`, rows and fields come from `list.rs`, margins from `layout.rs` and the key hints from `footer.rs`. The layout audit (`src/app/ux_audit.rs`, part of the host tests) renders every screen in both languages and the three text sizes and fails on text off screen or overlapping.
 5. SD-backed features use bounded reads, FAT-safe names and `.TMP` / `.BAK` recovery where writes are allowed.
 6. E-paper refreshes flow through the shared refresh coordinator rather than feature-specific panel writes.
 7. Allocation failure aborts in Rust, so anything sized by a file (images, archives, text) checks its budget before allocating, or allocates through `try_reserve`.
@@ -102,7 +102,7 @@ The in-reader dictionary lookup (`src/dictionary.rs`) reads the bounded Rustmix 
 - CMYK and RGB JPEGs: `jpeg-decoder`, refused beyond an estimated 2 MB;
 - PNG: the `png` crate, read row by row and reduced while read, so a large image never exists at full size in memory; an interlaced PNG needs its whole frame, within an 8 MB budget.
 
-Covers are centre-cropped to the cell's shape, never stretched. The Wi-Fi portal renders the thumbnails of uploaded books in the browser with the same fingerprint, so the device finds them ready.
+Library and Home covers are stretched to the cell's shape, so the whole cover shows; only the full-screen sleep cover is centre-cropped. The Wi-Fi portal renders the thumbnails of uploaded books in the browser with the same fingerprint, so the device finds them ready.
 
 ## Audio engine
 
@@ -120,7 +120,7 @@ Covers are centre-cropped to the cell's shape, never stretched. The Wi-Fi portal
 
 ## Wi-Fi transfer and network
 
-`src/wifi_transfer.rs` serves a portal rooted at `/sdcard/RUSTMIX`, started from Home → Upload and stopped after inactivity. Requests carry the session code shown on screen, paths are decoded once and checked after resolution (`resolve_portal_path`), names must be FAT-safe, and replacements are written atomically. `WIFI.TXT`, `CLOCK.TXT` and `DISPLAY.TXT` are protected against download, upload, rename and delete.
+`src/wifi_transfer.rs` serves a portal rooted at `/sdcard/RUSTMIX`, started from Home → Upload and stopped after inactivity. No code is asked: the portal is open to the network it is on while the Upload screen is shown. Requests that change something are refused when their `Origin` names another site (`is_same_origin_request`), so a web page cannot make a browser on the network post to the device. Paths are decoded once and checked after resolution (`resolve_portal_path`), names must be FAT-safe, and replacements are written atomically. `WIFI.TXT`, `CLOCK.TXT` and `DISPLAY.TXT` are protected against download, upload, rename and delete.
 
 Without a saved network the same screen opens a hotspot (`Configuration::Mixed`, AP + STA) with a QR code to join it; `src/dns_captive_portal.rs` answers every DNS query with the device's address so the phone opens the setup page by itself. Up to 8 networks are saved. With several saved networks the boot scans first and tries the ones in range; with one it connects straight away.
 
@@ -139,7 +139,7 @@ Panel SPI never leaves the main task.
 
 ## Storage
 
-`src/storage.rs` mounts the card (SDMMC 4-bit, 20 MHz, 5 open files) and provides the bounded read-only browser. Long file names are on (UTF-8, heap buffer).
+`src/storage.rs` mounts the card (SDMMC 4-bit, 20 MHz, 5 open files) and provides the bounded browser: directory scans, a text preview and the deletion of a single file after a confirmation. Long file names are on (UTF-8, heap buffer).
 
 - `src/sd_io.rs`: the SDMMC driver can DMA only into internal RAM, and reads into PSRAM one 512-byte sector per command. Large reads into PSRAM (EPUB archives, text windows, sleep covers and images) go through an 8 KB internal buffer instead: 4 MB in 1.5 s rather than 3.6 s.
 - `src/sd_log.rs`: diagnostic logs (`BOOTTIME.LOG`, `RESETS.LOG`, `PMPROF.TXT`) move to `.OLD` at 64 KB.

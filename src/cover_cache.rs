@@ -100,10 +100,11 @@ const CACHE_FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 /// centre-cropped instead of stretched. `"3"`: progressive JPEGs decoded
 /// (by `jpeg_luma`) instead of left as placeholders. `"4"`: PNGs reduced
 /// while read, transparency on white; the covers the full-frame decode
-/// refused, or crashed on, get another try. The Wi-Fi portal computes the
-/// same fingerprint in the browser (`coverFingerprint`), so the two must
-/// match.
-const COVER_CACHE_FORMAT_VERSION: &str = "4";
+/// refused, or crashed on, get another try. `"5"`: Library and Home covers
+/// stretched to the cell again instead of centre-cropped, so the whole
+/// cover shows. The Wi-Fi portal computes the same fingerprint in the
+/// browser (`coverFingerprint`), so the two must match.
+const COVER_CACHE_FORMAT_VERSION: &str = "5";
 
 /// One decoded 1bpp thumbnail, packed MSB-first, bit `1` = ink (black) —
 /// directly usable as the byte slice backing an
@@ -132,6 +133,24 @@ impl Default for CoverCache {
     fn default() -> Self {
         Self::new(DEFAULT_COVER_CACHE_DIRECTORY)
     }
+}
+
+/// Names, inside the shared cache directory, of the cover files kept for
+/// `book`: its Library thumbnail and its full-screen sleep cover. For
+/// whoever deletes the book, so they do not stay behind.
+#[must_use]
+pub fn cover_cache_file_names(book: &ReaderBook) -> [String; 2] {
+    [
+        format!("{:08X}.THB", cover_fingerprint(book) as u32),
+        format!(
+            "{:08X}.SLC",
+            fullscreen_cover_fingerprint(
+                book,
+                crate::sleep_cover::SLEEP_COVER_WIDTH,
+                crate::sleep_cover::SLEEP_COVER_HEIGHT
+            ) as u32
+        ),
+    ]
 }
 
 impl CoverCache {
@@ -626,16 +645,22 @@ struct GrayImage {
     pixels: Vec<u8>,
 }
 
-/// Library and Home thumbnails: centre-cropped to the cell's shape, like
-/// the full-screen cover. Stretching a 2:3 cover into the 208x252 cell
-/// widened it by a quarter.
+/// Library and Home thumbnails: the whole cover, stretched to the cell's
+/// shape. Covers come in many shapes and the centre crop cut their edges
+/// off (often the title or the author); a 2:3 cover comes out about a
+/// quarter wider in the 208x252 cell instead. Only the full-screen sleep
+/// cover is still cropped ([`decode_and_dither_fill`]).
 fn decode_and_dither_cover(bytes: &[u8], media_type: &str) -> Result<CachedThumbnail, String> {
-    decode_and_dither_fill(
-        bytes,
-        media_type,
-        u32::from(THUMB_WIDTH),
-        u32::from(THUMB_HEIGHT),
-    )
+    let gray = decode_gray(bytes, media_type, THUMB_WIDTH, THUMB_HEIGHT)?;
+    let resized = resize_area_average(&gray, u32::from(THUMB_WIDTH), u32::from(THUMB_HEIGHT));
+    drop(gray);
+    let bits = floyd_steinberg_to_1bpp(resized);
+    Ok(CachedThumbnail {
+        width: THUMB_WIDTH,
+        height: THUMB_HEIGHT,
+        bits,
+        placeholder: false,
+    })
 }
 
 /// Dispatch to the right decoder by sniffed magic bytes (falling back to the
@@ -2033,6 +2058,53 @@ mod tests {
         assert_eq!(thumbnail.height, THUMB_HEIGHT);
         assert_eq!(thumbnail.bits.len(), THUMB_BITMAP_BYTES);
         assert!(!thumbnail.placeholder);
+    }
+
+    /// A 4:1 picture, black in its left quarter and white elsewhere. The
+    /// centre crop kept only white columns from the middle; stretched, the
+    /// black quarter is the thumbnail's left quarter.
+    #[test]
+    fn covers_are_stretched_to_the_cell_not_cropped() {
+        let (width, height) = (400u32, 100u32);
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            let pixels: Vec<u8> = (0..width * height)
+                .map(|index| if index % width < width / 4 { 0 } else { 255 })
+                .collect();
+            writer.write_image_data(&pixels).unwrap();
+        }
+        let thumbnail = decode_and_dither_cover(&png_bytes, "image/png").unwrap();
+        assert_eq!(
+            (thumbnail.width, thumbnail.height),
+            (THUMB_WIDTH, THUMB_HEIGHT)
+        );
+        let row_bytes = usize::from(THUMB_WIDTH) / 8;
+        let ink =
+            |x: usize, y: usize| thumbnail.bits[y * row_bytes + x / 8] & (0x80 >> (x % 8)) != 0;
+        let black_columns = usize::from(THUMB_WIDTH) / 4;
+        for y in [
+            0,
+            usize::from(THUMB_HEIGHT) / 2,
+            usize::from(THUMB_HEIGHT) - 1,
+        ] {
+            assert!(ink(0, y), "left edge of row {y}");
+            assert!(
+                ink(black_columns - 2, y),
+                "end of the black quarter, row {y}"
+            );
+            assert!(
+                !ink(black_columns + 2, y),
+                "start of the white part, row {y}"
+            );
+            assert!(
+                !ink(usize::from(THUMB_WIDTH) - 1, y),
+                "right edge of row {y}"
+            );
+        }
     }
 
     #[test]

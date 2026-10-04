@@ -9,11 +9,11 @@ use crate::{
     network::NetworkSnapshot,
     network_saved::NetworkSavedUiState,
     orientation::DisplayOrientation,
-    ota::{OtaCheckState, OtaUiRequest, UpdateChannel},
+    ota::{InstallProgress, OtaCheckState, OtaUiRequest, UpdateChannel},
     power_key_menu::{PowerKeyMenuOutcome, PowerKeyMenuUiState},
     reader::{
-        LibraryBookAction, ReaderDictionaryMode, ReaderLocation, ReaderOption, ReaderOrientation,
-        ReaderSession, ReaderTickOutcome, ReaderUiState,
+        LibraryBookAction, ReaderDictionaryMode, ReaderGoToOutcome, ReaderLocation, ReaderOption,
+        ReaderOrientation, ReaderSession, ReaderTickOutcome, ReaderUiState,
     },
     reading_stats::ReadingStatsSnapshot,
     regional::RegionalPreferences,
@@ -35,10 +35,28 @@ pub const AUDIO_ACTION_COUNT: usize = 6;
 pub const DISPLAY_ACTION_COUNT: usize = 3;
 /// Set date & time or open RTC details rows on the Clock overview screen.
 pub const CLOCK_ACTION_COUNT: usize = 2;
-/// Configure via phone, saved networks and provisioning-details rows on the
-/// Network screen. The Wi-Fi transfer portal is reached only from the Home
-/// "Upload" tile.
-pub const NETWORK_ACTION_COUNT: usize = 3;
+/// Configure via phone, saved networks, retry connection and details rows
+/// on the Network screen.
+pub const NETWORK_ACTION_COUNT: usize = 4;
+/// Rows of the Software Update screen: the action the current state offers
+/// (check, install, retry...) and the release channel.
+pub const OTA_ACTION_COUNT: usize = 2;
+/// Ways of copying files offered by the Upload screen: the Wi-Fi portal and
+/// the USB cable.
+pub const UPLOAD_ACTION_COUNT: usize = 2;
+/// Rows of the Info screen: the next page and "Restore settings".
+pub const INFO_ACTION_COUNT: usize = 2;
+
+/// "Restore settings" on the Info screen: it acts on a second SELECT.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SettingsResetStage {
+    #[default]
+    Idle,
+    /// Chosen once: the next SELECT restores, BOOT or the rocker cancel.
+    Armed,
+    /// Just restored; shown until the selection moves.
+    Done,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppState {
@@ -92,21 +110,55 @@ pub struct AppState {
     /// the phone portal.
     pub network_saved: NetworkSavedUiState,
     network_saved_forget_request: Option<String>,
+    /// SSID of a saved network the user asked to connect to, awaiting the
+    /// runtime owner in main.rs.
+    network_join_request: Option<String>,
+    /// "Retry connection" on the Network screen, awaiting the runtime owner
+    /// in main.rs: reconnect with the whole saved list.
+    network_retry_request: bool,
+    /// SSID of the saved network a "Connect" is trying, until the attempt
+    /// settles one way or the other.
+    network_join_target: Option<String>,
+    /// SSID of the saved network the last "Connect" could not join, for the
+    /// Network screen to say so. Cleared by the next attempt.
+    pub network_join_failed: Option<String>,
+    /// Where SELECT or BOOT on the transfer portal screen returns: Home when
+    /// opened from the Upload tile, Network when opened from "Configure via
+    /// phone".
+    wifi_transfer_return_route: ScreenRoute,
     /// "Connect to PC" screen, and its request to start disk mode.
     pub usb_disk: UsbDiskPhase,
     usb_disk_request: bool,
+    /// Selected way of copying files on the Upload screen: 0 the Wi-Fi
+    /// portal, 1 the USB cable.
+    pub upload_selected: usize,
     /// Audiobook library, player and saved listening positions.
     pub audiobooks: AudiobookUiState,
     /// Global display-maintenance menu opened by a physical Power long press.
     pub power_key_menu: PowerKeyMenuUiState,
     power_key_menu_return_route: ScreenRoute,
     power_key_manual_refresh_requested: bool,
+    restart_requested: bool,
+    /// Selected row of the Info screen: 0 opens the next page, 1 restores
+    /// the settings.
+    pub info_selected: usize,
+    /// Where "Restore settings" on the Info screen stands.
+    pub settings_reset: SettingsResetStage,
     /// GitHub-release OTA check/install lifecycle, shown on the Software
     /// Update screen.
     pub ota: OtaCheckState,
     /// Releases the Software Update screen checks: changed there with UP or
     /// DOWN, persisted by the runtime owner in main.rs.
     pub ota_channel: UpdateChannel,
+    /// Selected row of the Software Update screen: `0` the action, `1` the
+    /// channel.
+    pub ota_action_selected: usize,
+    /// `true` after a first SELECT on "Install", awaiting a second one to
+    /// start the download. Moving the selection, leaving the screen or any
+    /// new check result disarms it.
+    pub ota_install_armed: bool,
+    /// How far the firmware download has got while an update installs.
+    pub ota_install_progress: Option<InstallProgress>,
     /// The bootloader in flash as it describes itself (`v5.5.1,
     /// 2026-10-02`), read at boot by the runtime owner in main.rs; `None`
     /// when it carries no description.
@@ -158,14 +210,26 @@ impl Default for AppState {
             wifi_transfer_request: None,
             network_saved: NetworkSavedUiState::default(),
             network_saved_forget_request: None,
+            network_join_request: None,
+            network_retry_request: false,
+            network_join_target: None,
+            network_join_failed: None,
+            wifi_transfer_return_route: ScreenRoute::Upload,
             audiobooks: AudiobookUiState::default(),
             usb_disk: UsbDiskPhase::Idle,
             usb_disk_request: false,
+            upload_selected: 0,
             power_key_menu: PowerKeyMenuUiState::default(),
             power_key_menu_return_route: ScreenRoute::Home,
             power_key_manual_refresh_requested: false,
+            restart_requested: false,
+            info_selected: 0,
+            settings_reset: SettingsResetStage::Idle,
             ota: OtaCheckState::default(),
             ota_channel: UpdateChannel::of_version(FIRMWARE_VERSION),
+            ota_action_selected: 0,
+            ota_install_armed: false,
+            ota_install_progress: None,
             installed_bootloader: None,
             ota_request: None,
             reading_stats: ReadingStatsSnapshot::default(),
@@ -255,6 +319,8 @@ impl AppState {
                 self.note_select_press();
             }
             self.audiobooks.apply_player(event);
+        } else if route == ScreenRoute::Upload {
+            self.apply_upload(event);
         } else if route == ScreenRoute::UsbDisk {
             if event == ButtonEvent::Select && self.usb_disk == UsbDiskPhase::Idle {
                 self.note_select_press();
@@ -272,6 +338,7 @@ impl AppState {
                 | ScreenRoute::ReaderOptions
                 | ScreenRoute::ReaderPreferences
                 | ScreenRoute::ReaderToc
+                | ScreenRoute::ReaderGoTo
         ) {
             self.apply_reader(event);
         } else {
@@ -310,34 +377,68 @@ impl AppState {
                     match self.network_action_selected {
                         0 => {
                             self.request_wifi_transfer_start();
+                            self.wifi_transfer_return_route = ScreenRoute::Network;
                             self.router.navigate_to(ScreenRoute::WifiTransfer);
                         }
-                        1 => self.router.navigate_to(ScreenRoute::NetworkSaved),
+                        1 => {
+                            self.network_saved.close_menu();
+                            self.router.navigate_to(ScreenRoute::NetworkSaved);
+                        }
+                        2 => {
+                            // Nothing to retry without a saved network.
+                            if self.network.saved_network_count > 0 {
+                                self.network_retry_request = true;
+                                self.network_join_target = None;
+                                self.network_join_failed = None;
+                            }
+                        }
                         _ => self.router.navigate_to(ScreenRoute::NetworkDetails),
                     }
                 }
                 (ScreenRoute::NetworkSaved, ButtonEvent::Up) => {
-                    self.network_saved.move_previous();
+                    if self.network_saved.menu.is_some() {
+                        self.network_saved.menu_previous();
+                    } else {
+                        self.network_saved.move_previous();
+                    }
                 }
                 (ScreenRoute::NetworkSaved, ButtonEvent::Down) => {
-                    self.network_saved.move_next();
+                    if self.network_saved.menu.is_some() {
+                        self.network_saved.menu_next();
+                    } else {
+                        self.network_saved.move_next();
+                    }
                 }
                 (ScreenRoute::NetworkSaved, ButtonEvent::Select) => {
                     self.note_select_press();
-                    self.confirm_or_arm_network_saved_forget();
+                    self.activate_network_saved();
                 }
                 (ScreenRoute::WifiTransfer, ButtonEvent::Select) => {
                     self.note_select_press();
                     self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
-                    self.router.navigate_to(ScreenRoute::Home);
+                    self.router.navigate_to(self.wifi_transfer_return_route);
                 }
-                (ScreenRoute::DeviceInfo, ButtonEvent::Select) => {
+                (ScreenRoute::DeviceInfo, _) => self.apply_device_info(event),
+                (ScreenRoute::OtaUpdate, ButtonEvent::Select) if self.ota_action_selected == 1 => {
                     self.note_select_press();
-                    self.router.navigate_to(ScreenRoute::DeviceInfoBoard);
+                    self.ota_install_armed = false;
+                    // Not while a check or an install is under way: its
+                    // result belongs to the channel it was started for.
+                    if self.ota.can_check() {
+                        self.ota_channel = self.ota_channel.toggled();
+                        self.ota_request = Some(OtaUiRequest::CheckNow);
+                        self.ota = OtaCheckState::Checking;
+                        self.ota_action_selected = 0;
+                    }
                 }
                 (ScreenRoute::OtaUpdate, ButtonEvent::Select) => {
                     self.note_select_press();
                     match &self.ota {
+                        // Installing takes two presses: the first only arms
+                        // it and the screen asks to confirm.
+                        OtaCheckState::UpdateAvailable { .. } if !self.ota_install_armed => {
+                            self.ota_install_armed = true;
+                        }
                         OtaCheckState::UpdateAvailable {
                             version,
                             download_url,
@@ -347,6 +448,7 @@ impl AppState {
                                 download_url: download_url.clone(),
                             });
                             self.ota = OtaCheckState::Installing;
+                            self.ota_install_armed = false;
                         }
                         OtaCheckState::BootloaderAvailable { release, asset, .. } => {
                             self.ota_request = Some(OtaUiRequest::PrepareBootloader {
@@ -382,22 +484,20 @@ impl AppState {
                     }
                 }
                 (ScreenRoute::OtaUpdate, ButtonEvent::Up | ButtonEvent::Down) => {
-                    // Not while a check or an install is under way: its
-                    // result belongs to the channel it was started for.
+                    // Two rows, so both directions move to the other one.
+                    // The rocker only moves the selection: changing the
+                    // channel takes a SELECT on its row.
+                    self.ota_install_armed = false;
                     if self.ota.can_check() {
-                        self.ota_channel = self.ota_channel.toggled();
-                        self.ota_request = Some(OtaUiRequest::CheckNow);
-                        self.ota = OtaCheckState::Checking;
+                        self.ota_action_selected =
+                            (self.ota_action_selected + 1) % OTA_ACTION_COUNT;
                     }
                 }
                 (ScreenRoute::DeviceInfoBoard, ButtonEvent::Select) => {
                     self.note_select_press();
                     self.router.navigate_to(ScreenRoute::DeviceInfoRuntime);
                 }
-                (
-                    ScreenRoute::DeviceInfo | ScreenRoute::DeviceInfoBoard,
-                    ButtonEvent::Up | ButtonEvent::Down,
-                )
+                (ScreenRoute::DeviceInfoBoard, ButtonEvent::Up | ButtonEvent::Down)
                 | (
                     ScreenRoute::AudioDetails
                     | ScreenRoute::ClockDetails
@@ -423,9 +523,6 @@ impl AppState {
             ButtonEvent::Select => {
                 self.note_select_press();
                 if let Some(entry) = home_entries().get(self.home_selected) {
-                    if entry.route == ScreenRoute::WifiTransfer {
-                        self.request_wifi_transfer_start();
-                    }
                     if entry.route == ScreenRoute::ReadingStats {
                         self.reading_stats_refresh_requested = true;
                     }
@@ -437,6 +534,33 @@ impl AppState {
                     } else {
                         self.router.navigate_to(entry.route);
                     }
+                }
+            }
+        }
+    }
+
+    /// Upload: the rocker moves between the two ways of copying files,
+    /// SELECT opens the chosen one. The Wi-Fi portal starts only here, once
+    /// it was chosen, and comes back to this screen when it is closed.
+    fn apply_upload(&mut self, event: ButtonEvent) {
+        match event {
+            ButtonEvent::Up => {
+                self.upload_selected = self
+                    .upload_selected
+                    .checked_sub(1)
+                    .unwrap_or(UPLOAD_ACTION_COUNT - 1);
+            }
+            ButtonEvent::Down => {
+                self.upload_selected = (self.upload_selected + 1) % UPLOAD_ACTION_COUNT;
+            }
+            ButtonEvent::Select => {
+                self.note_select_press();
+                if self.upload_selected == 0 {
+                    self.request_wifi_transfer_start();
+                    self.wifi_transfer_return_route = ScreenRoute::Upload;
+                    self.router.navigate_to(ScreenRoute::WifiTransfer);
+                } else {
+                    self.router.navigate_to(ScreenRoute::UsbDisk);
                 }
             }
         }
@@ -491,7 +615,12 @@ impl AppState {
                     self.display_action_selected = 0;
                 }
                 if target == ScreenRoute::OtaUpdate {
+                    self.ota_action_selected = 0;
+                    self.ota_install_armed = false;
                     self.request_ota_check_if_idle();
+                }
+                if target == ScreenRoute::Network {
+                    self.network_action_selected = 0;
                 }
                 self.router.navigate_to(target);
             }
@@ -596,28 +725,61 @@ impl AppState {
         self.reader.toggle_dictionary_mode()
     }
 
-    /// Held SELECT on Saved networks arms or confirms the "forget?" step
-    /// exactly like a short press: a two-step confirmation naturally invites
-    /// holding the button a beat too long on the second press, and a plain
-    /// long press has no other meaning on this route, so it must not be
-    /// silently swallowed here.
+    /// Held SELECT on Saved networks opens the selected network's menu, as
+    /// a short press does: a long press has no other meaning on this route,
+    /// so it must not be silently swallowed. It never runs a menu action,
+    /// which stays a deliberate short press.
     pub fn apply_network_saved_select_long_press(&mut self) -> bool {
         if self.router.current() != ScreenRoute::NetworkSaved {
             return false;
         }
-        self.confirm_or_arm_network_saved_forget();
+        if self.network_saved.menu.is_none() {
+            self.network_saved.open_menu();
+        }
         true
     }
 
-    fn confirm_or_arm_network_saved_forget(&mut self) {
-        if self.network_saved.confirming_forget {
-            if let Some(entry) = self.network_saved.selected_entry() {
-                self.network_saved_forget_request = Some(entry.ssid.clone());
+    /// SELECT on Saved networks: open the selected network's action menu,
+    /// or run the action under the menu cursor.
+    fn activate_network_saved(&mut self) {
+        use crate::network_saved::SavedNetworkAction;
+
+        let Some(action) = self.network_saved.selected_menu_action() else {
+            self.network_saved.open_menu();
+            return;
+        };
+        let ssid = self
+            .network_saved
+            .selected_entry()
+            .map(|entry| entry.ssid.clone());
+        self.network_saved.close_menu();
+        match (action, ssid) {
+            (SavedNetworkAction::Connect, Some(ssid)) => {
+                self.network_join_request = Some(ssid.clone());
+                self.network_join_target = Some(ssid);
+                self.network_join_failed = None;
+                // The Network screen shows the attempt as it goes.
+                self.router.navigate_to(ScreenRoute::Network);
             }
-            self.network_saved.confirming_forget = false;
-        } else {
-            self.network_saved.begin_forget_confirmation();
+            (SavedNetworkAction::Forget, Some(ssid)) => {
+                self.network_saved_forget_request = Some(ssid);
+            }
+            _ => {}
         }
+    }
+
+    /// SSID of a saved network to connect to, for the runtime owner in
+    /// main.rs.
+    #[must_use]
+    pub fn take_network_join_request(&mut self) -> Option<String> {
+        self.network_join_request.take()
+    }
+
+    /// "Retry connection" was chosen: the runtime owner in main.rs should
+    /// reconnect with the saved-network list.
+    #[must_use]
+    pub fn take_network_retry_request(&mut self) -> bool {
+        core::mem::take(&mut self.network_retry_request)
     }
 
     /// SELECT on "Connect to PC" asks the runtime to start disk mode.
@@ -633,6 +795,17 @@ impl AppState {
         }
         self.audiobooks.open_menu();
         true
+    }
+
+    /// Held SELECT on a bookmark list deletes the selected bookmark: the
+    /// Reader's own list (the open book's bookmarks) or the one reached from
+    /// a Library book's actions.
+    pub fn apply_bookmark_select_long_press(&mut self) -> bool {
+        match self.router.current() {
+            ScreenRoute::ReaderBookmarks => self.reader.delete_selected_session_bookmark(),
+            ScreenRoute::LibraryBookBookmarks => self.reader.delete_selected_book_bookmark(),
+            _ => false,
+        }
     }
 
     /// Held SELECT on the Library grid opens the "book actions" overlay
@@ -710,9 +883,24 @@ impl AppState {
                             self.reader.mark_book_actions_target_completed();
                             self.router.navigate_to(ScreenRoute::Library);
                         }
+                        LibraryBookAction::MarkUnread => {
+                            self.reader.mark_book_actions_target_unread();
+                            self.router.navigate_to(ScreenRoute::Library);
+                        }
                         LibraryBookAction::Bookmarks => {
                             self.reader.book_bookmarks_selected = 0;
                             self.router.navigate_to(ScreenRoute::LibraryBookBookmarks);
+                        }
+                        // Deleting takes two presses: the first only arms
+                        // it and the row asks to confirm.
+                        LibraryBookAction::Delete if !self.reader.book_delete_armed => {
+                            self.reader.book_delete_armed = true;
+                        }
+                        LibraryBookAction::Delete => {
+                            // On failure the overlay stays, with the reason.
+                            if self.reader.delete_book_actions_target() {
+                                self.router.navigate_to(ScreenRoute::Library);
+                            }
                         }
                     }
                 }
@@ -733,6 +921,22 @@ impl AppState {
                     self.router.navigate_to(ScreenRoute::ReaderPage);
                 }
             }
+            ScreenRoute::ReaderGoTo => match event {
+                ButtonEvent::Up => self.reader.adjust_goto(true),
+                ButtonEvent::Down => self.reader.adjust_goto(false),
+                ButtonEvent::Select => {
+                    self.note_select_press();
+                    match self.reader.go_to_percent() {
+                        ReaderGoToOutcome::Jumped => {
+                            self.router.navigate_to(ScreenRoute::ReaderPage);
+                        }
+                        ReaderGoToOutcome::Reopening => {
+                            self.router.navigate_to(ScreenRoute::ReaderLoading);
+                        }
+                        ReaderGoToOutcome::Stayed => {}
+                    }
+                }
+            },
             ScreenRoute::ReaderLoading => {}
             ScreenRoute::ReaderPage => match (self.reader.dictionary_mode.clone(), event) {
                 (ReaderDictionaryMode::Off, ButtonEvent::Up) => {
@@ -795,8 +999,13 @@ impl AppState {
                             self.router.navigate_to(ScreenRoute::ReaderBookmarks);
                         }
                         ReaderOption::TableOfContents => {
-                            self.reader.toc_selected = 0;
+                            // Open on the chapter being read.
+                            self.reader.toc_selected = self.reader.current_toc_index().unwrap_or(0);
                             self.router.navigate_to(ScreenRoute::ReaderToc)
+                        }
+                        ReaderOption::GoTo => {
+                            self.reader.begin_goto();
+                            self.router.navigate_to(ScreenRoute::ReaderGoTo);
                         }
                         ReaderOption::ReadingPreferences => {
                             self.reader.begin_preferences_edit();
@@ -886,7 +1095,57 @@ impl AppState {
                 self.power_key_manual_refresh_requested = true;
                 self.close_power_key_menu();
             }
+            PowerKeyMenuOutcome::Restart => {
+                self.restart_requested = true;
+                self.close_power_key_menu();
+            }
             PowerKeyMenuOutcome::Cancel => self.close_power_key_menu(),
+        }
+    }
+
+    /// "Restart" was chosen in the Power-key menu: the runtime owner saves
+    /// what is still in memory and restarts the device.
+    pub fn take_restart_request(&mut self) -> bool {
+        core::mem::take(&mut self.restart_requested)
+    }
+
+    /// Info screen: the rocker moves between "next page" and "Restore
+    /// settings"; the second asks for a confirming SELECT before it acts.
+    fn apply_device_info(&mut self, event: ButtonEvent) {
+        match event {
+            ButtonEvent::Up | ButtonEvent::Down => {
+                self.info_selected = (self.info_selected + 1) % INFO_ACTION_COUNT;
+                self.settings_reset = SettingsResetStage::Idle;
+            }
+            ButtonEvent::Select => {
+                self.note_select_press();
+                if self.info_selected == 0 {
+                    self.settings_reset = SettingsResetStage::Idle;
+                    self.router.navigate_to(ScreenRoute::DeviceInfoBoard);
+                } else if self.settings_reset == SettingsResetStage::Armed {
+                    self.restore_default_settings();
+                    self.settings_reset = SettingsResetStage::Done;
+                } else {
+                    self.settings_reset = SettingsResetStage::Armed;
+                }
+            }
+        }
+    }
+
+    /// Back to the values of a first start: text size, standby and sleep
+    /// screen, the "most used" settings and the update channel. Language,
+    /// clock, Wi-Fi networks, books and reading preferences are the user's
+    /// own and stay.
+    fn restore_default_settings(&mut self) {
+        self.display = DisplayPreferences::default();
+        self.category_usage = CategoryUsage::default();
+        let channel = UpdateChannel::of_version(FIRMWARE_VERSION);
+        if self.ota_channel != channel {
+            self.ota_channel = channel;
+            // What the last check found was for the other channel.
+            if self.ota.can_check() {
+                self.ota = OtaCheckState::Idle;
+            }
         }
     }
 
@@ -985,14 +1244,53 @@ impl AppState {
         if self.router.current() == ScreenRoute::AudiobookPlayer && self.audiobooks.close_menu() {
             return;
         }
+        // BOOT closes the saved-network action menu before it leaves the
+        // list.
+        if self.router.current() == ScreenRoute::NetworkSaved && self.network_saved.close_menu() {
+            return;
+        }
         if self.router.current() == ScreenRoute::WifiTransfer {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
+            self.router.navigate_to(self.wifi_transfer_return_route);
+            if self.router.current() == ScreenRoute::Home {
+                self.reading_stats_refresh_requested = true;
+            }
+            self.sync_orientation_for_active_route();
+            return;
+        }
+        if self.router.current() == ScreenRoute::OtaUpdate {
+            self.ota_install_armed = false;
+        }
+        if self.router.current() == ScreenRoute::DeviceInfo {
+            // BOOT on a restore waiting for its confirmation only cancels it.
+            if self.settings_reset == SettingsResetStage::Armed {
+                self.settings_reset = SettingsResetStage::Idle;
+                return;
+            }
+            self.settings_reset = SettingsResetStage::Idle;
+            self.info_selected = 0;
         }
         if self.router.current() == ScreenRoute::ClockSetTime {
+            // BOOT steps back one field; from the first it drops the draft
+            // and leaves.
+            if self
+                .clock_time_editor
+                .as_mut()
+                .is_some_and(ClockTimeEditor::retreat_field)
+            {
+                return;
+            }
             self.clock_time_editor = None;
         }
         if self.router.current() == ScreenRoute::ReaderLoading {
             self.reader.cancel_loading();
+        }
+        // BOOT on a delete waiting for its confirmation only cancels it: the
+        // book's options stay open.
+        if self.router.current() == ScreenRoute::LibraryBookActions && self.reader.book_delete_armed
+        {
+            self.reader.book_delete_armed = false;
+            return;
         }
         if self.router.current() == ScreenRoute::ReaderPreferences {
             // BACK steps out one level at a time: from an open row editor it
@@ -1047,6 +1345,40 @@ impl AppState {
 
     pub fn update_network_snapshot(&mut self, network: NetworkSnapshot) {
         self.network = network;
+        self.sync_saved_network_connection();
+        self.settle_network_join();
+    }
+
+    /// Follow a "Connect" to a saved network to its end. A network that
+    /// cannot be joined must not leave the device offline: the failure is
+    /// kept for the Network screen and the saved list is tried again, which
+    /// brings back the network it was on.
+    fn settle_network_join(&mut self) {
+        // Until main.rs has taken the request, the snapshot still describes
+        // the connection the attempt is about to replace.
+        if self.network_join_target.is_none() || self.network_join_request.is_some() {
+            return;
+        }
+        match self.network.wifi_state {
+            crate::network::WifiConnectionState::Connected => self.network_join_target = None,
+            crate::network::WifiConnectionState::Failed => {
+                self.network_join_failed = self.network_join_target.take();
+                self.network_retry_request = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Keep the Saved networks list's "connected" mark on the network the
+    /// device is actually on, whatever the list was last filled with.
+    fn sync_saved_network_connection(&mut self) {
+        let connected = if self.network.wifi_state == crate::network::WifiConnectionState::Connected
+        {
+            self.network.ssid.as_deref()
+        } else {
+            None
+        };
+        self.network_saved.mark_connected(connected);
     }
 
     pub fn update_wifi_transfer_snapshot(&mut self, snapshot: WifiTransferSnapshot) {
@@ -1070,6 +1402,7 @@ impl AppState {
     /// the main loop.
     pub fn set_saved_networks(&mut self, networks: Vec<crate::network_saved::SavedNetworkEntry>) {
         self.network_saved.set_networks(networks);
+        self.sync_saved_network_connection();
     }
 
     #[must_use]
@@ -1094,6 +1427,12 @@ impl AppState {
 
     /// Runtime owner in main.rs reports a completed check or install here.
     pub fn update_ota_state(&mut self, state: OtaCheckState) {
+        if self.ota != state {
+            self.ota_install_armed = false;
+        }
+        if state != OtaCheckState::Installing {
+            self.ota_install_progress = None;
+        }
         self.ota = state;
     }
 
@@ -1176,7 +1515,7 @@ fn bootloader_power_refusal(locale: crate::regional::Locale, battery: Option<u8>
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_local_date, AppState, ClockEditField};
+    use super::{compact_local_date, AppState, ClockEditField, SettingsResetStage};
     use crate::{
         app::{menu::home_entries, router::ScreenRoute},
         buttons::ButtonEvent,
@@ -1401,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    fn up_or_down_on_software_update_switches_the_channel_and_checks_it() {
+    fn the_update_channel_changes_only_with_select_on_its_row() {
         use crate::ota::{OtaCheckState, OtaUiRequest, UpdateChannel};
 
         let mut state = AppState::default();
@@ -1416,19 +1755,116 @@ mod tests {
             version: "v1.4.9".into(),
             download_url: "https://example.com/s.bin".into(),
         };
+        // The rocker only moves between the action and the channel rows.
         state.apply(ButtonEvent::Down);
+        assert_eq!(state.ota_action_selected, 1);
+        assert_eq!(state.ota_channel, initial);
+        assert_eq!(state.take_ota_request(), None);
+        // SELECT on the channel row switches it and checks it; the update
+        // found on the other channel is not offered any more.
+        state.apply(ButtonEvent::Select);
         assert_eq!(state.ota_channel, initial.toggled());
-        // The update found on the other channel is not offered any more.
         assert_eq!(state.ota, OtaCheckState::Checking);
         assert_eq!(state.take_ota_request(), Some(OtaUiRequest::CheckNow));
+        assert_eq!(state.ota_action_selected, 0);
         // A check under way belongs to its channel: no switching meanwhile.
         state.apply(ButtonEvent::Up);
+        assert_eq!(state.ota_action_selected, 0);
+        state.apply(ButtonEvent::Select);
         assert_eq!(state.ota_channel, initial.toggled());
         assert_eq!(state.take_ota_request(), None);
         state.update_ota_state(OtaCheckState::UpToDate);
         state.apply(ButtonEvent::Up);
+        state.apply(ButtonEvent::Select);
         assert_eq!(state.ota_channel, initial);
         assert_eq!(state.take_ota_request(), Some(OtaUiRequest::CheckNow));
+    }
+
+    /// The book-actions overlay open on a book whose file is not there, with
+    /// "Delete Book" selected.
+    fn state_on_delete_book() -> AppState {
+        let mut state = AppState::default();
+        state.reader.open_book_actions(crate::reader::ReaderBook {
+            path: "/nowhere/BOOKS/Missing.txt".into(),
+            title: "Missing".into(),
+            format: crate::reader::BookFormat::Text,
+            size_bytes: 10,
+            modified_seconds: 0,
+        });
+        state.router.navigate_to(ScreenRoute::Library);
+        state.router.navigate_to(ScreenRoute::LibraryBookActions);
+        state.reader.book_actions_selected = crate::reader::LibraryBookAction::ALL
+            .iter()
+            .position(|action| *action == crate::reader::LibraryBookAction::Delete)
+            .unwrap();
+        state
+    }
+
+    #[test]
+    fn deleting_a_book_takes_a_second_select_and_boot_only_cancels_it() {
+        let mut state = state_on_delete_book();
+        state.apply(ButtonEvent::Select);
+        assert!(state.reader.book_delete_armed);
+        assert_eq!(state.active_route(), ScreenRoute::LibraryBookActions);
+        // BOOT cancels the pending delete and stays on the book's options.
+        state.back();
+        assert!(!state.reader.book_delete_armed);
+        assert_eq!(state.active_route(), ScreenRoute::LibraryBookActions);
+        // Moving off the row cancels it too.
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Up);
+        assert!(!state.reader.book_delete_armed);
+        // With nothing pending, BOOT leaves.
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Library);
+    }
+
+    #[test]
+    fn a_book_that_cannot_be_deleted_keeps_its_options_open_with_the_reason() {
+        let mut state = state_on_delete_book();
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::LibraryBookActions);
+        assert!(state.reader.book_actions_error.is_some());
+        assert!(!state.reader.book_delete_armed);
+        assert!(state.reader.book_actions_target.is_some());
+    }
+
+    #[test]
+    fn installing_an_update_takes_a_second_select() {
+        use crate::ota::{OtaCheckState, OtaUiRequest};
+
+        let available = OtaCheckState::UpdateAvailable {
+            version: "v1.4.9".into(),
+            download_url: "https://example.com/s.bin".into(),
+        };
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::OtaUpdate);
+        state.ota = available.clone();
+        state.apply(ButtonEvent::Select);
+        assert!(state.ota_install_armed);
+        assert_eq!(state.ota, available);
+        assert_eq!(state.take_ota_request(), None);
+        // Moving the selection disarms it.
+        state.apply(ButtonEvent::Down);
+        assert!(!state.ota_install_armed);
+        state.apply(ButtonEvent::Up);
+        state.apply(ButtonEvent::Select);
+        assert!(state.ota_install_armed);
+        // So does leaving the screen.
+        state.back();
+        assert!(!state.ota_install_armed);
+        state.router.navigate_to(ScreenRoute::OtaUpdate);
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.ota, OtaCheckState::Installing);
+        assert_eq!(
+            state.take_ota_request(),
+            Some(OtaUiRequest::InstallNow {
+                version: "v1.4.9".into(),
+                download_url: "https://example.com/s.bin".into(),
+            })
+        );
     }
 
     #[test]
@@ -1459,9 +1895,11 @@ mod tests {
     }
 
     #[test]
-    fn wifi_transfer_stop_and_return_goes_to_home_not_network() {
+    fn wifi_transfer_stop_and_return_goes_to_upload_not_network() {
         let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::WifiTransfer);
+        state.home_selected = home_index(ScreenRoute::Upload);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
         assert_eq!(
@@ -1471,17 +1909,18 @@ mod tests {
         state.update_wifi_transfer_snapshot(crate::wifi_transfer::WifiTransferSnapshot {
             state: crate::wifi_transfer::WifiTransferState::Ready,
             url: Some("http://192.168.1.2/".into()),
-            code: Some("123456".into()),
             last_action: "Portal ready".into(),
             last_bytes: 0,
             ..Default::default()
         });
         state.apply(ButtonEvent::Select);
-        assert_eq!(state.active_route(), ScreenRoute::Home);
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
         assert_eq!(
             state.take_wifi_transfer_request(),
             Some(crate::wifi_transfer::WifiTransferUiRequest::Stop)
         );
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Home);
     }
 
     #[test]
@@ -1509,140 +1948,314 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::NetworkSaved);
     }
 
-    #[test]
-    fn network_saved_select_requires_a_second_confirmation_before_forgetting() {
+    /// A state connected to "Home", with "Home" and "Office" saved.
+    fn state_with_two_saved_networks() -> AppState {
         let mut state = AppState::default();
-        state.set_saved_networks(vec![
+        state.update_network_snapshot(crate::network::NetworkSnapshot {
+            wifi_state: crate::network::WifiConnectionState::Connected,
+            ssid: Some("Home".into()),
+            saved_network_count: 2,
+            ..crate::network::NetworkSnapshot::default()
+        });
+        // The list arrives without the connected mark: the live connection
+        // sets it.
+        state.set_saved_networks(two_saved_networks());
+        state
+    }
+
+    fn two_saved_networks() -> Vec<crate::network_saved::SavedNetworkEntry> {
+        vec![
             crate::network_saved::SavedNetworkEntry {
                 ssid: "Home".into(),
-                connected: true,
+                connected: false,
             },
             crate::network_saved::SavedNetworkEntry {
                 ssid: "Office".into(),
                 connected: false,
             },
-        ]);
-        state.router.navigate_to(ScreenRoute::NetworkSaved);
-
-        state.apply(ButtonEvent::Select);
-        assert!(state.network_saved.confirming_forget);
-        assert_eq!(state.take_network_saved_forget_request(), None);
-
-        state.apply(ButtonEvent::Select);
-        assert!(!state.network_saved.confirming_forget);
-        assert_eq!(
-            state.take_network_saved_forget_request(),
-            Some("Home".into())
-        );
+        ]
     }
 
     #[test]
-    fn network_saved_held_select_also_arms_and_confirms_forget() {
-        // A held SELECT is classified as a long press once it crosses
-        // SELECT_LONG_PRESS_MS; on this route that must behave exactly like
-        // a short press instead of being silently swallowed, since the
-        // two-step forget confirmation naturally invites holding the button
-        // a beat too long on the second tap.
-        let mut state = AppState::default();
-        state.set_saved_networks(vec![crate::network_saved::SavedNetworkEntry {
-            ssid: "Home".into(),
-            connected: true,
-        }]);
+    fn network_saved_select_opens_a_menu_that_connects_or_forgets() {
+        use crate::network_saved::SavedNetworkAction;
+
+        let mut state = state_with_two_saved_networks();
         state.router.navigate_to(ScreenRoute::NetworkSaved);
 
-        assert!(state.apply_network_saved_select_long_press());
-        assert!(state.network_saved.confirming_forget);
+        // The connected network offers no "Connect": SELECT, then SELECT on
+        // the first row, forgets it.
+        state.apply(ButtonEvent::Select);
+        assert_eq!(
+            state.network_saved.selected_menu_action(),
+            Some(SavedNetworkAction::Forget)
+        );
         assert_eq!(state.take_network_saved_forget_request(), None);
-
-        assert!(state.apply_network_saved_select_long_press());
-        assert!(!state.network_saved.confirming_forget);
+        state.apply(ButtonEvent::Select);
+        assert!(state.network_saved.menu.is_none());
         assert_eq!(
             state.take_network_saved_forget_request(),
             Some("Home".into())
         );
+        assert_eq!(state.take_network_join_request(), None);
+
+        // Another network: the first row connects, and the Network screen
+        // shows the attempt.
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(
+            state.network_saved.selected_menu_action(),
+            Some(SavedNetworkAction::Connect)
+        );
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.take_network_join_request(), Some("Office".into()));
+        assert_eq!(state.take_network_saved_forget_request(), None);
+        assert_eq!(state.active_route(), ScreenRoute::Network);
+    }
+
+    #[test]
+    fn network_saved_menu_moves_with_the_rocker_and_closes_on_cancel_or_boot() {
+        use crate::network_saved::SavedNetworkAction;
+
+        let mut state = state_with_two_saved_networks();
+        state.router.navigate_to(ScreenRoute::NetworkSaved);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        // With the menu open the rocker moves inside it, not in the list.
+        state.apply(ButtonEvent::Up);
+        assert_eq!(
+            state.network_saved.selected_menu_action(),
+            Some(SavedNetworkAction::Cancel)
+        );
+        assert_eq!(
+            state
+                .network_saved
+                .selected_entry()
+                .map(|entry| entry.ssid.as_str()),
+            Some("Office")
+        );
+        state.apply(ButtonEvent::Select);
+        assert!(state.network_saved.menu.is_none());
+        assert_eq!(state.take_network_join_request(), None);
+        assert_eq!(state.take_network_saved_forget_request(), None);
+
+        // BOOT closes the menu first, then leaves the list.
+        state.apply(ButtonEvent::Select);
+        state.back();
+        assert!(state.network_saved.menu.is_none());
+        assert_eq!(state.active_route(), ScreenRoute::NetworkSaved);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Network);
+    }
+
+    #[test]
+    fn the_saved_network_marked_connected_is_the_one_the_device_is_on() {
+        let mut state = state_with_two_saved_networks();
+        assert!(state.network_saved.networks[0].connected);
+        assert!(!state.network_saved.networks[1].connected);
+        state.update_network_snapshot(crate::network::NetworkSnapshot {
+            wifi_state: crate::network::WifiConnectionState::Connected,
+            ssid: Some("Office".into()),
+            ..crate::network::NetworkSnapshot::default()
+        });
+        assert!(!state.network_saved.networks[0].connected);
+        assert!(state.network_saved.networks[1].connected);
+        // While connecting, nothing is connected yet.
+        state.update_network_snapshot(crate::network::NetworkSnapshot {
+            wifi_state: crate::network::WifiConnectionState::Connecting,
+            ssid: Some("Home".into()),
+            ..crate::network::NetworkSnapshot::default()
+        });
+        assert!(state
+            .network_saved
+            .networks
+            .iter()
+            .all(|entry| !entry.connected));
+    }
+
+    #[test]
+    fn network_saved_held_select_opens_the_menu_but_never_runs_an_action() {
+        let mut state = state_with_two_saved_networks();
+        state.router.navigate_to(ScreenRoute::NetworkSaved);
+        assert!(state.apply_network_saved_select_long_press());
+        assert!(state.network_saved.menu.is_some());
+        // Held again with the menu open: still claimed, nothing forgotten.
+        assert!(state.apply_network_saved_select_long_press());
+        assert!(state.network_saved.menu.is_some());
+        assert_eq!(state.take_network_saved_forget_request(), None);
+        assert_eq!(state.take_network_join_request(), None);
+    }
+
+    fn network_snapshot(
+        wifi_state: crate::network::WifiConnectionState,
+        ssid: &str,
+    ) -> crate::network::NetworkSnapshot {
+        crate::network::NetworkSnapshot {
+            wifi_state,
+            ssid: Some(ssid.into()),
+            saved_network_count: 2,
+            ..crate::network::NetworkSnapshot::default()
+        }
+    }
+
+    /// Choose "Connect" on the saved network "Office" and hand the request
+    /// to the runtime, as main.rs does.
+    fn connect_to_office(state: &mut AppState) {
+        state.router.navigate_to(ScreenRoute::NetworkSaved);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.take_network_join_request(), Some("Office".into()));
+    }
+
+    #[test]
+    fn a_failed_connect_goes_back_to_the_saved_list_and_says_so() {
+        use crate::network::WifiConnectionState;
+
+        let mut state = state_with_two_saved_networks();
+        connect_to_office(&mut state);
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Connecting, "Office"));
+        assert!(!state.take_network_retry_request());
+        assert_eq!(state.network_join_failed, None);
+
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Failed, "Office"));
+        assert_eq!(state.network_join_failed.as_deref(), Some("Office"));
+        assert!(state.take_network_retry_request());
+        // One recovery only: a reconnect that fails too is not retried
+        // forever.
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Failed, "Home"));
+        assert!(!state.take_network_retry_request());
+        // The note stays until the next attempt.
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Connected, "Home"));
+        assert_eq!(state.network_join_failed.as_deref(), Some("Office"));
+        state.router.navigate_to(ScreenRoute::Network);
+        state.network_action_selected = 2;
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.network_join_failed, None);
+    }
+
+    #[test]
+    fn a_successful_connect_leaves_nothing_to_recover() {
+        use crate::network::WifiConnectionState;
+
+        let mut state = state_with_two_saved_networks();
+        connect_to_office(&mut state);
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Connecting, "Office"));
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Connected, "Office"));
+        assert_eq!(state.network_join_failed, None);
+        // A later drop of that network is an ordinary failure, not a failed
+        // "Connect".
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Failed, "Office"));
+        assert_eq!(state.network_join_failed, None);
+        assert!(!state.take_network_retry_request());
+    }
+
+    #[test]
+    fn the_connection_before_a_connect_is_not_taken_for_its_result() {
+        use crate::network::WifiConnectionState;
+
+        let mut state = state_with_two_saved_networks();
+        state.router.navigate_to(ScreenRoute::NetworkSaved);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Select);
+        // main.rs has not taken the request yet: this snapshot is still the
+        // old connection.
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Connected, "Home"));
+        assert_eq!(state.take_network_join_request(), Some("Office".into()));
+        state.update_network_snapshot(network_snapshot(WifiConnectionState::Failed, "Office"));
+        assert_eq!(state.network_join_failed.as_deref(), Some("Office"));
     }
 
     #[test]
     fn network_saved_held_select_is_a_no_op_off_route() {
-        let mut state = AppState::default();
-        state.set_saved_networks(vec![crate::network_saved::SavedNetworkEntry {
-            ssid: "Home".into(),
-            connected: true,
-        }]);
+        let mut state = state_with_two_saved_networks();
         assert!(!state.apply_network_saved_select_long_press());
-        assert!(!state.network_saved.confirming_forget);
+        assert!(state.network_saved.menu.is_none());
     }
 
     #[test]
-    fn library_held_select_opens_book_actions_for_the_selected_book() {
+    fn network_retry_is_requested_only_with_a_saved_network() {
         let mut state = AppState::default();
-        state.reader.books = vec![ReaderBook {
-            path: "a.txt".into(),
-            title: "A".into(),
-            format: BookFormat::Text,
-            size_bytes: 1,
-            modified_seconds: 0,
-        }];
-        state.router.navigate_to(ScreenRoute::Library);
-        state.reader.library_selected = 0;
+        state.router.navigate_to(ScreenRoute::Network);
+        state.network_action_selected = 2;
+        state.apply(ButtonEvent::Select);
+        assert!(!state.take_network_retry_request());
+        state.network.saved_network_count = 2;
+        state.apply(ButtonEvent::Select);
+        assert!(state.take_network_retry_request());
+        assert!(!state.take_network_retry_request());
+        assert_eq!(state.active_route(), ScreenRoute::Network);
+        state.network_action_selected = 3;
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::NetworkDetails);
+    }
 
-        assert!(state.apply_library_select_long_press());
-        assert_eq!(state.active_route(), ScreenRoute::LibraryBookActions);
+    #[test]
+    fn the_portal_opened_from_network_returns_to_network() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Network);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
+        let _ = state.take_wifi_transfer_request();
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Network);
         assert_eq!(
-            state
-                .reader
-                .book_actions_target
-                .as_ref()
-                .map(|book| book.path.as_str()),
-            Some("a.txt")
+            state.take_wifi_transfer_request(),
+            Some(crate::wifi_transfer::WifiTransferUiRequest::Stop)
+        );
+        // BOOT does the same.
+        state.apply(ButtonEvent::Select);
+        let _ = state.take_wifi_transfer_request();
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Network);
+        assert_eq!(
+            state.take_wifi_transfer_request(),
+            Some(crate::wifi_transfer::WifiTransferUiRequest::Stop)
         );
     }
 
     #[test]
-    fn library_held_select_is_a_no_op_off_route() {
+    fn home_upload_tile_offers_wifi_and_usb_and_starts_nothing_by_itself() {
         let mut state = AppState::default();
-        state.reader.books = vec![ReaderBook {
-            path: "a.txt".into(),
-            title: "A".into(),
-            format: BookFormat::Text,
-            size_bytes: 1,
-            modified_seconds: 0,
-        }];
-        assert!(!state.apply_library_select_long_press());
-        assert!(state.reader.book_actions_target.is_none());
-        assert_eq!(state.active_route(), ScreenRoute::Home);
-    }
-
-    #[test]
-    fn network_saved_moving_selection_cancels_a_pending_confirmation() {
-        let mut state = AppState::default();
-        state.set_saved_networks(vec![
-            crate::network_saved::SavedNetworkEntry {
-                ssid: "Home".into(),
-                connected: true,
-            },
-            crate::network_saved::SavedNetworkEntry {
-                ssid: "Office".into(),
-                connected: false,
-            },
-        ]);
-        state.router.navigate_to(ScreenRoute::NetworkSaved);
+        state.home_selected = home_index(ScreenRoute::Upload);
         state.apply(ButtonEvent::Select);
-        assert!(state.network_saved.confirming_forget);
-        state.apply(ButtonEvent::Down);
-        assert!(!state.network_saved.confirming_forget);
-    }
+        // Only the chooser: the portal is not started until it is chosen.
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+        assert_eq!(state.upload_selected, 0);
+        assert_eq!(state.take_wifi_transfer_request(), None);
 
-    #[test]
-    fn home_upload_tile_starts_wifi_transfer_directly() {
-        let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::WifiTransfer);
+        // Wi-Fi: the portal starts, and BOOT comes back to the chooser.
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
         assert_eq!(
             state.take_wifi_transfer_request(),
             Some(crate::wifi_transfer::WifiTransferUiRequest::Start)
         );
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+        assert_eq!(
+            state.take_wifi_transfer_request(),
+            Some(crate::wifi_transfer::WifiTransferUiRequest::Stop)
+        );
+
+        // USB cable: the "Connect to PC" screen, which asks for its own
+        // SELECT before the card is handed to the computer.
+        state.apply(ButtonEvent::Down);
+        assert_eq!(state.upload_selected, 1);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::UsbDisk);
+        assert!(!state.take_usb_disk_request());
+        assert_eq!(state.take_wifi_transfer_request(), None);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+        // The rocker wraps between the two.
+        state.apply(ButtonEvent::Down);
+        assert_eq!(state.upload_selected, 0);
+        state.apply(ButtonEvent::Up);
+        assert_eq!(state.upload_selected, 1);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Home);
     }
 
     #[test]
@@ -1665,10 +2278,10 @@ mod tests {
         let editor = state.clock_time_editor.expect("editor opened");
         assert_eq!(editor.selected_field(), ClockEditField::Timezone);
 
-        state.apply(ButtonEvent::Select); // advance to Hour
-        state.apply(ButtonEvent::Up); // hour + 1
-        state.apply(ButtonEvent::Select); // advance to Minute
-        state.apply(ButtonEvent::Up); // minute + 1
+        state.apply(ButtonEvent::Select); // advance to Day
+        state.apply(ButtonEvent::Up); // day + 1
+        state.apply(ButtonEvent::Select); // advance to Month
+        state.apply(ButtonEvent::Up); // month + 1
         for _ in 0..(ClockEditField::COUNT - 3) {
             state.apply(ButtonEvent::Select); // advance to Save
         }
@@ -1717,6 +2330,29 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::Clock);
         assert!(state.clock_time_editor.is_none());
         assert!(state.take_clock_set_time_request().is_none());
+    }
+
+    #[test]
+    fn clock_set_time_editor_boot_returns_to_the_previous_field_first() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Clock);
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Select); // Day
+        state.apply(ButtonEvent::Select); // Month
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::ClockSetTime);
+        assert_eq!(
+            state.clock_time_editor.unwrap().selected_field(),
+            ClockEditField::Day
+        );
+        state.back();
+        assert_eq!(
+            state.clock_time_editor.unwrap().selected_field(),
+            ClockEditField::Timezone
+        );
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Clock);
+        assert!(state.clock_time_editor.is_none());
     }
 
     #[test]
@@ -1846,6 +2482,63 @@ mod tests {
         // BACK on the flat list (no editor open) leaves for Reader Options.
         state.back();
         assert_eq!(state.active_route(), ScreenRoute::ReaderOptions);
+    }
+
+    #[test]
+    fn power_key_menu_restart_asks_the_runtime_to_restart_once() {
+        let mut state = AppState::default();
+        state.open_power_key_menu();
+        state.apply(ButtonEvent::Down);
+        assert!(!state.take_restart_request());
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Home);
+        assert!(state.take_restart_request());
+        assert!(!state.take_restart_request());
+        assert!(!state.take_power_key_manual_refresh_request());
+    }
+
+    #[test]
+    fn info_restores_the_settings_only_after_a_confirming_select() {
+        use crate::app::display::{DisplayPreferences, UiFontSize};
+
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::DeviceInfo);
+        state.display.font_size = UiFontSize::Large;
+        state.regional.locale = crate::regional::Locale::Italian;
+        let changed = state.display;
+        assert_ne!(changed, DisplayPreferences::default());
+
+        // First row: the next page, as before.
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::DeviceInfoBoard);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::DeviceInfo);
+
+        // Second row: one SELECT only arms, and BOOT or the rocker cancel.
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.settings_reset, SettingsResetStage::Armed);
+        assert_eq!(state.display, changed);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::DeviceInfo);
+        assert_eq!(state.settings_reset, SettingsResetStage::Idle);
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Up);
+        assert_eq!(state.settings_reset, SettingsResetStage::Idle);
+        assert_eq!(state.display, changed);
+
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.settings_reset, SettingsResetStage::Done);
+        assert_eq!(state.display, DisplayPreferences::default());
+        // The language is not a setting this restores.
+        assert_eq!(state.regional.locale, crate::regional::Locale::Italian);
+
+        state.back();
+        assert_ne!(state.active_route(), ScreenRoute::DeviceInfo);
+        assert_eq!(state.info_selected, 0);
+        assert_eq!(state.settings_reset, SettingsResetStage::Idle);
     }
 
     #[test]

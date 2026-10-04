@@ -185,6 +185,58 @@ impl core::fmt::Display for ReleaseCheckError {
 
 impl std::error::Error for ReleaseCheckError {}
 
+/// How far the download of a firmware update has got, for the Update
+/// screen.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InstallProgress {
+    pub received_bytes: usize,
+    /// Size of the whole image, when the server said it.
+    pub total_bytes: Option<usize>,
+}
+
+impl InstallProgress {
+    /// Bytes between two redraws while the size of the image is unknown.
+    const UNSIZED_STEP_BYTES: usize = 256 * 1024;
+    /// Redraws over a download of known size: one every 10%. Each one
+    /// costs an e-paper refresh during which nothing is downloaded.
+    const SIZED_STEPS: usize = 10;
+
+    /// `total_bytes` is kept only when it can be true: a size smaller than
+    /// what already arrived is dropped.
+    #[must_use]
+    pub fn new(received_bytes: usize, total_bytes: Option<usize>) -> Self {
+        Self {
+            received_bytes,
+            total_bytes: total_bytes.filter(|total| *total > 0 && *total >= received_bytes),
+        }
+    }
+
+    #[must_use]
+    pub fn percent(self) -> Option<u8> {
+        let total = self.total_bytes?;
+        Some((self.received_bytes.min(total) as u64 * 100 / total as u64) as u8)
+    }
+
+    /// Grows by one each time the screen is worth redrawing.
+    #[must_use]
+    pub fn step(self) -> usize {
+        match self.total_bytes {
+            Some(total) => {
+                (self.received_bytes.min(total) as u64 * Self::SIZED_STEPS as u64 / total as u64)
+                    as usize
+            }
+            None => self.received_bytes / Self::UNSIZED_STEP_BYTES,
+        }
+    }
+
+    /// `1,2 MB`, with the decimal mark of the user's language.
+    #[must_use]
+    pub fn megabytes_label(bytes: usize, decimal_mark: char) -> String {
+        let tenths = (bytes as u64 * 10 + 524_288) / 1_048_576;
+        format!("{}{decimal_mark}{} MB", tenths / 10, tenths % 10)
+    }
+}
+
 /// Product-facing OTA lifecycle, driven by the Settings > Software Update
 /// screen and by the main loop's periodic background check.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -654,8 +706,8 @@ pub mod espidf {
         bootloader_update::{self, BootloaderAsset},
         build_info::{FIRMWARE_VERSION, OTA_REPO_NAME, OTA_REPO_OWNER},
         ota::{
-            is_update_available, OtaCheckState, ReleaseCheckError, ReleaseInfo, UpdateChannel,
-            OTA_DOWNLOAD_CHUNK_BYTES,
+            is_update_available, InstallProgress, OtaCheckState, ReleaseCheckError, ReleaseInfo,
+            UpdateChannel, OTA_DOWNLOAD_CHUNK_BYTES,
         },
         runtime_worker::{poll_named_worker, spawn_named_worker_in_psram, NamedWorkerError},
     };
@@ -841,11 +893,21 @@ pub mod espidf {
     /// sized to already include this operation's budget, reserved once at
     /// boot before anything else can fragment it, instead of trying to
     /// find a fresh contiguous block for it under pressure later.
-    pub fn install_update_on_main_task(download_url: String) -> Result<(), String> {
-        install_update(&download_url)
+    ///
+    /// `on_progress` is called as the download advances, with what arrived
+    /// so far; it may take its time (it redraws the e-paper screen), the
+    /// connection simply waits.
+    pub fn install_update_on_main_task(
+        download_url: String,
+        on_progress: &mut dyn FnMut(InstallProgress),
+    ) -> Result<(), String> {
+        install_update(&download_url, on_progress)
     }
 
-    fn install_update(download_url: &str) -> Result<(), String> {
+    fn install_update(
+        download_url: &str,
+        on_progress: &mut dyn FnMut(InstallProgress),
+    ) -> Result<(), String> {
         let http_config = HttpConfiguration {
             crt_bundle_attach: Some(sys::esp_crt_bundle_attach),
             timeout: Some(Duration::from_secs(OTA_INSTALL_HTTP_TIMEOUT_SECONDS)),
@@ -874,6 +936,10 @@ pub mod espidf {
         if status != 200 {
             return Err(format!("download HTTP status {status}"));
         }
+        let total_bytes = response
+            .header("Content-Length")
+            .and_then(|value| value.trim().parse::<usize>().ok());
+        info!("rustmix-wave=ota-install status=downloading total-bytes={total_bytes:?}");
 
         let mut ota = EspOta::new().map_err(|error| format!("OTA handle unavailable: {error}"))?;
         // Dropping `update` on any early return below aborts the write via
@@ -884,7 +950,8 @@ pub mod espidf {
             .map_err(|error| format!("failed to open update slot: {error}"))?;
 
         let mut chunk = [0_u8; OTA_DOWNLOAD_CHUNK_BYTES];
-        let mut total_bytes = 0_usize;
+        let mut received_bytes = 0_usize;
+        let mut reported_step = 0_usize;
         loop {
             let read = io::try_read_full(&mut response, &mut chunk)
                 .map_err(|error| format!("download read failed: {}", error.0))?;
@@ -892,19 +959,24 @@ pub mod espidf {
                 update
                     .write(&chunk[..read])
                     .map_err(|error| format!("flash write failed: {error}"))?;
-                total_bytes += read;
+                received_bytes += read;
+                let progress = InstallProgress::new(received_bytes, total_bytes);
+                if progress.step() != reported_step {
+                    reported_step = progress.step();
+                    on_progress(progress);
+                }
             }
             if read < chunk.len() {
                 break;
             }
         }
-        if total_bytes == 0 {
+        if received_bytes == 0 {
             return Err("download produced no data".into());
         }
         update
             .complete()
             .map_err(|error| format!("failed to finalize update: {error}"))?;
-        info!("rustmix-wave=ota-install status=completed bytes={total_bytes}");
+        info!("rustmix-wave=ota-install status=completed bytes={received_bytes}");
         Ok(())
     }
 
@@ -927,8 +999,33 @@ pub mod espidf {
 mod tests {
     use super::{
         extract_first_bin_asset_url, extract_string_field, is_update_available,
-        parse_release_response, OtaCheckState, ReleaseInfo, UpdateChannel,
+        parse_release_response, InstallProgress, OtaCheckState, ReleaseInfo, UpdateChannel,
     };
+
+    #[test]
+    fn install_progress_counts_tenths_of_a_sized_download() {
+        let total = Some(2_000_000);
+        assert_eq!(InstallProgress::new(0, total).step(), 0);
+        assert_eq!(InstallProgress::new(199_999, total).step(), 0);
+        assert_eq!(InstallProgress::new(200_000, total).step(), 1);
+        assert_eq!(InstallProgress::new(1_000_000, total).percent(), Some(50));
+        assert_eq!(InstallProgress::new(2_000_000, total).step(), 10);
+        assert_eq!(InstallProgress::new(2_000_000, total).percent(), Some(100));
+    }
+
+    #[test]
+    fn install_progress_without_a_believable_size_counts_bytes() {
+        let unsized_download = InstallProgress::new(600_000, None);
+        assert_eq!(unsized_download.percent(), None);
+        assert_eq!(unsized_download.step(), 2);
+        // A size the download already went past cannot be the real one.
+        let stale = InstallProgress::new(600_000, Some(1_000));
+        assert_eq!(stale.total_bytes, None);
+        assert_eq!(stale.percent(), None);
+        assert_eq!(InstallProgress::new(5, Some(0)).total_bytes, None);
+        assert_eq!(InstallProgress::megabytes_label(1_258_291, ','), "1,2 MB");
+        assert_eq!(InstallProgress::megabytes_label(0, '.'), "0.0 MB");
+    }
 
     #[test]
     fn detects_newer_semver_tag_with_leading_v() {

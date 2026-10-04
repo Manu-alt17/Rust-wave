@@ -1,20 +1,19 @@
-//! Persistent global user-interface typography settings.
+//! Persistent global user-interface settings: text size, sleep screen and
+//! automatic standby.
 
 use core::convert::Infallible;
-
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Drawable, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle},
-};
-
-use crate::app::typography::{Text, UiTextStyle};
 
 use crate::{
     app::{
         i18n::t,
         state::AppState,
-        widgets::{footer::draw_footer, header::draw_header},
+        widgets::{
+            footer::{draw_footer, select_and_back},
+            header::draw_header,
+            layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_ROW_TOP},
+            list::{draw_list_row, ROW_STEP},
+            text::draw_paragraph,
+        },
     },
     orientation::OrientedFrameBuffer,
 };
@@ -24,106 +23,67 @@ pub fn render_display(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let prefs = state.display;
+    let preferences = state.display;
 
     draw_header(display, state, t(locale, "DISPLAY", "SCHERMO"))?;
-    Text::new(
-        t(locale, "Display preferences", "Preferenze schermo"),
-        Point::new(22, 114),
-        heading,
-    )
-    .draw(display)?;
 
-    draw_setting_row(
-        display,
-        156,
-        t(locale, "UI size", "Dimensione UI"),
-        prefs.font_size.label_i18n(locale),
-        state.display_action_selected == 0,
-        body,
-    )?;
-    draw_setting_row(
-        display,
-        246,
-        t(locale, "Sleep screen", "Sfondo riposo"),
-        prefs.sleep_screen.label_i18n(locale),
-        state.display_action_selected == 1,
-        body,
-    )?;
-    draw_setting_row(
-        display,
-        336,
-        t(locale, "Auto standby", "Standby automatico"),
-        prefs.auto_sleep.label_i18n(locale),
-        state.display_action_selected == 2,
-        body,
-    )?;
-
-    Text::new(
-        t(locale, "Live preview", "Anteprima live"),
-        Point::new(22, 454),
-        heading,
-    )
-    .draw(display)?;
-    Rectangle::new(Point::new(22, 482), Size::new(436, 160))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(display)?;
-    Text::new(
-        t(locale, "Reader", "Lettore"),
-        Point::new(44, 544),
-        prefs.navigation_style(),
-    )
-    .draw(display)?;
-    Text::new(
-        t(
-            locale,
-            "Books, progress and bookmarks",
-            "Libri, progressi e segnalibri",
+    let rows = [
+        (
+            t(locale, "Text size", "Dimensione testo"),
+            preferences.font_size.label_i18n(locale),
+            t(
+                locale,
+                "Size of the text in menus and settings. Book text is set in the reading preferences.",
+                "Dimensione dei testi di menu e impostazioni. Il testo dei libri si regola nelle preferenze di lettura.",
+            ),
         ),
-        Point::new(44, 592),
-        body,
-    )
-    .draw(display)?;
-    Text::new(
-        t(
-            locale,
-            "Press BOOT to return to Settings.",
-            "Premi BOOT per tornare a Impostazioni.",
+        (
+            t(locale, "Sleep screen", "Schermata di standby"),
+            preferences.sleep_screen.label_i18n(locale),
+            t(
+                locale,
+                "What stays on the screen in standby: the images in the SLEEP folder, in order or at random, or the cover of the book being read.",
+                "Cosa resta sullo schermo in standby: le immagini della cartella SLEEP, in ordine o a caso, oppure la copertina del libro in lettura.",
+            ),
         ),
-        Point::new(22, 700),
-        body,
-    )
-    .draw(display)?;
+        (
+            t(locale, "Auto standby", "Standby automatico"),
+            preferences.auto_sleep.label_i18n(locale),
+            t(
+                locale,
+                "How long without a key press before the device goes to standby by itself.",
+                "Dopo quanto tempo senza premere tasti il dispositivo va in standby da solo.",
+            ),
+        ),
+    ];
+    for (index, (label, value, _)) in rows.iter().enumerate() {
+        draw_list_row(
+            display,
+            preferences,
+            FIRST_ROW_TOP + index as i32 * ROW_STEP,
+            label,
+            value,
+            state.display_action_selected == index,
+        )?;
+    }
+    // The selected row explained: the labels alone are short.
+    let help = rows
+        .get(state.display_action_selected)
+        .map_or("", |(_, _, help)| help);
+    draw_paragraph(
+        display,
+        help,
+        CONTENT_LEFT,
+        FIRST_ROW_TOP + rows.len() as i32 * ROW_STEP + 30,
+        preferences.body_style(),
+        CONTENT_WIDTH,
+        6,
+        6,
+    )?;
 
-    draw_footer(display, state, t(locale, "SELECT CHANGE", "SELECT CAMBIA"))?;
-    Ok(())
-}
-
-fn draw_setting_row(
-    display: &mut OrientedFrameBuffer<'_>,
-    top: i32,
-    label: &str,
-    value: &str,
-    selected: bool,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    let border = if selected {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
-    } else {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-    };
-    Rectangle::new(Point::new(22, top), Size::new(436, 70))
-        .into_styled(border)
-        .draw(display)?;
-    Text::new(
-        if selected { ">" } else { " " },
-        Point::new(38, top + 43),
-        style,
+    draw_footer(
+        display,
+        state,
+        &select_and_back(locale, t(locale, "CHANGE", "CAMBIA")),
     )
-    .draw(display)?;
-    Text::new(label, Point::new(68, top + 43), style).draw(display)?;
-    Text::new(value, Point::new(258, top + 43), style).draw(display)?;
-    Ok(())
 }

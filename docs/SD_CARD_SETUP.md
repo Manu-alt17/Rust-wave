@@ -24,7 +24,7 @@ Use a FAT-formatted microSD (FAT32 for cards up to 32 GB; exFAT is not supported
   BOOTTIME.LOG  RESETS.LOG   diagnostics, moved to .OLD at 64 KB
 ```
 
-Copy files with the Wi-Fi portal (Home → Carica), with Connect to PC (Settings → Al PC), or by moving the card to a computer.
+Copy files from Home → Carica, over Wi-Fi with the portal or with the USB cable (Connect to PC), or by moving the card to a computer.
 
 ## Install bundled examples
 

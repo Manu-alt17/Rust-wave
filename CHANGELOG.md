@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+- Library and Home covers are stretched to fill their cell instead of centre-cropped, so the whole cover shows whatever its shape; thumbnails already on the card are rebuilt once. The full-screen sleep cover is still cropped.
+
+One look for every screen:
+
+- Lists, labels and footers come from shared widgets (`src/app/widgets/text.rs`, `list.rs`, `layout.rs`, `footer.rs`): rows are rounded like the Home tiles, with a thick border on the selected one and the value on the right; the content keeps the Home margins. Settings, Network, Update, Clock, Audio, Info, Files, Audiobooks, Statistics and the Reader's lists were all redrawn on them.
+- Text is measured in pixels: what does not fit wraps or ends in "…", instead of running off the screen or over the value beside it. Long titles, network names, file names and error messages are covered.
+- Every screen below Home has the same footer, `SELECT <action> · BOOT INDIETRO`, with the page (`2/3`) on the right for lists shown a page at a time.
+- A layout audit (`src/app/ux_audit.rs`) renders every screen in both languages and the three text sizes with awkward data, and fails the tests on text off screen, in the footer or on other text.
+
+Added:
+
+- Saved networks: SELECT opens a menu on the network, to connect to it or forget it. If it cannot be joined, the Network screen says so and the device goes back to the saved networks by itself. **Riprova connessione** on the Network screen tries the saved networks again.
+- The connected network is marked in the list from the live connection (it was only marked after a change made from the portal).
+- Book actions (hold SELECT on a cover): **Segna come non letto** forgets the saved position, **Elimina libro** removes the file from the card after a second SELECT. The screen also shows the format, the size and how much was read.
+- Bookmarks: the Reader lists the bookmarks of the open book only, with the chapter and page in words and the percentage; hold SELECT to delete one, there and in a Library book's list. A ribbon in the top right corner marks a page that has a bookmark.
+- The table of contents opens on the chapter being read and marks it.
+- Update: UP and DOWN move between the action and the channel; SELECT on the channel switches it and checks. Installing takes a second SELECT.
+- Dictionary: choosing a line only picks where the word selection starts. Past the last word of a line it goes on to the first word of the next one, and before the first word back to the line above; it stops at the first and last word of the page.
+- The Wi-Fi portal no longer asks for the six-digit code, and the Upload screen no longer shows one: the address (or the QR code) is enough. The portal is therefore open to anyone on the same network while the Upload screen is shown; it still closes on leaving the screen and after inactivity. Requests that change something are refused when they come from another site's page (`Origin` check), which the code used to cover.
+- Reader options: **Vai a** jumps to a point of the book given as a percentage, in steps of 5%; an EPUB shows the chapter that point falls in.
+- Audiobook player menu: **Tracce** lists the tracks and starts the chosen one from its beginning; **Timer di spegnimento** stops playback after 15, 30, 45 or 60 minutes, with the minutes left on the player. The menu and the track list take the whole screen.
+- Update: the download shows a bar, the percentage and the megabytes received, redrawn every 10% (`Content-Length` of the download; without it, the megabytes alone).
+- Power-key menu: **Riavvia** restarts the device after saving the reading and listening positions. Standby already cuts the power at the PMIC, so there is no separate power off.
+- Info: **Ripristina impostazioni** puts the interface text size, standby, sleep screen, "most used" settings and update channel back to their first values after a second SELECT. Language, clock, Wi-Fi, books and reading preferences stay.
+- Files: BOOT closes the preview or goes up one folder (the cursor lands on the folder just left) and leaves only from the top folder, so the "Back to Home" and "Parent folder" rows are gone. Hold SELECT on a file to delete it, after a confirming SELECT; folders are not deleted. `src/storage.rs` is no longer read-only.
+- Date and time editor: fields in the order time zone, day, month, year, hour, minute; BOOT steps back one field and leaves only from the first.
+- **Carica** (Upload) on Home opens a chooser instead of starting the Wi-Fi portal at once: two tiles, **Wi-Fi** (the portal, on the network or on the device's hotspot) and **Cavo USB** (Connect to PC), with what the selected one does written under them. Connect to PC moved there from Settings, which is left with seven tiles; both screens go back to the chooser. The portal opened from Network still goes back to Network.
+- UP and DOWN act when the key goes down instead of when it is released, so lists and pages move at once; one press is still one step, and holding the key does not repeat.
+- Deleting a book from its options also removes its cache files: the flattened EPUB text, the page index and anchors of the current reading layout, the thumbnail and the sleep cover.
+
+Fixed:
+
+- The Italian Settings screen is titled **Opzioni**, like the Home tile that opens it.
+- The percent sign of the 12 px interface font was two smudges without the slash (hinting broke it): redrawn by hand, with an override in `tools/fontgen/gen_bitmap_fonts.py` so a regeneration keeps it.
+- Texts in English on the Italian interface (opening a book, the dictionary's "word not found", the portal's last action, Wi-Fi states) and leftovers of removed features on Info, Clock and the Power-key menu.
+- The Italian Update tile and header say **Aggiorna**; "Streak" is **Serie**.
+- The player's status and volume are no longer drawn under its menu; a dictionary text longer than the page is cut instead of running through the footer.
+
 ## v1.5.0-beta.2 — Bootloader updates over the air
 
 - Bootloader update over the air: a release can carry the bootloader as `*-bootloader.img`, which `scripts/build-ota-image.sh` now writes next to the app image. When the firmware is up to date and the release's bootloader differs from the one in flash, Settings → Update offers it: it is downloaded and checked first (the SHA-256 GitHub publishes, the image's own appended hash, chip and size), then written on a second SELECT with the battery at 50% or the USB cable, staged in unused flash, read back and copied again if it differs; the device restarts into it. The ESP32-S3 has no backup bootloader, so a power cut during the write (under a second) still needs a USB reflash.

@@ -3,100 +3,162 @@
 
 use core::convert::Infallible;
 
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Drawable, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle},
-};
+use embedded_graphics::prelude::Point;
 
 use crate::{
     app::{
         i18n::t,
         state::AppState,
-        typography::{Text, UiTextStyle},
-        widgets::{footer::draw_footer, header::draw_header},
+        typography::Text,
+        widgets::{
+            footer::{
+                back_action, back_only, draw_footer, footer_hints, select_and_back, FooterKey,
+            },
+            header::draw_header,
+            layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE, FIRST_ROW_TOP},
+            list::{
+                draw_field, draw_list_row, draw_row_frame, draw_section_title, ROW_PAD_X, ROW_STEP,
+            },
+            text::{draw_paragraph, draw_text_fit},
+        },
     },
+    clock_time_editor::ClockEditField,
     orientation::OrientedFrameBuffer,
+    regional::Locale,
+    rtc::RtcDateTime,
 };
 
-/// Draw the user-facing RTC overview.
+/// Height of the card holding the current time and date.
+const TIME_CARD_HEIGHT: i32 = 124;
+
+/// A date the way it is written in the user's language: "3 ottobre 2026",
+/// "October 3, 2026".
+fn long_date(locale: Locale, date: RtcDateTime) -> String {
+    const ENGLISH: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    const ITALIAN: [&str; 12] = [
+        "gennaio",
+        "febbraio",
+        "marzo",
+        "aprile",
+        "maggio",
+        "giugno",
+        "luglio",
+        "agosto",
+        "settembre",
+        "ottobre",
+        "novembre",
+        "dicembre",
+    ];
+    let index = usize::from(date.month.clamp(1, 12)) - 1;
+    match locale {
+        Locale::English => format!("{} {}, {}", ENGLISH[index], date.day, date.year),
+        Locale::Italian => format!("{} {} {}", date.day, ITALIAN[index], date.year),
+    }
+}
+
+/// Draw the user-facing clock overview.
 pub fn render_clock(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
-    let large = state.display.large_style();
-    let outline = PrimitiveStyle::with_stroke(BinaryColor::On, 2);
+    let preferences = state.display;
+    let body = preferences.body_style();
     let time = state.board.time_label(state.regional);
-    let date_time = state.board.date_time_label(state.regional);
-    let battery = state.board.battery_label();
+    let date = state.board.rtc.map_or_else(
+        || t(locale, "Clock not available", "Orologio non disponibile").to_string(),
+        |rtc| long_date(locale, state.regional.localize_rtc(rtc)),
+    );
+    let battery = state.battery_percent().map_or_else(
+        || t(locale, "Not detected", "Non rilevata").to_string(),
+        |percent| format!("{percent}%"),
+    );
 
     draw_header(display, state, t(locale, "CLOCK", "OROLOGIO"))?;
 
-    Rectangle::new(Point::new(22, 100), Size::new(436, 150))
-        .into_styled(outline)
-        .draw(display)?;
+    draw_row_frame(display, FIRST_ROW_TOP, TIME_CARD_HEIGHT, false)?;
+    let card_left = CONTENT_LEFT + ROW_PAD_X;
+    let card_width = CONTENT_WIDTH - 2 * ROW_PAD_X;
     Text::new(
-        t(locale, "Current RTC time", "Ora RTC corrente"),
-        Point::new(42, 134),
-        heading,
+        &time,
+        Point::new(card_left, FIRST_ROW_TOP + 58),
+        preferences.large_style(),
     )
     .draw(display)?;
-    Text::new(&time, Point::new(42, 192), large).draw(display)?;
-    Text::new(&date_time, Point::new(42, 228), body).draw(display)?;
-
-    Text::new(
-        t(locale, "Onboard status", "Stato scheda"),
-        Point::new(22, 310),
-        heading,
-    )
-    .draw(display)?;
-    line(
+    draw_text_fit(
         display,
-        358,
-        t(locale, "Battery", "Batteria"),
-        &battery,
+        &date,
+        Point::new(card_left, FIRST_ROW_TOP + 96),
         body,
+        card_width,
     )?;
 
+    let mut baseline = FIRST_ROW_TOP + TIME_CARD_HEIGHT + 44;
+    baseline = draw_field(
+        display,
+        preferences,
+        baseline,
+        t(locale, "Battery", "Batteria"),
+        &battery,
+    )?;
     if let Some(power) = state.board.power {
-        let usb = if power.vbus_present {
-            t(locale, "Connected", "Connesso")
-        } else {
-            t(locale, "Not detected", "Non rilevato")
-        };
-        let charge = if power.charging {
-            t(locale, "Charging", "In carica")
-        } else {
-            t(locale, "Not charging", "Non in carica")
-        };
-        line(display, 396, t(locale, "USB", "USB"), usb, body)?;
-        line(
+        baseline = draw_field(
             display,
-            434,
-            t(locale, "Charge state", "Stato di carica"),
-            charge,
-            body,
+            preferences,
+            baseline,
+            t(locale, "USB cable", "Cavo USB"),
+            if power.vbus_present {
+                t(locale, "Connected", "Collegato")
+            } else {
+                t(locale, "Not connected", "Non collegato")
+            },
+        )?;
+        baseline = draw_field(
+            display,
+            preferences,
+            baseline,
+            t(locale, "Charging", "Ricarica"),
+            if power.charging {
+                t(locale, "In progress", "In corso")
+            } else {
+                t(locale, "Not charging", "Non in carica")
+            },
         )?;
     }
 
-    draw_action(
+    let rows_top = baseline - i32::from(body.line_height()) + 10;
+    let rows = [
+        t(locale, "Set date and time", "Imposta data e ora"),
+        t(locale, "Details", "Dettagli"),
+    ];
+    for (index, label) in rows.into_iter().enumerate() {
+        draw_list_row(
+            display,
+            preferences,
+            rows_top + index as i32 * ROW_STEP,
+            label,
+            "",
+            state.clock_action_selected == index,
+        )?;
+    }
+    draw_footer(
         display,
-        558,
-        t(locale, "Set date & time", "Imposta data e ora"),
-        state.clock_action_selected == 0,
-        body,
-    )?;
-    draw_action(
-        display,
-        612,
-        t(locale, "RTC details", "Dettagli RTC"),
-        state.clock_action_selected == 1,
-        body,
-    )?;
-    Ok(())
+        state,
+        &select_and_back(locale, t(locale, "OPEN", "APRI")),
+    )
 }
 
 /// Draw the runtime-only local wall-clock editor opened from the Clock
@@ -106,114 +168,92 @@ pub fn render_clock_set_time(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
+    let preferences = state.display;
+    let body = preferences.body_style();
 
     draw_header(display, state, t(locale, "DATE & TIME", "DATA E ORA"))?;
 
     let Some(editor) = state.clock_time_editor.as_ref() else {
-        Text::new(
-            t(locale, "No active edit.", "Nessuna modifica attiva."),
-            Point::new(22, 140),
+        draw_paragraph(
+            display,
+            t(locale, "No active edit.", "Nessuna modifica in corso."),
+            CONTENT_LEFT,
+            FIRST_BASELINE,
             body,
-        )
-        .draw(display)?;
-        return Ok(());
+            CONTENT_WIDTH,
+            2,
+            6,
+        )?;
+        return draw_footer(display, state, &back_only(locale));
     };
 
-    Text::new(
-        t(locale, "Local wall clock", "Ora locale"),
-        Point::new(22, 108),
-        heading,
-    )
-    .draw(display)?;
-    Text::new(
-        &format!(
-            "{}  {}",
-            editor.draft.date_label(),
-            editor.draft.time_label()
+    let hour = format!("{:02}", editor.draft.hour);
+    let minute = format!("{:02}", editor.draft.minute);
+    let year = format!("{:04}", editor.draft.year);
+    let month = format!("{:02}", editor.draft.month);
+    let day = format!("{:02}", editor.draft.day);
+    let rows: [(&str, &str); 7] = [
+        (
+            t(locale, "Time zone", "Fuso orario"),
+            editor.timezone.name(),
         ),
-        Point::new(22, 148),
-        body,
-    )
-    .draw(display)?;
+        (t(locale, "Day", "Giorno"), &day),
+        (t(locale, "Month", "Mese"), &month),
+        (t(locale, "Year", "Anno"), &year),
+        (t(locale, "Hour", "Ora"), &hour),
+        (t(locale, "Minute", "Minuti"), &minute),
+        (t(locale, "Save", "Salva"), ""),
+    ];
+    for (index, (label, value)) in rows.into_iter().enumerate() {
+        draw_list_row(
+            display,
+            preferences,
+            FIRST_ROW_TOP + index as i32 * ROW_STEP,
+            label,
+            value,
+            editor.field_index == index,
+        )?;
+    }
 
-    draw_editor_row(
+    draw_paragraph(
         display,
-        192,
-        t(locale, "Timezone", "Fuso orario"),
-        editor.timezone.name(),
-        editor.field_index == 0,
-        body,
-    )?;
-    draw_editor_row(
-        display,
-        248,
-        t(locale, "Hour", "Ora"),
-        &format!("{:02}", editor.draft.hour),
-        editor.field_index == 1,
-        body,
-    )?;
-    draw_editor_row(
-        display,
-        304,
-        t(locale, "Minute", "Minuti"),
-        &format!("{:02}", editor.draft.minute),
-        editor.field_index == 2,
-        body,
-    )?;
-    draw_editor_row(
-        display,
-        360,
-        t(locale, "Year", "Anno"),
-        &format!("{:04}", editor.draft.year),
-        editor.field_index == 3,
-        body,
-    )?;
-    draw_editor_row(
-        display,
-        416,
-        t(locale, "Month", "Mese"),
-        &format!("{:02}", editor.draft.month),
-        editor.field_index == 4,
-        body,
-    )?;
-    draw_editor_row(
-        display,
-        472,
-        t(locale, "Day", "Giorno"),
-        &format!("{:02}", editor.draft.day),
-        editor.field_index == 5,
-        body,
-    )?;
-    draw_action(
-        display,
-        528,
-        t(locale, "Save date & time", "Salva data e ora"),
-        editor.field_index == 6,
-        body,
-    )?;
-
-    Text::new(
         t(
             locale,
-            "Changes apply to the on-board RTC immediately.",
-            "Le modifiche vengono applicate subito all'RTC di bordo.",
+            "Nothing changes until you choose Save.",
+            "Nulla cambia finch\u{00E9} non scegli Salva.",
         ),
-        Point::new(22, 592),
+        CONTENT_LEFT,
+        FIRST_ROW_TOP + rows.len() as i32 * ROW_STEP + 26,
         body,
-    )
-    .draw(display)?;
-    draw_footer(
-        display,
-        state,
-        t(
-            locale,
-            "UP/DOWN CHANGE  SELECT NEXT",
-            "SU/GIU CAMBIA  SELECT AVANTI",
-        ),
+        CONTENT_WIDTH,
+        3,
+        6,
     )?;
-    Ok(())
+    // BOOT steps back a field; on the first one it leaves without saving.
+    let boot = if editor.field_index == 0 {
+        t(locale, "CANCEL", "ANNULLA")
+    } else {
+        back_action(locale)
+    };
+    let hint = if editor.selected_field() == ClockEditField::Save {
+        footer_hints(
+            locale,
+            &[
+                (FooterKey::Select, t(locale, "SAVE", "SALVA")),
+                (FooterKey::Boot, boot),
+            ],
+        )
+    } else {
+        footer_hints(
+            locale,
+            &[
+                (FooterKey::UpDown, t(locale, "CHANGE", "CAMBIA")),
+                (FooterKey::Select, t(locale, "NEXT", "AVANTI")),
+                (FooterKey::Boot, boot),
+            ],
+        )
+    };
+    draw_footer(display, state, &hint)
 }
 
 /// Draw timezone, storage-basis and power details without crowding the overview.
@@ -222,178 +262,79 @@ pub fn render_clock_details(
     state: &AppState,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let heading = state.display.heading_style();
-    let body = state.display.body_style();
+    let preferences = state.display;
     let timezone = state.regional.timezone_label_for_rtc(state.board.rtc);
     let rtc_storage = state.regional.rtc_storage_label();
     let rtc_health = if state.board.rtc_clock_integrity_was_lost {
-        t(locale, "Cleared during startup", "Cancellato all'avvio")
+        t(locale, "Lost at startup", "Persa all'avvio")
     } else {
-        t(locale, "Clear", "Integro")
+        t(locale, "Kept", "Mantenuta")
     };
-    let battery_voltage = state.board.power.map_or_else(
-        || t(locale, "Unavailable", "Non disponibile").into(),
-        |power| {
-            power.battery_voltage_mv.map_or_else(
-                || t(locale, "Unavailable", "Non disponibile").into(),
-                |mv| format!("{mv} mV"),
-            )
-        },
-    );
+    let unavailable = t(locale, "Unavailable", "Non disponibile");
+    let battery_voltage = state
+        .board
+        .power
+        .and_then(|power| power.battery_voltage_mv)
+        .map_or_else(|| unavailable.to_string(), |mv| format!("{mv} mV"));
 
     draw_header(display, state, t(locale, "RTC INFO", "INFO RTC"))?;
 
-    Text::new(
-        t(locale, "Time basis", "Base oraria"),
-        Point::new(22, 118),
-        heading,
-    )
-    .draw(display)?;
-    line(
+    let mut baseline = draw_section_title(
         display,
-        164,
-        t(locale, "Display zone", "Fuso visualizzato"),
-        &timezone,
-        body,
+        preferences,
+        FIRST_BASELINE,
+        t(locale, "Clock", "Orologio"),
     )?;
-    line(
-        display,
-        204,
-        t(locale, "RTC storage", "Memoria RTC"),
-        &rtc_storage,
-        body,
-    )?;
-    line(
-        display,
-        244,
-        t(locale, "Integrity", "Integrità"),
-        rtc_health,
-        body,
-    )?;
+    let clock: [(&str, &str); 3] = [
+        (t(locale, "Time zone", "Fuso orario"), &timezone),
+        (t(locale, "Stored as", "Ora memorizzata in"), &rtc_storage),
+        (
+            t(locale, "Time after power loss", "Ora dopo lo spegnimento"),
+            rtc_health,
+        ),
+    ];
+    for (label, value) in clock {
+        baseline = draw_field(display, preferences, baseline, label, value)?;
+    }
 
-    Text::new(
-        t(locale, "Power", "Alimentazione"),
-        Point::new(22, 318),
-        heading,
-    )
-    .draw(display)?;
-    line(
+    baseline = draw_section_title(
         display,
-        364,
+        preferences,
+        baseline + 22,
+        t(locale, "Power", "Alimentazione"),
+    )?;
+    baseline = draw_field(
+        display,
+        preferences,
+        baseline,
         t(locale, "Battery voltage", "Tensione batteria"),
         &battery_voltage,
-        body,
     )?;
     if let Some(power) = state.board.power {
-        line(
+        baseline = draw_field(
             display,
-            404,
-            t(locale, "USB VBUS", "USB VBUS"),
+            preferences,
+            baseline,
+            t(locale, "USB cable", "Cavo USB"),
             if power.vbus_present {
-                t(locale, "Connected", "Connesso")
+                t(locale, "Connected", "Collegato")
             } else {
-                t(locale, "Not detected", "Non rilevato")
+                t(locale, "Not connected", "Non collegato")
             },
-            body,
         )?;
-        line(
+        draw_field(
             display,
-            444,
-            t(locale, "Charge state", "Stato di carica"),
+            preferences,
+            baseline,
+            t(locale, "Charging", "Ricarica"),
             if power.charging {
-                t(locale, "Charging", "In carica")
+                t(locale, "In progress", "In corso")
             } else {
                 t(locale, "Not charging", "Non in carica")
             },
-            body,
         )?;
     }
-
-    Text::new(
-        t(locale, "Refresh policy", "Criteri di aggiornamento"),
-        Point::new(22, 522),
-        heading,
-    )
-    .draw(display)?;
-    line(
-        display,
-        568,
-        t(locale, "Live refresh", "Aggiornamento attivo"),
-        t(locale, "30 seconds", "30 secondi"),
-        body,
-    )?;
-    line(
-        display,
-        608,
-        t(locale, "Idle sleep", "Sospensione inattiva"),
-        t(locale, "60 seconds", "60 secondi"),
-        body,
-    )?;
-    Ok(())
-}
-
-fn line(
-    display: &mut OrientedFrameBuffer<'_>,
-    y: i32,
-    label: &str,
-    value: &str,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    Text::new(label, Point::new(22, y), style).draw(display)?;
-    Text::new(value, Point::new(196, y), style).draw(display)?;
-    Ok(())
-}
-
-fn draw_action(
-    display: &mut OrientedFrameBuffer<'_>,
-    top: i32,
-    label: &str,
-    selected: bool,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    let border = if selected {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
-    } else {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-    };
-    Rectangle::new(Point::new(22, top), Size::new(436, 44))
-        .into_styled(border)
-        .draw(display)?;
-    Text::new(
-        if selected { ">" } else { " " },
-        Point::new(38, top + 29),
-        style,
-    )
-    .draw(display)?;
-    Text::new(label, Point::new(68, top + 29), style).draw(display)?;
-    Ok(())
-}
-
-fn draw_editor_row(
-    display: &mut OrientedFrameBuffer<'_>,
-    top: i32,
-    label: &str,
-    value: &str,
-    selected: bool,
-    style: UiTextStyle,
-) -> Result<(), Infallible> {
-    let border = if selected {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 4)
-    } else {
-        PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-    };
-    Rectangle::new(Point::new(22, top), Size::new(436, 46))
-        .into_styled(border)
-        .draw(display)?;
-    Text::new(
-        if selected { ">" } else { " " },
-        Point::new(38, top + 30),
-        style,
-    )
-    .draw(display)?;
-    Text::new(label, Point::new(68, top + 30), style).draw(display)?;
-    Text::new(value, Point::new(248, top + 30), style).draw(display)?;
-    Ok(())
+    draw_footer(display, state, &back_only(locale))
 }
 
 #[cfg(test)]

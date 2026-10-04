@@ -1610,6 +1610,45 @@ impl ReaderSession {
         Ok(true)
     }
 
+    /// Show the page that holds `target`, a byte offset into the book's
+    /// text, when the pages known so far reach it. A text file is indexed
+    /// forward first, up to [`READER_GOTO_INDEX_PAGE_BUDGET`] pages, and
+    /// then lands as near as its index goes. `Ok(false)` leaves the session
+    /// untouched: the target is outside the indexed run of an EPUB, which
+    /// its caller reopens there instead.
+    fn jump_to_offset(&mut self, target: u64) -> Result<bool, String> {
+        if self.book.format == BookFormat::Text {
+            let mut budget = READER_GOTO_INDEX_PAGE_BUDGET;
+            while target >= self.indexed_through && !self.index_complete && budget > 0 {
+                if !self.index_one_page()? {
+                    break;
+                }
+                budget -= 1;
+            }
+        } else {
+            let first = self.page_offsets.first().copied().unwrap_or(0);
+            if target < first || (target >= self.indexed_through && !self.index_complete) {
+                return Ok(false);
+            }
+        }
+        if self.page_offsets.is_empty() {
+            return Ok(false);
+        }
+        let page = self
+            .page_offsets
+            .partition_point(|offset| *offset <= target)
+            .saturating_sub(1);
+        // The page cache keeps what is nearest the current page, so the
+        // move comes first.
+        let previous = self.current_page;
+        self.current_page = page;
+        if let Err(error) = self.ensure_page_cached(page) {
+            self.current_page = previous;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     pub fn next_page(&mut self) -> Result<(), String> {
         let target = self.current_page.saturating_add(1);
         while target >= self.page_offsets.len() && !self.index_complete {
@@ -1720,7 +1759,33 @@ impl ReaderSession {
     }
 }
 
-/// Reader Options actions, drawn as a 2x2 grid of Home-style icon tiles
+/// Byte offset `percent` of the way into a text `source_size` bytes long:
+/// its start for 0, inside its last page for 100.
+fn goto_target_offset(source_size: u64, percent: u8) -> u64 {
+    (source_size.saturating_mul(u64::from(percent.min(100))) / 100)
+        .min(source_size.saturating_sub(1))
+}
+
+/// Step of the "Go to" percentage, and so the number of stops it offers.
+pub const READER_GOTO_STEP_PERCENT: u8 = 5;
+/// Pages of a text file a "Go to" may index before it gives up reaching its
+/// target and stops at the last page it knows: enough for a long novel,
+/// short enough that the key press does not seem lost.
+const READER_GOTO_INDEX_PAGE_BUDGET: usize = 1_500;
+
+/// What a "Go to" did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReaderGoToOutcome {
+    /// No book is open, or the jump failed.
+    Stayed,
+    /// The open book now shows the target page.
+    Jumped,
+    /// The book is being opened again at the target: show the loading
+    /// screen.
+    Reopening,
+}
+
+/// Reader Options actions, drawn as a grid of Home-style icon tiles
 /// (`screens::reader::render_options`). Editable values live on the
 /// separate Reading Preferences editor so menu controls match the rest of
 /// the firmware. Ghost cleanup is not offered here: the panel already runs a
@@ -1731,15 +1796,18 @@ pub enum ReaderOption {
     TableOfContents,
     Bookmarks,
     Bookmark,
+    /// Jump to a point of the book given as a percentage.
+    GoTo,
     ReadingPreferences,
 }
 
 impl ReaderOption {
     /// Grid order, row by row: the wheel walks it linearly.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::TableOfContents,
         Self::Bookmarks,
         Self::Bookmark,
+        Self::GoTo,
         Self::ReadingPreferences,
     ];
 
@@ -1752,11 +1820,13 @@ impl ReaderOption {
             (Locale::English, Self::Bookmarks) => "Bookmarks",
             (Locale::English, Self::Bookmark) if bookmarked => "Unmark page",
             (Locale::English, Self::Bookmark) => "Mark page",
+            (Locale::English, Self::GoTo) => "Go to",
             (Locale::English, Self::ReadingPreferences) => "Preferences",
             (Locale::Italian, Self::TableOfContents) => "Indice",
             (Locale::Italian, Self::Bookmarks) => "Segnalibri",
             (Locale::Italian, Self::Bookmark) if bookmarked => "Togli segno",
             (Locale::Italian, Self::Bookmark) => "Segna pagina",
+            (Locale::Italian, Self::GoTo) => "Vai a",
             (Locale::Italian, Self::ReadingPreferences) => "Preferenze",
         }
     }
@@ -1768,17 +1838,28 @@ impl ReaderOption {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LibraryBookAction {
     MarkCompleted,
+    /// Forget the saved position, so the book counts as never opened.
+    MarkUnread,
     Bookmarks,
+    /// Remove the book file from the card. Takes a second SELECT.
+    Delete,
 }
 
 impl LibraryBookAction {
-    pub const ALL: [Self; 2] = [Self::MarkCompleted, Self::Bookmarks];
+    pub const ALL: [Self; 4] = [
+        Self::MarkCompleted,
+        Self::MarkUnread,
+        Self::Bookmarks,
+        Self::Delete,
+    ];
 
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::MarkCompleted => "Mark as Completed",
+            Self::MarkUnread => "Mark as Unread",
             Self::Bookmarks => "Bookmarks",
+            Self::Delete => "Delete Book",
         }
     }
 
@@ -1789,7 +1870,9 @@ impl LibraryBookAction {
             Locale::English => self.label(),
             Locale::Italian => match self {
                 Self::MarkCompleted => "Segna come completato",
+                Self::MarkUnread => "Segna come non letto",
                 Self::Bookmarks => "Segnalibri",
+                Self::Delete => "Elimina libro",
             },
         }
     }
@@ -1875,7 +1958,7 @@ impl ReadingPreference {
                 Self::BookFont => "CARATTERE",
                 Self::ParagraphAlignment => "ALLINEAMENTO",
                 Self::ShowProgress => "PROGRESSO",
-                Self::FullScreen => "SCHERMO",
+                Self::FullScreen => "SCH. INTERO",
             },
         }
     }
@@ -1925,6 +2008,11 @@ pub struct ReaderUiState {
     /// is open.
     pub book_actions_target: Option<ReaderBook>,
     pub book_actions_selected: usize,
+    /// `true` after a first SELECT on "Delete book", awaiting a second one
+    /// to remove the file. Moving the selection disarms it.
+    pub book_delete_armed: bool,
+    /// Why the last book action failed, shown on the book-actions overlay.
+    pub book_actions_error: Option<String>,
     pub book_bookmarks_selected: usize,
     pub toc_selected: usize,
     pub loading: Option<PendingReaderOpen>,
@@ -1961,6 +2049,9 @@ pub struct ReaderUiState {
     /// avoids a re-fetch flicker each time Home is revisited.
     pub continue_reading_thumbnail: Option<(String, crate::cover_cache::CachedThumbnail)>,
     pub options_selected: usize,
+    /// Percentage shown on the "Go to" screen, in steps of
+    /// [`READER_GOTO_STEP_PERCENT`].
+    pub goto_percent: u8,
     pub dictionary_mode: ReaderDictionaryMode,
     /// INDEX.TXT handle, opened once. It holds no rows: loading a full pack's
     /// index (~600 KB) up front was what made the first lookup slow, so
@@ -2013,6 +2104,8 @@ impl Default for ReaderUiState {
             library_selected: 0,
             bookmarks_selected: 0,
             book_actions_target: None,
+            book_delete_armed: false,
+            book_actions_error: None,
             book_actions_selected: 0,
             book_bookmarks_selected: 0,
             toc_selected: 0,
@@ -2024,6 +2117,7 @@ impl Default for ReaderUiState {
             library_thumbnails: std::collections::HashMap::new(),
             continue_reading_thumbnail: None,
             options_selected: 0,
+            goto_percent: 0,
             dictionary_mode: ReaderDictionaryMode::Off,
             dictionary_index_cache: None,
             preferences_selected: 0,
@@ -2450,24 +2544,88 @@ impl ReaderUiState {
         }
     }
 
+    /// Bookmarks of the book open in the Reader, in the same relative order
+    /// as `self.bookmarks` (newest first). The Reader's own Bookmarks screen
+    /// lists only these: a bookmark of another book would open that book.
+    #[must_use]
+    pub fn session_bookmarks(&self) -> Vec<ReaderLocation> {
+        let Some(session) = self.session.as_ref() else {
+            return Vec::new();
+        };
+        self.bookmarks
+            .iter()
+            .filter(|location| location.path == session.book.path)
+            .cloned()
+            .collect()
+    }
+
     pub fn apply_bookmarks_button(&mut self, event: ButtonEvent) -> bool {
-        if self.bookmarks.is_empty() {
+        let bookmarks = self.session_bookmarks();
+        if bookmarks.is_empty() {
             return false;
         }
+        self.bookmarks_selected = self.bookmarks_selected.min(bookmarks.len() - 1);
         match event {
             ButtonEvent::Up => {
                 self.bookmarks_selected = self
                     .bookmarks_selected
                     .checked_sub(1)
-                    .unwrap_or(self.bookmarks.len() - 1);
+                    .unwrap_or(bookmarks.len() - 1);
                 false
             }
             ButtonEvent::Down => {
-                self.bookmarks_selected = (self.bookmarks_selected + 1) % self.bookmarks.len();
+                self.bookmarks_selected = (self.bookmarks_selected + 1) % bookmarks.len();
                 false
             }
-            ButtonEvent::Select => self.request_open_bookmark(self.bookmarks_selected),
+            ButtonEvent::Select => {
+                let location = bookmarks[self.bookmarks_selected].clone();
+                self.request_open_book(location.as_book(), Some(location));
+                true
+            }
         }
+    }
+
+    /// Remove `bookmark` from the saved list and persist it. Returns whether
+    /// one was removed.
+    fn delete_bookmark(&mut self, bookmark: &ReaderLocation) -> bool {
+        let Some(index) = self
+            .bookmarks
+            .iter()
+            .position(|candidate| candidate.same_position(bookmark))
+        else {
+            return false;
+        };
+        self.bookmarks.remove(index);
+        self.persist_bookmarks_best_effort();
+        true
+    }
+
+    /// Held SELECT on the Reader's Bookmarks screen: delete the selected
+    /// bookmark of the open book.
+    pub fn delete_selected_session_bookmark(&mut self) -> bool {
+        let bookmarks = self.session_bookmarks();
+        let Some(bookmark) = bookmarks.get(self.bookmarks_selected) else {
+            return false;
+        };
+        let deleted = self.delete_bookmark(bookmark);
+        self.bookmarks_selected = self
+            .bookmarks_selected
+            .min(self.session_bookmarks().len().saturating_sub(1));
+        deleted
+    }
+
+    /// Held SELECT on a Library book's Bookmarks screen: delete the selected
+    /// bookmark of [`Self::book_actions_target`].
+    pub fn delete_selected_book_bookmark(&mut self) -> bool {
+        let bookmarks = self.book_actions_bookmarks();
+        let Some(bookmark) = bookmarks.get(self.book_bookmarks_selected) else {
+            return false;
+        };
+        let deleted = self.delete_bookmark(bookmark);
+        self.book_bookmarks_selected = self
+            .book_bookmarks_selected
+            .min(self.book_actions_bookmarks().len().saturating_sub(1));
+        deleted
     }
 
     /// Opens the Library long-press "book actions" overlay for `book`,
@@ -2475,9 +2633,12 @@ impl ReaderUiState {
     pub fn open_book_actions(&mut self, book: ReaderBook) {
         self.book_actions_target = Some(book);
         self.book_actions_selected = 0;
+        self.book_delete_armed = false;
+        self.book_actions_error = None;
     }
 
     pub fn cycle_book_action_previous(&mut self) {
+        self.book_delete_armed = false;
         self.book_actions_selected = self
             .book_actions_selected
             .checked_sub(1)
@@ -2485,6 +2646,7 @@ impl ReaderUiState {
     }
 
     pub fn cycle_book_action_next(&mut self) {
+        self.book_delete_armed = false;
         self.book_actions_selected =
             (self.book_actions_selected + 1) % LibraryBookAction::ALL.len();
     }
@@ -2588,6 +2750,143 @@ impl ReaderUiState {
         }
         self.finish_persistence("book-actions-mark-completed", errors);
         true
+    }
+
+    /// Reading percentage saved for [`Self::book_actions_target`], when it
+    /// was ever opened.
+    #[must_use]
+    pub fn book_actions_target_percent(&self) -> Option<u8> {
+        let book = self.book_actions_target.as_ref()?;
+        self.library_progress_percent(book)
+    }
+
+    /// Drop everything the Reader remembers about where `book` was left:
+    /// its open or parked session, its saved position, its Recent entry and
+    /// the resume slot when it points there. Bookmarks stay.
+    fn forget_book_progress(&mut self, book: &ReaderBook, scope: &str) {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.book.path == book.path)
+        {
+            self.session = None;
+            self.dictionary_mode = ReaderDictionaryMode::Off;
+            crate::epub::release_kept_text_file();
+        }
+        self.session_cache
+            .retain(|session| session.book.path != book.path);
+        self.warmup_queue
+            .retain(|location| location.path != book.path);
+        self.positions.retain(|entry| entry.path != book.path);
+        self.recent.retain(|entry| entry.path != book.path);
+
+        let mut errors = Vec::new();
+        if self
+            .resume
+            .as_ref()
+            .is_some_and(|location| location.path == book.path)
+        {
+            self.resume = None;
+            match fs::remove_file(self.state_path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => errors.push(format!("STATE.TXT: {error}")),
+            }
+        }
+        if let Err(error) = atomic_replace_text(
+            &self.positions_path(),
+            &serialize_location_list(&self.positions),
+        ) {
+            errors.push(format!("POSITS.TXT: {error}"));
+        }
+        if let Err(error) =
+            atomic_replace_text(&self.recent_path(), &serialize_location_list(&self.recent))
+        {
+            errors.push(format!("RECENT.TXT: {error}"));
+        }
+        self.finish_persistence(scope, errors);
+    }
+
+    /// Marks [`Self::book_actions_target`] as never opened: the opposite of
+    /// [`Self::mark_book_actions_target_completed`]. Its bookmarks are kept.
+    pub fn mark_book_actions_target_unread(&mut self) -> bool {
+        let Some(book) = self.book_actions_target.clone() else {
+            return false;
+        };
+        self.forget_book_progress(&book, "book-actions-mark-unread");
+        true
+    }
+
+    /// Removes [`Self::book_actions_target`]'s file from the card, with its
+    /// saved position and bookmarks. On failure the book and everything
+    /// about it stay as they were, and the reason is kept in
+    /// [`Self::book_actions_error`].
+    pub fn delete_book_actions_target(&mut self) -> bool {
+        let Some(book) = self.book_actions_target.clone() else {
+            return false;
+        };
+        // An open book keeps its file open: let go of it before deleting.
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.book.path == book.path)
+        {
+            crate::epub::release_kept_text_file();
+        }
+        if let Err(error) = fs::remove_file(&book.path) {
+            self.book_delete_armed = false;
+            self.book_actions_error = Some(error.to_string());
+            return false;
+        }
+        self.forget_book_progress(&book, "book-actions-delete");
+        self.remove_book_caches(&book);
+        self.books.retain(|entry| entry.path != book.path);
+        let bookmarks_before = self.bookmarks.len();
+        self.bookmarks.retain(|entry| entry.path != book.path);
+        if self.bookmarks.len() != bookmarks_before {
+            self.persist_bookmarks_best_effort();
+        }
+        self.library_thumbnails.remove(&book.path);
+        if self
+            .continue_reading_thumbnail
+            .as_ref()
+            .is_some_and(|(path, _)| *path == book.path)
+        {
+            self.continue_reading_thumbnail = None;
+        }
+        self.book_actions_target = None;
+        self.book_delete_armed = false;
+        self.book_actions_error = None;
+        self.library_selected = self
+            .library_selected
+            .min(self.library_row_count().saturating_sub(1));
+        true
+    }
+
+    /// Remove what the cache directory holds for a book that was just
+    /// deleted: its flattened EPUB text, the page index and the anchors of
+    /// the current reading layout, its thumbnail and its sleep cover. Best
+    /// effort: a file that is not there, or cannot be removed, is skipped --
+    /// a leftover cache costs space, nothing else. Page indexes built under
+    /// other text sizes are not found from here and stay.
+    fn remove_book_caches(&self, book: &ReaderBook) {
+        let layout = self.preferences.layout();
+        let directory = self.cache_directory();
+        let mut paths = vec![
+            self.epub_document_cache_path_for(book),
+            self.epub_page_index_cache_path_for(book, layout),
+            self.cache_path_for(book, layout),
+        ];
+        paths.extend(
+            crate::cover_cache::cover_cache_file_names(book)
+                .into_iter()
+                .map(|name| directory.join(name)),
+        );
+        let removed = paths
+            .iter()
+            .filter(|path| fs::remove_file(path).is_ok())
+            .count();
+        log::info!("rustmix-wave=book-cache-cleanup removed={removed}");
     }
 
     pub fn request_open_visible(&mut self, visible_index: usize) -> bool {
@@ -3355,8 +3654,12 @@ impl ReaderUiState {
         }
     }
 
-    /// Moves the word cursor within the confirmed line's eligible words,
-    /// clamped at the first/last word.
+    /// Moves the word cursor to the next eligible word in `direction` (-1
+    /// back, +1 forward). Past the last word of a line it goes on to the
+    /// first word of the next line that has one, and before the first word
+    /// back to the last word of the line above: choosing a line only picks
+    /// where to start. Clamped at the first and last word of the page, with
+    /// no page turn.
     pub fn dictionary_move_word(&mut self, direction: i32) {
         let ReaderDictionaryMode::WordSelect {
             line_index,
@@ -3366,18 +3669,38 @@ impl ReaderUiState {
             return;
         };
         let (line_index, word_index) = (*line_index, *word_index);
-        let count = self
-            .dictionary_page_lines()
-            .get(line_index)
-            .map_or(0, |line| eligible_word_spans(&line.text).len());
+        let word_count = |reader: &Self, line: usize| {
+            reader
+                .dictionary_page_lines()
+                .get(line)
+                .map_or(0, |line| eligible_word_spans(&line.text).len())
+        };
+        let count = word_count(self, line_index);
         if count == 0 {
             return;
         }
-        let next = (word_index as i32 + direction).clamp(0, count as i32 - 1) as usize;
-        self.dictionary_mode = ReaderDictionaryMode::WordSelect {
-            line_index,
-            word_index: next,
-        };
+        let next = word_index as i32 + direction;
+        if (0..count as i32).contains(&next) {
+            self.dictionary_mode = ReaderDictionaryMode::WordSelect {
+                line_index,
+                word_index: next as usize,
+            };
+            return;
+        }
+        let total = self.dictionary_page_lines().len() as i32;
+        let step = if direction < 0 { -1 } else { 1 };
+        let mut cursor = line_index as i32 + step;
+        while (0..total).contains(&cursor) {
+            let words = word_count(self, cursor as usize);
+            if words > 0 {
+                self.dictionary_mode = ReaderDictionaryMode::WordSelect {
+                    line_index: cursor as usize,
+                    word_index: if step > 0 { 0 } else { words - 1 },
+                };
+                return;
+            }
+            cursor += step;
+        }
     }
 
     /// Opens the INDEX.TXT handle on first use; it holds no rows (lookups
@@ -3433,6 +3756,75 @@ impl ReaderUiState {
             word,
             message,
         };
+    }
+
+    /// Open "Go to" on the current position, rounded to its step.
+    pub fn begin_goto(&mut self) {
+        let step = READER_GOTO_STEP_PERCENT;
+        let current = self
+            .session
+            .as_ref()
+            .and_then(ReaderSession::reading_percent)
+            .unwrap_or(0)
+            .min(100);
+        self.goto_percent = (current + step / 2) / step * step;
+    }
+
+    /// Move the "Go to" percentage one step, stopping at 0 and 100.
+    pub fn adjust_goto(&mut self, up: bool) {
+        let step = READER_GOTO_STEP_PERCENT;
+        self.goto_percent = if up {
+            self.goto_percent.saturating_add(step).min(100)
+        } else {
+            self.goto_percent.saturating_sub(step)
+        };
+    }
+
+    /// Title of the table-of-contents entry `goto_percent` falls in, for
+    /// the "Go to" screen. `None` without a table of contents.
+    #[must_use]
+    pub fn goto_chapter_label(&self) -> Option<&str> {
+        let session = self.session.as_ref()?;
+        let target = goto_target_offset(session.source_size_bytes(), self.goto_percent);
+        session
+            .toc_entries()
+            .iter()
+            .filter(|entry| entry.text_offset <= target)
+            .max_by_key(|entry| entry.text_offset)
+            .map(|entry| entry.label.trim())
+            .filter(|label| !label.is_empty())
+    }
+
+    /// Jump the open book to `goto_percent` of its length: 0 is the first
+    /// page, 100 the last. An EPUB whose page index does not reach the
+    /// target yet is opened again there, as a bookmark is.
+    pub fn go_to_percent(&mut self) -> ReaderGoToOutcome {
+        let percent = self.goto_percent.min(100);
+        let Some(session) = self.session.as_mut() else {
+            return ReaderGoToOutcome::Stayed;
+        };
+        let target = goto_target_offset(session.source_size_bytes(), percent);
+        match session.jump_to_offset(target) {
+            Ok(true) => {
+                self.dictionary_mode = ReaderDictionaryMode::Off;
+                self.persist_current_session_best_effort();
+                ReaderGoToOutcome::Jumped
+            }
+            Ok(false) => {
+                let mut location = session.current_location();
+                location.byte_offset = target;
+                location.page_index = 0;
+                location.epub_chapter = None;
+                location.reading_percent = Some(percent);
+                self.dictionary_mode = ReaderDictionaryMode::Off;
+                self.request_open_book(location.as_book(), Some(location));
+                ReaderGoToOutcome::Reopening
+            }
+            Err(error) => {
+                self.last_message = Some(error);
+                ReaderGoToOutcome::Stayed
+            }
+        }
     }
 
     pub fn cycle_option_previous(&mut self) {
@@ -3505,6 +3897,22 @@ impl ReaderUiState {
         self.session
             .as_ref()
             .map_or(&[], ReaderSession::toc_entries)
+    }
+
+    /// Index of the table-of-contents entry the current page falls under:
+    /// the last entry starting at or before it. `None` without a table of
+    /// contents, or before its first entry.
+    #[must_use]
+    pub fn current_toc_index(&self) -> Option<usize> {
+        let session = self.session.as_ref()?;
+        let offset = session.current_location().byte_offset;
+        session
+            .toc_entries()
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.text_offset <= offset)
+            .max_by_key(|(index, entry)| (entry.text_offset, *index))
+            .map(|(index, _)| index)
     }
 
     pub fn apply_toc_button(&mut self, event: ButtonEvent) -> bool {
@@ -6515,10 +6923,10 @@ mod tests {
         serialize_epub_page_index_cache, serialize_location, serialize_location_fields, BookFont,
         BookFontSize, BookFormat, EpubChapter, EpubDocument, EpubImage, EpubTocEntry,
         LibraryBookAction, ParagraphAlignment, ReaderBook, ReaderCachedPage,
-        ReaderChapterPageLabel, ReaderDictionaryMode, ReaderLayout, ReaderLoadingStage,
-        ReaderLocation, ReaderOrientation, ReaderPageLine, ReaderPreferences, ReaderSession,
-        ReaderTickOutcome, ReaderUiState, ReadingPreference, ReadingTheme, TextEncoding,
-        EPUB_IMAGE_SENTINEL, LEGACY_READER_POSITIONS_FILE, READER_BOOKMARKS_FILE,
+        ReaderChapterPageLabel, ReaderDictionaryMode, ReaderGoToOutcome, ReaderLayout,
+        ReaderLoadingStage, ReaderLocation, ReaderOrientation, ReaderPageLine, ReaderPreferences,
+        ReaderSession, ReaderTickOutcome, ReaderUiState, ReadingPreference, ReadingTheme,
+        TextEncoding, EPUB_IMAGE_SENTINEL, LEGACY_READER_POSITIONS_FILE, READER_BOOKMARKS_FILE,
         READER_CACHE_DIRECTORY, READER_INLINE_IMAGE_SLOT_SPAN, READER_POSITIONS_FILE,
         READER_PREFS_FILE, READER_RECENT_FILE, READER_SESSION_CACHE_LIMIT, READER_STATE_FILE,
     };
@@ -6679,6 +7087,102 @@ mod tests {
         assert_eq!(books.len(), 2);
         assert_eq!(books[0].title, "Dracula");
         assert_eq!(books[1].format, BookFormat::Epub);
+    }
+
+    #[test]
+    fn go_to_lands_on_the_page_that_holds_the_percentage_of_a_text_book() {
+        let root = temp_dir("goto-txt");
+        let state = temp_dir("goto-txt-state");
+        fs::write(root.join("Book.txt"), "hello world ".repeat(6_000)).unwrap();
+        let mut reader = ReaderUiState::with_roots(
+            root.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+        );
+        assert_eq!(reader.go_to_percent(), ReaderGoToOutcome::Stayed);
+        reader.refresh_library();
+        reader.library_selected = 0;
+        assert!(reader.apply_library_button(ButtonEvent::Select));
+        while reader.tick() != ReaderTickOutcome::FirstPageReady {}
+        let size = reader.session.as_ref().unwrap().source_size_bytes();
+
+        // Opens on the current position, rounded to the step.
+        reader.begin_goto();
+        assert_eq!(reader.goto_percent, 0);
+        for _ in 0..10 {
+            reader.adjust_goto(true);
+        }
+        assert_eq!(reader.goto_percent, 50);
+        assert_eq!(reader.go_to_percent(), ReaderGoToOutcome::Jumped);
+        let session = reader.session.as_ref().unwrap();
+        let page = session.current_cached_page().unwrap();
+        assert!(page.byte_offset <= size / 2 && size / 2 < page.next_byte_offset);
+        assert!(session.current_page > 0);
+        reader.begin_goto();
+        assert_eq!(reader.goto_percent, 50);
+
+        // 100% is the last page, 0% the first; the steps stop there.
+        for _ in 0..30 {
+            reader.adjust_goto(true);
+        }
+        assert_eq!(reader.goto_percent, 100);
+        assert_eq!(reader.go_to_percent(), ReaderGoToOutcome::Jumped);
+        let session = reader.session.as_ref().unwrap();
+        assert!(session.index_complete);
+        assert_eq!(session.current_page + 1, session.page_offsets.len());
+        for _ in 0..30 {
+            reader.adjust_goto(false);
+        }
+        assert_eq!(reader.goto_percent, 0);
+        assert_eq!(reader.go_to_percent(), ReaderGoToOutcome::Jumped);
+        assert_eq!(reader.session.as_ref().unwrap().current_page, 0);
+    }
+
+    #[test]
+    fn go_to_reaches_any_part_of_an_epub_and_names_its_chapter() {
+        let root = temp_dir("goto-epub");
+        let state = temp_dir("goto-epub-state");
+        write_sample_epub(&root.join("Sample.epub"));
+        let mut reader = ReaderUiState::with_roots(
+            root.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+        );
+        reader.refresh_library();
+        reader.library_selected = 0;
+        assert!(reader.apply_library_button(ButtonEvent::Select));
+        while reader.tick() != ReaderTickOutcome::FirstPageReady {}
+        let size = reader.session.as_ref().unwrap().source_size_bytes();
+        let last_chapter = reader
+            .session
+            .as_ref()
+            .unwrap()
+            .toc_entries()
+            .last()
+            .map(|entry| entry.label.clone());
+
+        reader.goto_percent = 100;
+        assert_eq!(
+            reader.goto_chapter_label().map(str::to_string),
+            last_chapter
+        );
+        let outcome = reader.go_to_percent();
+        assert_ne!(outcome, ReaderGoToOutcome::Stayed);
+        if outcome == ReaderGoToOutcome::Reopening {
+            while reader.tick() != ReaderTickOutcome::FirstPageReady {}
+        }
+        let session = reader.session.as_ref().unwrap();
+        let page = session.current_cached_page().unwrap();
+        assert!(page.byte_offset < size && size - 1 < page.next_byte_offset.max(size));
+        assert!(page.next_byte_offset >= size, "the last page of the book");
+
+        // And back to the start.
+        reader.goto_percent = 0;
+        let outcome = reader.go_to_percent();
+        assert_ne!(outcome, ReaderGoToOutcome::Stayed);
+        if outcome == ReaderGoToOutcome::Reopening {
+            while reader.tick() != ReaderTickOutcome::FirstPageReady {}
+        }
+        let session = reader.session.as_ref().unwrap();
+        assert_eq!(session.current_cached_page().unwrap().byte_offset, 0);
     }
 
     #[test]
@@ -9201,8 +9705,32 @@ mod tests {
                 word_index: 2
             }
         );
-        // Clamped at the last eligible word ("gatto", "corre", "veloce").
+        // Past the last eligible word ("gatto", "corre", "veloce") the cursor
+        // goes on to the next line that has one, skipping "Ma no da".
         reader.dictionary_move_word(1);
+        assert_eq!(
+            reader.dictionary_mode,
+            ReaderDictionaryMode::WordSelect {
+                line_index: 2,
+                word_index: 0
+            }
+        );
+        // Clamped at the last word of the page: no page turn, no wraparound.
+        for _ in 0..5 {
+            reader.dictionary_move_word(1);
+        }
+        assert_eq!(
+            reader.dictionary_mode,
+            ReaderDictionaryMode::WordSelect {
+                line_index: 2,
+                word_index: 2
+            }
+        );
+        // Back before the first word of a line: the last word of the line
+        // above that has one.
+        reader.dictionary_move_word(-1);
+        reader.dictionary_move_word(-1);
+        reader.dictionary_move_word(-1);
         assert_eq!(
             reader.dictionary_mode,
             ReaderDictionaryMode::WordSelect {
@@ -9210,6 +9738,19 @@ mod tests {
                 word_index: 2
             }
         );
+        // Clamped at the first word of the page.
+        for _ in 0..5 {
+            reader.dictionary_move_word(-1);
+        }
+        assert_eq!(
+            reader.dictionary_mode,
+            ReaderDictionaryMode::WordSelect {
+                line_index: 0,
+                word_index: 0
+            }
+        );
+        reader.dictionary_move_word(1);
+        reader.dictionary_move_word(1);
 
         reader.dictionary_confirm_word();
         match &reader.dictionary_mode {
@@ -9265,21 +9806,189 @@ mod tests {
     }
 
     #[test]
-    fn cycle_book_action_wraps_between_mark_completed_and_bookmarks() {
+    fn cycle_book_action_wraps_around_every_action() {
         let mut reader = ReaderUiState::default();
-        assert_eq!(
-            reader.selected_book_action(),
-            LibraryBookAction::MarkCompleted
-        );
-        reader.cycle_book_action_next();
-        assert_eq!(reader.selected_book_action(), LibraryBookAction::Bookmarks);
-        reader.cycle_book_action_next();
+        for action in LibraryBookAction::ALL {
+            assert_eq!(reader.selected_book_action(), action);
+            reader.cycle_book_action_next();
+        }
         assert_eq!(
             reader.selected_book_action(),
             LibraryBookAction::MarkCompleted
         );
         reader.cycle_book_action_previous();
-        assert_eq!(reader.selected_book_action(), LibraryBookAction::Bookmarks);
+        assert_eq!(reader.selected_book_action(), LibraryBookAction::Delete);
+    }
+
+    #[test]
+    fn moving_off_the_delete_row_cancels_the_pending_delete() {
+        let mut reader = ReaderUiState::default();
+        reader.book_delete_armed = true;
+        reader.cycle_book_action_next();
+        assert!(!reader.book_delete_armed);
+        reader.book_delete_armed = true;
+        reader.cycle_book_action_previous();
+        assert!(!reader.book_delete_armed);
+    }
+
+    #[test]
+    fn marking_a_book_unread_forgets_its_position_but_keeps_its_bookmarks() {
+        let root = temp_dir("book-unread-books");
+        let state_dir = temp_dir("book-unread-state");
+        write_sequential_txt_books(&root, &["Read.txt", "Other.txt"]);
+        let mut reader = ReaderUiState::with_roots(
+            root.to_string_lossy().into_owned(),
+            state_dir.to_string_lossy().into_owned(),
+        );
+        reader.refresh_library();
+        let book = reader
+            .books
+            .iter()
+            .find(|book| book.path.ends_with("Read.txt"))
+            .cloned()
+            .unwrap();
+        let other = reader
+            .books
+            .iter()
+            .find(|book| book.path.ends_with("Other.txt"))
+            .cloned()
+            .unwrap();
+        reader.open_book_actions(other.clone());
+        assert!(reader.mark_book_actions_target_completed());
+        reader.open_book_actions(book.clone());
+        assert!(reader.mark_book_actions_target_completed());
+        assert_eq!(reader.library_progress_percent(&book), Some(100));
+        let mut bookmark = position_fixture(&book.path);
+        bookmark.format = BookFormat::Text;
+        reader.bookmarks = vec![bookmark];
+
+        assert!(reader.mark_book_actions_target_unread());
+        assert_eq!(reader.library_progress_percent(&book), None);
+        assert!(reader.recent.iter().all(|entry| entry.path != book.path));
+        assert_eq!(reader.bookmarks.len(), 1);
+        // The other book is untouched, and the file is still on the card.
+        assert_eq!(reader.library_progress_percent(&other), Some(100));
+        assert!(Path::new(&book.path).exists());
+
+        // The forgotten position does not come back after a restart.
+        let mut reloaded = ReaderUiState::with_roots(
+            root.to_string_lossy().into_owned(),
+            state_dir.to_string_lossy().into_owned(),
+        );
+        reloaded.load_persistent_state();
+        reloaded.refresh_library();
+        assert_eq!(reloaded.library_progress_percent(&book), None);
+        assert_eq!(reloaded.library_progress_percent(&other), Some(100));
+    }
+
+    #[test]
+    fn deleting_a_book_removes_its_file_position_and_bookmarks() {
+        let root = temp_dir("book-delete-books");
+        let state_dir = temp_dir("book-delete-state");
+        write_sequential_txt_books(&root, &["Gone.txt", "Kept.txt"]);
+        let mut reader = ReaderUiState::with_roots(
+            root.to_string_lossy().into_owned(),
+            state_dir.to_string_lossy().into_owned(),
+        );
+        reader.refresh_library();
+        let book = reader
+            .books
+            .iter()
+            .find(|book| book.path.ends_with("Gone.txt"))
+            .cloned()
+            .unwrap();
+        reader.open_book_actions(book.clone());
+        assert!(reader.mark_book_actions_target_completed());
+        let mut bookmark = position_fixture(&book.path);
+        bookmark.format = BookFormat::Text;
+        let mut kept_bookmark = position_fixture("Kept.txt");
+        kept_bookmark.format = BookFormat::Text;
+        reader.bookmarks = vec![bookmark, kept_bookmark];
+        reader.book_delete_armed = true;
+        // What earlier opens left in the cache directory for this book, and
+        // one file that belongs to another.
+        let layout = reader.preferences.layout();
+        let cache_directory = reader.cache_directory();
+        fs::create_dir_all(&cache_directory).unwrap();
+        let mut caches = vec![
+            reader.epub_document_cache_path_for(&book),
+            reader.epub_page_index_cache_path_for(&book, layout),
+            reader.cache_path_for(&book, layout),
+        ];
+        caches.extend(
+            crate::cover_cache::cover_cache_file_names(&book)
+                .into_iter()
+                .map(|name| cache_directory.join(name)),
+        );
+        for cache in &caches {
+            fs::write(cache, b"cache").unwrap();
+        }
+        let foreign = cache_directory.join("0BADF00D.EPX");
+        fs::write(&foreign, b"cache").unwrap();
+
+        assert!(reader.delete_book_actions_target());
+        assert!(caches.iter().all(|cache| !cache.exists()));
+        assert!(foreign.exists());
+        assert!(!Path::new(&book.path).exists());
+        assert!(reader.books.iter().all(|entry| entry.path != book.path));
+        assert_eq!(reader.books.len(), 1);
+        assert_eq!(reader.library_progress_percent(&book), None);
+        assert_eq!(reader.bookmarks.len(), 1);
+        assert_eq!(reader.bookmarks[0].path, "Kept.txt");
+        assert!(reader.book_actions_target.is_none());
+        assert!(!reader.book_delete_armed);
+    }
+
+    #[test]
+    fn a_failed_delete_keeps_the_book_and_reports_why() {
+        let mut reader = ReaderUiState::with_roots("/nowhere/BOOKS", "/nowhere/STATE");
+        let book = ReaderBook {
+            path: "/nowhere/BOOKS/Missing.txt".into(),
+            title: "Missing".into(),
+            format: BookFormat::Text,
+            size_bytes: 10,
+            modified_seconds: 0,
+        };
+        reader.books = vec![book.clone()];
+        reader.open_book_actions(book);
+        reader.book_delete_armed = true;
+
+        assert!(!reader.delete_book_actions_target());
+        assert_eq!(reader.books.len(), 1);
+        assert!(reader.book_actions_target.is_some());
+        assert!(reader.book_actions_error.is_some());
+        assert!(!reader.book_delete_armed);
+    }
+
+    #[test]
+    fn a_library_books_bookmark_is_deleted_and_the_selection_stays_valid() {
+        let mut reader = ReaderUiState::with_roots("/nowhere/BOOKS", "/nowhere/STATE");
+        let mut first = position_fixture("b.txt");
+        first.byte_offset = 5;
+        let mut second = position_fixture("b.txt");
+        second.byte_offset = 9;
+        let other = position_fixture("a.txt");
+        reader.bookmarks = vec![first, other, second];
+        reader.open_book_actions(ReaderBook {
+            path: "b.txt".into(),
+            title: "B".into(),
+            format: BookFormat::Epub,
+            size_bytes: 1000,
+            modified_seconds: 42,
+        });
+        reader.book_bookmarks_selected = 1;
+
+        assert!(reader.delete_selected_book_bookmark());
+        assert_eq!(reader.book_actions_bookmarks().len(), 1);
+        assert_eq!(reader.book_actions_bookmarks()[0].byte_offset, 5);
+        assert_eq!(reader.book_bookmarks_selected, 0);
+        // The other book's bookmark is not touched.
+        assert_eq!(reader.bookmarks.len(), 2);
+
+        assert!(reader.delete_selected_book_bookmark());
+        assert!(reader.book_actions_bookmarks().is_empty());
+        assert!(!reader.delete_selected_book_bookmark());
+        assert_eq!(reader.bookmarks.len(), 1);
     }
 
     #[test]
