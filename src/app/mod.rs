@@ -17,6 +17,7 @@ pub mod reader_literata_assets;
 pub mod reader_typography;
 pub mod router;
 pub mod screens;
+pub mod setup;
 pub mod state;
 pub mod typography;
 pub mod widgets;

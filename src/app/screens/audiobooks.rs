@@ -50,20 +50,36 @@ pub fn render_audiobook_library(
     draw_header(display, state, t(locale, "AUDIOBOOKS", "AUDIOLIBRI"))?;
 
     if audiobooks.books.is_empty() {
-        let message = match &audiobooks.scan_error {
-            Some(error) => format!(
-                "{} {error}",
-                t(locale, "SD card unreadable:", "Scheda SD illeggibile:")
-            ),
-            None => t(
+        // As in the Library: a card that cannot be read is said in plain
+        // words, and an empty list offers the way to fill it.
+        let unreadable = audiobooks.scan_error.is_some();
+        let message = if unreadable {
+            t(
                 locale,
-                "No audiobooks yet. Copy MP3 files into RUSTMIX/AUDIO on the SD card: one folder per title, its tracks inside.",
-                "Nessun audiolibro. Copia i file MP3 nella cartella RUSTMIX/AUDIO della scheda SD: una cartella per titolo, con dentro le tracce.",
+                "The memory card cannot be read. Check that it is pushed all the way in, then restart the device.",
+                "La scheda di memoria non si legge. Controlla che sia inserita fino in fondo, poi riavvia il dispositivo.",
             )
-            .to_string(),
+        } else {
+            t(
+                locale,
+                "No audiobooks yet. Press SELECT to open Upload and copy them from a computer or a phone. They are MP3 files in the RUSTMIX/AUDIO folder of the card: one file per title, or one folder per title with its tracks inside.",
+                "Nessun audiolibro. Premi SELECT per aprire Carica e copiarli dal computer o dal telefono. Sono file MP3 nella cartella RUSTMIX/AUDIO della scheda: un file per titolo, oppure una cartella per titolo con dentro le tracce.",
+            )
         };
-        draw_paragraph(display, &message, LEFT, FIRST_BASELINE, body, WIDTH, 8, 6)?;
-        return draw_footer(display, state, &back_only(locale));
+        let after = draw_paragraph(display, message, LEFT, FIRST_BASELINE, body, WIDTH, 9, 6)?;
+        if let Some(error) = audiobooks
+            .scan_error
+            .as_deref()
+            .filter(|_| state.storage.mounted)
+        {
+            draw_paragraph(display, error, LEFT, after + 10, detail, WIDTH, 3, 4)?;
+        }
+        let hint = if unreadable {
+            back_only(locale)
+        } else {
+            select_and_back(locale, t(locale, "UPLOAD", "CARICA"))
+        };
+        return draw_footer(display, state, &hint);
     }
 
     let page = audiobooks.selected / ROWS_PER_PAGE;

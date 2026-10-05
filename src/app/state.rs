@@ -27,6 +27,7 @@ use super::{
     display::DisplayPreferences,
     menu::{category_index, home_entries, CategoryUsage, CATEGORY_COUNT, MAIN_CATEGORY_COUNT},
     router::{ScreenRoute, ScreenRouter},
+    setup::{SetupOutcome, SetupUiState},
 };
 
 /// Number of selectable rows in the playback overview screen.
@@ -46,6 +47,9 @@ pub const OTA_ACTION_COUNT: usize = 2;
 pub const UPLOAD_ACTION_COUNT: usize = 2;
 /// Rows of the Info screen: the next page and "Restore settings".
 pub const INFO_ACTION_COUNT: usize = 2;
+/// Rows of the warning shown when the microSD cannot be read: restart, or
+/// go on without it.
+pub const CARD_WARNING_ACTION_COUNT: usize = 2;
 
 /// "Restore settings" on the Info screen: it acts on a second SELECT.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -175,6 +179,16 @@ pub struct AppState {
     /// the runtime owner in main.rs, which owns the wall clock and SD
     /// access the reading-stats session tracker needs.
     reader_page_turn_event: Option<ReaderLocation>,
+    /// The first-run pages: shown once on a new card, and from Settings.
+    pub setup: SetupUiState,
+    /// Selected row of the "card not readable" warning: 0 restarts, 1 goes
+    /// on without the card.
+    pub card_warning_selected: usize,
+    /// The books folder is known to hold nothing: Home's Continue card
+    /// offers to add a first book and opens Upload. Set by a scan (or by
+    /// main.rs at boot) and dropped as soon as an upload is opened, since
+    /// from then on only the next scan can tell.
+    pub library_known_empty: bool,
 }
 
 impl Default for AppState {
@@ -235,6 +249,9 @@ impl Default for AppState {
             reading_stats: ReadingStatsSnapshot::default(),
             reading_stats_refresh_requested: false,
             reader_page_turn_event: None,
+            setup: SetupUiState::default(),
+            card_warning_selected: 0,
+            library_known_empty: false,
         }
     }
 }
@@ -311,7 +328,10 @@ impl AppState {
             if event == ButtonEvent::Select {
                 self.note_select_press();
             }
-            if self.audiobooks.apply_library(event) {
+            if event == ButtonEvent::Select && self.audiobooks_are_empty() {
+                // Nothing to play: SELECT goes where audiobooks are added.
+                self.open_upload();
+            } else if self.audiobooks.apply_library(event) {
                 self.router.navigate_to(ScreenRoute::AudiobookPlayer);
             }
         } else if route == ScreenRoute::AudiobookPlayer {
@@ -326,6 +346,10 @@ impl AppState {
                 self.note_select_press();
                 self.usb_disk_request = true;
             }
+        } else if route == ScreenRoute::Setup {
+            self.apply_setup(event);
+        } else if route == ScreenRoute::CardWarning {
+            self.apply_card_warning(event);
         } else if matches!(
             route,
             ScreenRoute::ContinueReading
@@ -527,7 +551,7 @@ impl AppState {
                         self.reading_stats_refresh_requested = true;
                     }
                     if entry.route == ScreenRoute::Library {
-                        self.reader.refresh_library();
+                        self.refresh_library();
                     }
                     if entry.route == ScreenRoute::ContinueReading {
                         self.activate_continue_reading();
@@ -584,8 +608,116 @@ impl AppState {
             };
             self.router.navigate_to(target);
         } else {
-            self.reader.refresh_library();
-            self.router.navigate_to(ScreenRoute::Library);
+            // No book to resume: the Library, or straight to Upload when
+            // there is no book at all.
+            self.refresh_library();
+            if self.library_known_empty {
+                self.open_upload();
+            } else {
+                self.router.navigate_to(ScreenRoute::Library);
+            }
+        }
+    }
+
+    /// Rescan the books folder and note whether it turned out empty.
+    fn refresh_library(&mut self) {
+        self.reader.refresh_library();
+        self.library_known_empty =
+            self.reader.books.is_empty() && self.reader.library_error.is_none();
+    }
+
+    /// Whether the audiobook list is empty because there are none, rather
+    /// than because the card could not be read.
+    #[must_use]
+    pub fn audiobooks_are_empty(&self) -> bool {
+        self.audiobooks.books.is_empty() && self.audiobooks.scan_error.is_none()
+    }
+
+    /// Whether the Library is empty because there are no books, rather than
+    /// because the card could not be read.
+    #[must_use]
+    pub fn library_is_empty(&self) -> bool {
+        self.reader.visible_entries().is_empty() && self.reader.library_error.is_none()
+    }
+
+    /// Open the Upload chooser from an empty list.
+    fn open_upload(&mut self) {
+        self.upload_selected = 0;
+        self.router.navigate_to(ScreenRoute::Upload);
+    }
+
+    /// The first-run pages for a new card, from the page they were left at.
+    /// Called by the runtime owner in main.rs at boot.
+    pub fn begin_first_run_setup(&mut self, page_index: u8) {
+        let wifi_ready = self.setup_wifi_ready();
+        self.setup.start_first_run(page_index, wifi_ready);
+        self.router.navigate_to(ScreenRoute::Setup);
+    }
+
+    /// The "card not readable" warning. Called by the runtime owner in
+    /// main.rs at boot.
+    pub fn show_card_warning(&mut self) {
+        self.card_warning_selected = 0;
+        self.router.navigate_to(ScreenRoute::CardWarning);
+    }
+
+    /// Whether the device already has a Wi-Fi network: the setup's Wi-Fi
+    /// page then offers "next" rather than "skip".
+    #[must_use]
+    pub fn setup_wifi_ready(&self) -> bool {
+        self.wifi_connected() || self.network.saved_network_count > 0
+    }
+
+    fn apply_setup(&mut self, event: ButtonEvent) {
+        if event == ButtonEvent::Select {
+            self.note_select_press();
+        }
+        let wifi_ready = self.setup_wifi_ready();
+        let outcome = self.setup.apply(event, wifi_ready);
+        self.run_setup_outcome(outcome);
+    }
+
+    fn run_setup_outcome(&mut self, outcome: SetupOutcome) {
+        match outcome {
+            SetupOutcome::None => {}
+            SetupOutcome::LanguageChosen(locale) => self.regional.locale = locale,
+            SetupOutcome::OpenWifiPortal => {
+                self.request_wifi_transfer_start();
+                self.wifi_transfer_return_route = ScreenRoute::Setup;
+                self.router.navigate_to(ScreenRoute::WifiTransfer);
+            }
+            SetupOutcome::OpenClockEditor => {
+                self.open_clock_time_editor();
+                self.router.navigate_to(ScreenRoute::ClockSetTime);
+            }
+            SetupOutcome::OpenUsbDisk => {
+                self.library_known_empty = false;
+                self.router.navigate_to(ScreenRoute::UsbDisk);
+            }
+            SetupOutcome::Finished => {
+                self.router.navigate_to(ScreenRoute::Home);
+                self.reading_stats_refresh_requested = true;
+            }
+            SetupOutcome::LeftToSettings => self.router.navigate_to(ScreenRoute::Settings),
+        }
+    }
+
+    /// The card cannot be read: restart to try again, or go on without it.
+    fn apply_card_warning(&mut self, event: ButtonEvent) {
+        match event {
+            ButtonEvent::Up | ButtonEvent::Down => {
+                self.card_warning_selected =
+                    (self.card_warning_selected + 1) % CARD_WARNING_ACTION_COUNT;
+            }
+            ButtonEvent::Select => {
+                self.note_select_press();
+                if self.card_warning_selected == 0 {
+                    self.restart_requested = true;
+                } else {
+                    self.router.navigate_to(ScreenRoute::Home);
+                    self.reading_stats_refresh_requested = true;
+                }
+            }
         }
     }
 
@@ -621,6 +753,9 @@ impl AppState {
                 }
                 if target == ScreenRoute::Network {
                     self.network_action_selected = 0;
+                }
+                if target == ScreenRoute::Setup {
+                    self.setup.start_from_settings(self.regional.locale);
                 }
                 self.router.navigate_to(target);
             }
@@ -666,7 +801,12 @@ impl AppState {
                         self.regional.timezone = editor.timezone;
                         self.clock_set_timezone_request = Some(editor.timezone);
                     }
-                    self.router.navigate_to(ScreenRoute::Clock);
+                    // Opened from the first-run pages, it goes back to them.
+                    self.router.navigate_to(if self.setup.active {
+                        ScreenRoute::Setup
+                    } else {
+                        ScreenRoute::Clock
+                    });
                 } else if let Some(editor) = self.clock_time_editor.as_mut() {
                     editor.advance_field();
                 }
@@ -843,7 +983,7 @@ impl AppState {
                         };
                         self.router.navigate_to(target);
                     } else {
-                        self.reader.refresh_library();
+                        self.refresh_library();
                         self.router.navigate_to(ScreenRoute::Library);
                     }
                 }
@@ -852,7 +992,10 @@ impl AppState {
                 if event == ButtonEvent::Select {
                     self.note_select_press();
                 }
-                if self.reader.apply_library_button(event) {
+                if event == ButtonEvent::Select && self.library_is_empty() {
+                    // No book to open: SELECT goes where books are added.
+                    self.open_upload();
+                } else if self.reader.apply_library_button(event) {
                     // Reopening the book already in `self.reader.session`
                     // (see `request_open_visible`) leaves `loading` at
                     // `None`, so go straight to `ReaderPage` instead of
@@ -1249,6 +1392,21 @@ impl AppState {
         if self.router.current() == ScreenRoute::NetworkSaved && self.network_saved.close_menu() {
             return;
         }
+        if self.router.current() == ScreenRoute::Setup {
+            let wifi_ready = self.setup_wifi_ready();
+            let outcome = self.setup.back(wifi_ready);
+            self.setup.select_language(self.regional.locale);
+            self.run_setup_outcome(outcome);
+            self.sync_orientation_for_active_route();
+            return;
+        }
+        // "Connect to PC" opened from the first-run pages goes back to them.
+        if self.router.current() == ScreenRoute::UsbDisk && self.setup.active {
+            self.setup.save_current_page();
+            self.router.navigate_to(ScreenRoute::Setup);
+            self.sync_orientation_for_active_route();
+            return;
+        }
         if self.router.current() == ScreenRoute::WifiTransfer {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
             self.router.navigate_to(self.wifi_transfer_return_route);
@@ -1281,6 +1439,12 @@ impl AppState {
                 return;
             }
             self.clock_time_editor = None;
+            // Opened from the first-run pages, it goes back to them.
+            if self.setup.active {
+                self.router.navigate_to(ScreenRoute::Setup);
+                self.sync_orientation_for_active_route();
+                return;
+            }
         }
         if self.router.current() == ScreenRoute::ReaderLoading {
             self.reader.cancel_loading();
@@ -1393,6 +1557,8 @@ impl AppState {
     /// Start the existing LAN portal from a feature shortcut without exposing
     /// HTTP-server ownership outside the main-loop dispatcher.
     pub fn request_wifi_transfer_start(&mut self) {
+        // Books may arrive: only the next scan can say the folder is empty.
+        self.library_known_empty = false;
         if !self.wifi_transfer.is_active() {
             self.wifi_transfer_request = Some(WifiTransferUiRequest::Start);
         }
@@ -2566,5 +2732,228 @@ mod tests {
         state.open_power_key_menu();
         state.back();
         assert_eq!(state.active_route(), ScreenRoute::Clock);
+    }
+
+    /// A state at the given first-run page, as main.rs leaves it at boot.
+    fn first_run_at(page: crate::app::setup::SetupPage) -> AppState {
+        let mut state = AppState::default();
+        state.begin_first_run_setup(page.index());
+        let _ = state.setup.take_progress();
+        state
+    }
+
+    #[test]
+    fn first_run_asks_the_language_then_walks_to_home() {
+        use crate::{app::setup::SetupPage, first_run::SetupProgress, regional::Locale};
+
+        let mut state = AppState::default();
+        state.begin_first_run_setup(0);
+        assert_eq!(state.active_route(), ScreenRoute::Setup);
+        assert_eq!(state.setup.take_progress(), Some(SetupProgress::Page(0)));
+        // English is under the cursor; nothing changes until SELECT.
+        assert_eq!(state.regional.locale, Locale::Italian);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.regional.locale, Locale::English);
+        assert!(state.setup.take_guide_request());
+        assert_eq!(state.setup.page, SetupPage::Keys);
+        // "Skip the setup" goes to the last page, and SELECT there to Home.
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.setup.page, SetupPage::Done);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Home);
+        assert!(!state.setup.active);
+        assert_eq!(state.setup.take_progress(), Some(SetupProgress::Done));
+    }
+
+    #[test]
+    fn screens_opened_from_the_first_run_pages_come_back_to_them() {
+        use crate::app::setup::SetupPage;
+
+        // The phone portal, closed with SELECT and with BOOT.
+        for close_with_boot in [false, true] {
+            let mut state = first_run_at(SetupPage::Wifi);
+            state.apply(ButtonEvent::Select);
+            assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
+            assert_eq!(
+                state.take_wifi_transfer_request(),
+                Some(crate::wifi_transfer::WifiTransferUiRequest::Start)
+            );
+            if close_with_boot {
+                state.back();
+            } else {
+                state.apply(ButtonEvent::Select);
+            }
+            assert_eq!(state.active_route(), ScreenRoute::Setup);
+            assert_eq!(
+                (state.setup.page, state.setup.selected),
+                (SetupPage::Wifi, 1)
+            );
+        }
+
+        // The date and time editor, left with BOOT from its first field.
+        let mut state = first_run_at(SetupPage::Clock);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::ClockSetTime);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Setup);
+        assert_eq!(state.setup.page, SetupPage::Clock);
+        // And saved: every field confirmed down to "Save".
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        for _ in 0..12 {
+            if state.active_route() != ScreenRoute::ClockSetTime {
+                break;
+            }
+            state.apply(ButtonEvent::Select);
+        }
+        assert_eq!(state.active_route(), ScreenRoute::Setup);
+        assert!(state.take_clock_set_time_request().is_some());
+
+        // "Connect to PC", left with BOOT before it starts.
+        let mut state = first_run_at(SetupPage::Book);
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::UsbDisk);
+        assert_eq!(
+            state.setup.take_progress(),
+            Some(crate::first_run::SetupProgress::Page(
+                SetupPage::Done.index()
+            ))
+        );
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Setup);
+        assert_eq!(
+            state.setup.take_progress(),
+            Some(crate::first_run::SetupProgress::Page(
+                SetupPage::Book.index()
+            ))
+        );
+    }
+
+    #[test]
+    fn outside_the_first_run_pages_the_same_screens_go_where_they_always_did() {
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Clock);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::ClockSetTime);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Clock);
+        state.router.navigate_to(ScreenRoute::UsbDisk);
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+    }
+
+    #[test]
+    fn first_steps_reopen_from_settings_and_boot_leaves_them() {
+        use crate::{app::setup::SetupPage, regional::Locale};
+
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Settings);
+        let index = state
+            .category_usage
+            .ordered_entries(ScreenRoute::Settings)
+            .iter()
+            .position(|entry| entry.route == ScreenRoute::Setup)
+            .expect("First steps is a Settings tile");
+        for _ in 0..index {
+            state.apply(ButtonEvent::Down);
+        }
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Setup);
+        // The language in use is the one under the cursor.
+        assert_eq!(
+            (state.setup.page, state.setup.selected),
+            (SetupPage::Language, 1)
+        );
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.regional.locale, Locale::Italian);
+        assert!(!state.setup.take_guide_request());
+        assert_eq!(state.setup.take_progress(), None);
+        state.back();
+        assert_eq!(
+            (state.setup.page, state.setup.selected),
+            (SetupPage::Language, 1)
+        );
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Settings);
+        assert!(!state.setup.active);
+    }
+
+    #[test]
+    fn the_card_warning_restarts_or_goes_on_without_the_card() {
+        let mut state = AppState::default();
+        state.show_card_warning();
+        assert_eq!(state.active_route(), ScreenRoute::CardWarning);
+        state.apply(ButtonEvent::Select);
+        assert!(state.take_restart_request());
+
+        state.apply(ButtonEvent::Down);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Home);
+        assert!(!state.take_restart_request());
+
+        state.show_card_warning();
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Home);
+    }
+
+    #[test]
+    fn empty_lists_send_select_to_upload() {
+        use crate::reader::ReaderUiState;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let books = std::env::temp_dir().join(format!("rustmix-empty-books-{nanos}"));
+        std::fs::create_dir_all(&books).unwrap();
+
+        // Home's Continue card, with no book to resume and none on the card.
+        let mut state = AppState {
+            reader: ReaderUiState::with_books_root(books.to_string_lossy()),
+            ..AppState::default()
+        };
+        state.apply(ButtonEvent::Select);
+        assert!(state.library_known_empty);
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+        // Opening an upload drops what was known about the folder.
+        state.apply(ButtonEvent::Select);
+        assert!(!state.library_known_empty);
+
+        // The Library itself, empty.
+        let mut state = AppState {
+            reader: ReaderUiState::with_books_root(books.to_string_lossy()),
+            ..AppState::default()
+        };
+        state.home_selected = home_index(ScreenRoute::Library);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Library);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+
+        // A folder that cannot be read is not "empty": SELECT does nothing.
+        std::fs::remove_dir_all(&books).unwrap();
+        let mut state = AppState {
+            reader: ReaderUiState::with_books_root(books.to_string_lossy()),
+            ..AppState::default()
+        };
+        state.home_selected = home_index(ScreenRoute::Library);
+        state.apply(ButtonEvent::Select);
+        assert!(!state.library_known_empty);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Library);
+
+        // Audiobooks, empty.
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::AudiobookLibrary);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+        let mut state = AppState::default();
+        state.audiobooks.set_library(Err("no card".into()));
+        state.router.navigate_to(ScreenRoute::AudiobookLibrary);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::AudiobookLibrary);
     }
 }

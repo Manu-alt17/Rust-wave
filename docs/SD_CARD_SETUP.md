@@ -21,8 +21,12 @@ Use a FAT-formatted microSD (FAT32 for cards up to 32 GB; exFAT is not supported
   AUDIOPOS.TXT    audiobook positions
   VOLUME.TXT      audio volume (volume=0-100)
   MENU.TXT  SLEEPIDX.TXT  SLEEPAT.TXT
+  SETUP.TXT       first-start pages: page=N while under way, done=1 after
+  LEGGIMI.TXT  README.TXT   what the folders are for, written on a new card
   BOOTTIME.LOG  RESETS.LOG   diagnostics, moved to .OLD at 64 KB
 ```
+
+`BOOKS`, `AUDIO` and `SLEEP` are made by the firmware at power-on when they are missing, so a freshly formatted card needs no preparation. On a card with no settings and no books the device then shows its first-start pages (see the user guide); deleting `SETUP.TXT` alone does not bring them back on a card that holds settings or books.
 
 Copy files from Home → Carica, over Wi-Fi with the portal or with the USB cable (Connect to PC), or by moving the card to a computer.
 

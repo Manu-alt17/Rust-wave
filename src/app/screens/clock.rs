@@ -33,7 +33,7 @@ const TIME_CARD_HEIGHT: i32 = 124;
 
 /// A date the way it is written in the user's language: "3 ottobre 2026",
 /// "October 3, 2026".
-fn long_date(locale: Locale, date: RtcDateTime) -> String {
+pub(crate) fn long_date(locale: Locale, date: RtcDateTime) -> String {
     const ENGLISH: [&str; 12] = [
         "January",
         "February",

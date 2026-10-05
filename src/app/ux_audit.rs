@@ -21,6 +21,7 @@ use embedded_graphics::prelude::Point;
 use super::{
     display::{AutoSleep, SleepScreenMode, UiFontSize},
     render_current_screen,
+    setup::SetupPage,
     typography::audit::{self, Rec},
     AppState, ScreenRoute,
 };
@@ -1266,6 +1267,89 @@ fn scenarios() -> Vec<(String, Arrange)> {
             state.router.navigate_to(ScreenRoute::UsbDisk);
         }),
     );
+
+    // --- First run ---------------------------------------------------------
+    add(
+        "home-no-books",
+        Box::new(|state| state.library_known_empty = true),
+    );
+    add(
+        "library-error-card-mounted",
+        Box::new(|state| {
+            state.storage.mounted = true;
+            state.reader.library_error = Some(LONG_ERROR.into());
+            state.router.navigate_to(ScreenRoute::Library);
+        }),
+    );
+    for (name, page) in [
+        ("language", SetupPage::Language),
+        ("keys", SetupPage::Keys),
+        ("wifi-ready", SetupPage::Wifi),
+        ("clock", SetupPage::Clock),
+        ("book", SetupPage::Book),
+        ("done", SetupPage::Done),
+    ] {
+        add(
+            &format!("setup-{name}"),
+            Box::new(move |state| {
+                state.network.ssid =
+                    Some("Una rete Wi-Fi di casa dal nome molto lungo 5GHz".into());
+                state.begin_first_run_setup(page.index());
+            }),
+        );
+    }
+    add(
+        "setup-wifi",
+        Box::new(|state| {
+            state.network.wifi_state = WifiConnectionState::ConfigurationMissing;
+            state.begin_first_run_setup(SetupPage::Wifi.index());
+        }),
+    );
+    add(
+        "setup-wifi-saved-offline",
+        Box::new(|state| {
+            state.network.wifi_state = WifiConnectionState::Failed;
+            state.network.saved_network_count = 2;
+            state.begin_first_run_setup(SetupPage::Wifi.index());
+        }),
+    );
+    add(
+        "setup-clock-no-rtc",
+        Box::new(|state| {
+            state.board.rtc = None;
+            state.begin_first_run_setup(SetupPage::Clock.index());
+            state.setup.selected = 1;
+        }),
+    );
+    add(
+        "setup-book-after-upload",
+        Box::new(|state| {
+            state.begin_first_run_setup(SetupPage::Book.index());
+            state.setup.upload_started = true;
+            state.setup.selected = 2;
+        }),
+    );
+    for (name, page) in [
+        ("language", SetupPage::Language),
+        ("book", SetupPage::Book),
+        ("done", SetupPage::Done),
+    ] {
+        add(
+            &format!("setup-again-{name}"),
+            Box::new(move |state| {
+                state.setup.start_from_settings(state.regional.locale);
+                state.setup.page = page;
+                state.router.navigate_to(ScreenRoute::Setup);
+            }),
+        );
+    }
+    add(
+        "card-warning",
+        Box::new(|state| {
+            state.show_card_warning();
+            state.card_warning_selected = 1;
+        }),
+    );
     list
 }
 
@@ -1406,8 +1490,12 @@ fn layout_audit_finds_no_text_off_screen_or_overlapping() {
                     .or_default()
                     .extend(shown.iter().map(|rec| rec.text.clone()));
 
-                if let Some(dir) = out_dir.as_ref().filter(|_| locale == Locale::Italian) {
-                    let dir = dir.join(font.marker());
+                if let Some(dir) = out_dir.as_ref() {
+                    // Italian in `<size>/`, English beside it in `<size>-en/`.
+                    let dir = dir.join(match locale {
+                        Locale::Italian => font.marker().to_string(),
+                        Locale::English => format!("{}-en", font.marker()),
+                    });
                     let _ = std::fs::create_dir_all(&dir);
                     save_png(&frame, state.orientation, &dir.join(format!("{name}.png")));
                 }

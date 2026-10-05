@@ -43,6 +43,10 @@ pub enum ScreenRoute {
     Upload,
     WifiTransfer,
     UsbDisk,
+    /// The first-run pages: shown once on a new card, and from Settings.
+    Setup,
+    /// Shown at power-on when the microSD is missing or cannot be read.
+    CardWarning,
 }
 
 impl ScreenRoute {
@@ -84,6 +88,8 @@ impl ScreenRoute {
             Self::Upload => "Upload",
             Self::WifiTransfer => "Wi-Fi Transfer",
             Self::UsbDisk => "Connect to PC",
+            Self::Setup => "First steps",
+            Self::CardWarning => "Memory card",
         }
     }
 
@@ -139,6 +145,8 @@ impl ScreenRoute {
                 Self::Upload => "Carica",
                 Self::WifiTransfer => "Trasferimento Wi-Fi",
                 Self::UsbDisk => "Collega al PC",
+                Self::Setup => "Primi passi",
+                Self::CardWarning => "Scheda di memoria",
             },
         }
     }
@@ -181,6 +189,8 @@ impl ScreenRoute {
             Self::Upload => "upload",
             Self::WifiTransfer => "wifi-transfer",
             Self::UsbDisk => "usb-disk",
+            Self::Setup => "setup",
+            Self::CardWarning => "card-warning",
         }
     }
 
@@ -223,7 +233,10 @@ impl ScreenRoute {
             Self::ReaderPreferences => Some(Self::ReaderOptions),
             Self::ReaderToc | Self::ReaderGoTo => Some(Self::ReaderOptions),
             Self::Files | Self::Upload => Some(Self::Home),
-            Self::PowerKeyMenu => Some(Self::Home),
+            Self::PowerKeyMenu | Self::CardWarning => Some(Self::Home),
+            // BOOT inside the pages is theirs (see `AppState::back`); this
+            // is only where they sit in the hierarchy.
+            Self::Setup => Some(Self::Settings),
             Self::Audio
             | Self::Clock
             | Self::Display
@@ -309,6 +322,8 @@ mod tests {
             Some(ScreenRoute::Upload)
         );
         assert_eq!(ScreenRoute::UsbDisk.parent(), Some(ScreenRoute::Upload));
+        assert_eq!(ScreenRoute::Setup.parent(), Some(ScreenRoute::Settings));
+        assert_eq!(ScreenRoute::CardWarning.parent(), Some(ScreenRoute::Home));
         assert_eq!(
             ScreenRoute::NetworkSaved.parent(),
             Some(ScreenRoute::Network)

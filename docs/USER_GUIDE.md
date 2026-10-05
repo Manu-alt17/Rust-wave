@@ -1,6 +1,6 @@
 # Rustmix Wave user guide
 
-This guide describes the firmware on the `feature/merge-eink` branch, published as `beta` (version 1.5.0-beta.3): Rustmix Wave v1.4.8 merged with the E-ink firmware, on the Waveshare ESP32-S3 3.97-inch e-paper board. The interface speaks Italian by default (Settings → Lingua switches to English); screen labels below are given in Italian with the English wording in parentheses.
+This guide describes the firmware on the `feature/merge-eink` branch, published as `beta` (version 1.5.0-beta.4): Rustmix Wave v1.4.8 merged with the E-ink firmware, on the Waveshare ESP32-S3 3.97-inch e-paper board. The interface speaks Italian by default (Settings → Lingua switches to English); screen labels below are given in Italian with the English wording in parentheses.
 
 Images named `rendered-*.png` are drawn by the firmware's own renderer and match the panel pixel for pixel; the `*.jpg` photographs predate the merge. See [`screenshots/README.md`](../screenshots/README.md).
 
@@ -19,11 +19,29 @@ The footer of each screen repeats the controls that apply there.
 
 The panel's controller sleeps after a minute without input; the next key press wakes it without a flash. After the idle time set in Settings → Schermo (10 minutes by default) the board goes into standby by itself, except while an audiobook is playing or the microSD is connected to a PC.
 
+## First start
+
+On a microSD that was never used the device makes its folders (`RUSTMIX/BOOKS`, `AUDIO`, `SLEEP`) and opens on a few pages instead of Home. First the language, written in both: **English** is under the cursor, Down moves to **Italiano**, SELECT chooses. Then five numbered pages:
+
+| Page | What it is for | Rows |
+| --- | --- | --- |
+| 1. I tasti (The keys) | What the rocker, BOOT and Power do | Avanti (Next) · Salta la configurazione (Skip the setup) |
+| 2. Wi-Fi | Opens the phone portal to add a network | Configura dal telefono (Set up from a phone) · Salta (Skip) |
+| 3. Data e ora (Date and time) | Shows date, time and time zone | Vanno bene (They are right) · Cambia (Change) |
+| 4. Primo libro (First book) | The two ways of copying books | Dal telefono, via Wi-Fi · Dal computer, con il cavo USB · Più tardi (Later) |
+| 5. Pronto (Ready) | Where to find these pages again | Vai alla Home (Go to Home) |
+
+No page is mandatory: the last row of each moves on, and BOOT goes back one page. The portal, the date editor and Connect to PC opened from a page come back to it. Choosing the language also puts a short guide among the books (`Guida rapida` or `Quick guide`), to try reading at once.
+
+The pages show once per card. If the device is switched off halfway, they pick up from the same page. Afterwards they are in Settings → **Primi passi** (First steps).
+
+With no card, or one that cannot be read, the device opens on a warning instead: **Riavvia** (Restart) tries again, **Continua senza** (Go on without it) goes to Home. A new card of 64 GB or more must first be formatted as FAT32 on a computer; the device does not format cards.
+
 ## 1. Home
 
 <img src="../screenshots/rendered-home.png" width="360" alt="Home">
 
-The **Continua** (Continue reading) card at the top shows the book being read: its cover, title, time left at your reading speed and progress. SELECT on it reopens the book at the saved page. Below it, today's reading time and the current streak.
+The **Continua** (Continue reading) card at the top shows the book being read: its cover, title, time left at your reading speed and progress. SELECT on it reopens the book at the saved page. With no book on the card it reads **Aggiungi il primo libro** (Add your first book) and SELECT opens Carica. Below it, today's reading time and the current streak.
 
 | Tile | Opens |
 | --- | --- |
@@ -42,7 +60,7 @@ Books from `RUSTMIX/BOOKS` on the microSD (TXT and EPUB), as a grid of covers: f
 
 Covers are prepared once per book, the first time it appears on screen, and kept in `RUSTMIX/READER/CACHE`. Books uploaded from the Wi-Fi portal get their cover from the browser straight away.
 
-SELECT opens the selected book. Hold SELECT for its actions:
+SELECT opens the selected book; in an empty Library it opens Carica instead. Hold SELECT for its actions:
 
 <img src="../screenshots/rendered-book-actions.png" width="360" alt="Book actions">
 
@@ -115,7 +133,19 @@ Reading time today, this week and this month, the streak of consecutive days, th
 
 <img src="../screenshots/rendered-wifi-transfer.png" width="360" alt="Wi-Fi transfer">
 
-With a Wi-Fi network configured, the screen shows the address to open in a browser on the same network (or a QR code that opens it). The page asks for no code: it is reachable by anyone on that network while the Upload screen is open, and closes when you leave it or after ten minutes without traffic. From there you can upload books and audiobooks, create folders, rename and delete files. Configuration files (`WIFI.TXT`, `CLOCK.TXT`, `DISPLAY.TXT` and the like) are protected.
+With a Wi-Fi network configured, the screen shows the address to open in a browser on the same network (or a QR code that opens it). The page asks for no code: it is reachable by anyone on that network while the Upload screen is open, and closes when you leave it or after ten minutes in which nobody uses it. It speaks the device's language. The header says whether the device still answers and how much space is free. Configuration files (`WIFI.TXT`, `CLOCK.TXT`, `DISPLAY.TXT`) are protected.
+
+| Tab | What it does |
+| --- | --- |
+| Libri (Books) | Upload EPUB and TXT books, with their covers; search, download, delete |
+| Audiolibri (Audiobooks) | Upload MP3 files: one file is one audiobook, several chosen together are asked for a title and become its tracks |
+| Sfondi (Wallpapers) | Make a sleep image from any picture |
+| File (Files) | The whole card as a file explorer |
+| Wi-Fi | Saved networks, and nearby ones when on the device's hotspot |
+
+**Files.** A tap opens a folder, or previews a text or a picture; the three dots open a row's actions: download, rename, move to another folder, delete. A long press starts a selection, with a bar to download, move or delete several things at once. On a computer: click to select, double click to open, right click for the menu, F2 to rename, Del to delete, and drag a row onto a folder to move it or files from the computer to upload them. Deleting shows **Annulla** (Undo) for six seconds. The device's own files and folders are hidden until you ask to see them. A file over 64 MB is refused before it is sent: use the USB cable for those.
+
+**Wallpapers.** Search for a picture (the results are free pictures from Wikimedia Commons), choose one from the phone or computer, or paste one copied elsewhere. Then drag it and zoom (two fingers, the mouse wheel or the slider) inside the upright frame, which is the screen as you hold the device. **Come si vedrà** shows the black and white result; **Salva sfondo** stores it in `RUSTMIX/SLEEP`. The page turns the image for the panel, sets the contrast and names the file by itself. Searching needs the Internet, so it is not offered on the device's own hotspot.
 
 Without a Wi-Fi network, the device opens its own hotspot and shows a QR code: join it with a phone, and the setup page opens by itself, to add networks (up to 8) and passwords with the phone's keyboard.
 
@@ -138,12 +168,13 @@ A browser of the whole microSD, with a preview of text files. SELECT opens a fol
 | Schermo (Display) | Interface text size, sleep screen, automatic standby |
 | Lingua (Language) | Italiano, English |
 | Info | Firmware version, board and memory state; **Ripristina impostazioni** (Restore settings) |
+| Primi passi (First steps) | The first-start pages, to go through again |
 
 The sleep screen is what stays on the glass during standby: the images in `RUSTMIX/SLEEP` in turn (default) or at random, or the cover of the book being read. Automatic standby comes after 5, 10 (default), 15, 30 or 60 minutes without input, or never.
 
 Rete lists the connection state and four actions. **Configura da telefono** opens the portal of section 6. **Reti salvate** lists the saved networks, the connected one marked: SELECT on a network opens a menu to connect to it or forget it. If it cannot be joined, the Network screen says so and the device goes back to the saved networks by itself. **Riprova connessione** tries the saved networks again, and **Dettagli** shows the time synchronization and the last error.
 
-Update shows the installed version and the channel. **Stabile** follows the latest stable release; **Beta** the highest version among the recent releases, pre-releases included, so a newer stable release reaches it too. UP and DOWN move between the action and the channel: SELECT on the channel switches it and checks; SELECT on the action checks again, or installs the update found, after a second SELECT to confirm. This firmware is a beta (`1.5.0-beta.3`): it follows Beta until the channel is changed, and the choice is kept in `RUSTMIX/UPDATE.TXT`. Back on Stable the device never installs an older firmware: it waits for a stable release newer than the one it runs.
+Update shows the installed version and the channel. **Stabile** follows the latest stable release; **Beta** the highest version among the recent releases, pre-releases included, so a newer stable release reaches it too. UP and DOWN move between the action and the channel: SELECT on the channel switches it and checks; SELECT on the action checks again, or installs the update found, after a second SELECT to confirm. This firmware is a beta (`1.5.0-beta.4`): it follows Beta until the channel is changed, and the choice is kept in `RUSTMIX/UPDATE.TXT`. Back on Stable the device never installs an older firmware: it waits for a stable release newer than the one it runs.
 
 While an update downloads, the screen shows a bar with the percentage and the megabytes received, redrawn every 10%.
 

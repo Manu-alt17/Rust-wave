@@ -15,7 +15,14 @@ use std::{
     time::Duration,
 };
 
-use crate::buttons::ButtonEvent;
+use crate::{
+    boot_profile::now_us,
+    buttons::ButtonEvent,
+    input_timing::{self, EventTiming},
+};
+
+/// Dropped events kept for the input timing diagnostic to report.
+const MAX_DROPPED_KEPT: usize = 32;
 
 /// Kept deliberately tiny: the e-paper redraw between presses is slow, so a
 /// deep backlog makes the device keep turning pages / moving the cursor long
@@ -30,9 +37,30 @@ pub enum InputEvent {
     Button(ButtonEvent),
 }
 
+impl InputEvent {
+    /// Short name used by the input timing report.
+    #[must_use]
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::Back => "back",
+            Self::SelectLongPress => "select-long",
+            Self::Button(ButtonEvent::Up) => "up",
+            Self::Button(ButtonEvent::Down) => "down",
+            Self::Button(ButtonEvent::Select) => "select",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct QueueState {
+    events: VecDeque<(InputEvent, EventTiming)>,
+    /// Events dropped to make room, oldest first (diagnostic only).
+    dropped: Vec<(InputEvent, EventTiming)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct InputEventQueue {
-    inner: Arc<(Mutex<VecDeque<InputEvent>>, Condvar)>,
+    inner: Arc<(Mutex<QueueState>, Condvar)>,
     capacity: usize,
 }
 
@@ -47,7 +75,10 @@ impl InputEventQueue {
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new((
-                Mutex::new(VecDeque::with_capacity(capacity.max(1))),
+                Mutex::new(QueueState {
+                    events: VecDeque::with_capacity(capacity.max(1)),
+                    dropped: Vec::new(),
+                }),
                 Condvar::new(),
             )),
             capacity: capacity.max(1),
@@ -59,17 +90,42 @@ impl InputEventQueue {
     /// If the queue is full, the oldest event is dropped, so rapid presses
     /// during a slow redraw collapse to the latest two.
     pub fn push(&self, event: InputEvent) {
-        let (events, ready) = &*self.inner;
-        let mut events = events.lock().unwrap();
-        if events.len() >= self.capacity {
-            events.pop_front();
+        let now = if input_timing::ENABLED { now_us() } else { 0 };
+        self.push_seen_at(event, now);
+    }
+
+    /// [`Self::push`] for the input timing diagnostic: `seen_us` is when the
+    /// polling thread first read the key down, before debouncing it.
+    pub fn push_seen_at(&self, event: InputEvent, seen_us: i64) {
+        let timing = EventTiming {
+            seen_us,
+            queued_us: if input_timing::ENABLED { now_us() } else { 0 },
+        };
+        let (state, ready) = &*self.inner;
+        let mut state = state.lock().unwrap();
+        if state.events.len() >= self.capacity {
+            let dropped = state.events.pop_front();
+            if input_timing::ENABLED && state.dropped.len() < MAX_DROPPED_KEPT {
+                state.dropped.extend(dropped);
+            }
         }
-        events.push_back(event);
+        state.events.push_back((event, timing));
         ready.notify_all();
     }
 
     pub fn pop(&self) -> Option<InputEvent> {
-        self.inner.0.lock().unwrap().pop_front()
+        self.pop_timed().map(|(event, _)| event)
+    }
+
+    /// [`Self::pop`] with the event's timestamps.
+    pub fn pop_timed(&self) -> Option<(InputEvent, EventTiming)> {
+        self.inner.0.lock().unwrap().events.pop_front()
+    }
+
+    /// Events dropped since the last call, oldest first. Always empty
+    /// unless the input timing diagnostic is on.
+    pub fn take_dropped(&self) -> Vec<(InputEvent, EventTiming)> {
+        std::mem::take(&mut self.inner.0.lock().unwrap().dropped)
     }
 
     /// Block until at least one event is queued or `timeout` elapses,
@@ -77,17 +133,17 @@ impl InputEventQueue {
     /// waiting. Returns whether an event is available. Spurious wakeups are
     /// absorbed, so an early return always means a real event.
     pub fn wait_timeout(&self, timeout: Duration) -> bool {
-        let (events, ready) = &*self.inner;
-        let events = events.lock().unwrap();
-        let (events, _) = ready
-            .wait_timeout_while(events, timeout, |events| events.is_empty())
+        let (state, ready) = &*self.inner;
+        let state = state.lock().unwrap();
+        let (state, _) = ready
+            .wait_timeout_while(state, timeout, |state| state.events.is_empty())
             .unwrap();
-        !events.is_empty()
+        !state.events.is_empty()
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.0.lock().unwrap().len()
+        self.inner.0.lock().unwrap().events.len()
     }
 
     #[must_use]
@@ -162,5 +218,38 @@ mod tests {
         queue.push(InputEvent::Back);
         assert_eq!(queue.len(), 1);
         assert!(!queue.is_empty());
+    }
+
+    #[test]
+    fn a_timed_event_keeps_when_the_key_was_first_seen() {
+        let queue = InputEventQueue::new(2);
+        queue.push_seen_at(InputEvent::Button(ButtonEvent::Down), 1_234);
+        let (event, timing) = queue.pop_timed().unwrap();
+        assert_eq!(event, InputEvent::Button(ButtonEvent::Down));
+        assert_eq!(timing.seen_us, 1_234);
+    }
+
+    #[test]
+    fn dropped_events_are_kept_for_the_diagnostic_only() {
+        let queue = InputEventQueue::new(1);
+        queue.push_seen_at(InputEvent::Button(ButtonEvent::Up), 10);
+        queue.push_seen_at(InputEvent::Button(ButtonEvent::Down), 20);
+        let dropped = queue.take_dropped();
+        if input_timing::ENABLED {
+            assert_eq!(dropped.len(), 1);
+            assert_eq!(dropped[0].0, InputEvent::Button(ButtonEvent::Up));
+            assert_eq!(dropped[0].1.seen_us, 10);
+        } else {
+            assert!(dropped.is_empty());
+        }
+        assert!(queue.take_dropped().is_empty());
+        assert_eq!(queue.pop(), Some(InputEvent::Button(ButtonEvent::Down)));
+    }
+
+    #[test]
+    fn every_event_has_a_report_name() {
+        assert_eq!(InputEvent::Back.marker(), "back");
+        assert_eq!(InputEvent::SelectLongPress.marker(), "select-long");
+        assert_eq!(InputEvent::Button(ButtonEvent::Select).marker(), "select");
     }
 }

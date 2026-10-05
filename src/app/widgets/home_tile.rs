@@ -12,7 +12,10 @@ use embedded_graphics::{
 };
 use embedded_iconoir::{
     icons::size48px::{
-        actions::{InfoEmpty as CompactInfoEmpty, RefreshDouble as CompactRefreshDouble},
+        actions::{
+            HelpCircle as CompactHelpCircle, InfoEmpty as CompactInfoEmpty,
+            RefreshDouble as CompactRefreshDouble,
+        },
         activities::{BookStack as CompactBookStack, StatsReport as CompactStatsReport},
         audio::SoundLow as CompactSoundLow,
         connectivity::Wifi as CompactWifi,
@@ -263,6 +266,9 @@ fn draw_route_icon_compact(
         ),
         ScreenRoute::Files => {
             draw_iconoir_icon_scaled(display, top_left, &CompactFolder::new(BinaryColor::On))
+        }
+        ScreenRoute::Setup => {
+            draw_iconoir_icon_scaled(display, top_left, &CompactHelpCircle::new(BinaryColor::On))
         }
         _ => Ok(()),
     }

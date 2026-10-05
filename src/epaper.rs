@@ -15,6 +15,7 @@ use log::{debug, info};
 
 use crate::{
     framebuffer::{FRAMEBUFFER_SIZE, HEIGHT, WIDTH},
+    input_timing::{self, Phase},
     power::PanelPower,
 };
 
@@ -56,6 +57,14 @@ pub struct Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER> {
     /// which is only valid once something has: right after a reset the
     /// first one reads it (0xFF).
     temperature_loaded: bool,
+    /// Whether the controller's analog supply (its high-voltage booster) was
+    /// left on by the last partial refresh; see
+    /// [`Self::keep_analog_on_for_next_partial`].
+    analog_on: bool,
+    /// One-shot request consumed by the next partial refresh.
+    keep_analog_on_next: bool,
+    /// When the analog supply was last used, on the profiler's clock.
+    analog_used_us: i64,
 }
 
 impl<SPI, DC, RST, CS, BUSY, DELAY, POWER> Epaper397<SPI, DC, RST, CS, BUSY, DELAY, POWER>
@@ -102,6 +111,9 @@ where
             delay,
             power,
             temperature_loaded: false,
+            analog_on: false,
+            keep_analog_on_next: false,
+            analog_used_us: 0,
         })
     }
 
@@ -139,6 +151,9 @@ where
         self.command(0x12)?; // SWRESET
         self.wait_until_idle()?;
         self.temperature_loaded = false;
+        // A reset also turns the analog supply off.
+        self.analog_on = false;
+        self.keep_analog_on_next = false;
         swreset_span.end();
         let _config_span = crate::boot_profile::span("epd-controller-config");
 
@@ -179,14 +194,20 @@ where
         validate_frame(frame)?;
         debug!("epd397: global base refresh");
         let transfer_span = crate::boot_profile::span("epd-global-spi-transfer");
+        input_timing::mark(Phase::PanelStart);
         self.command(0x24)?;
         self.data(frame)?;
         self.command(0x26)?;
         self.data(frame)?;
+        input_timing::mark(Phase::SpiDone);
         transfer_span.end();
         let _refresh_span = crate::boot_profile::span("epd-global-refresh-wait");
         self.turn_on_display(0xF7)?;
+        input_timing::mark(Phase::BusyDone);
         self.temperature_loaded = true;
+        // 0xF7 ends by disabling the analog supply and the clock.
+        self.analog_on = false;
+        self.keep_analog_on_next = false;
         Ok(())
     }
 
@@ -202,6 +223,7 @@ where
         validate_frame(frame)?;
         debug!("epd397: global base refresh (fast waveform)");
         let _span = crate::boot_profile::span("epd-fast-global-refresh");
+        input_timing::mark(Phase::PanelStart);
         self.command_data(0x3C, &[0x01])?;
         self.command_data(0x4E, &[0x00, 0x00])?;
         self.command_data(0x4F, &[0x00, 0x00])?;
@@ -212,8 +234,13 @@ where
         self.command(0x26)?;
         self.data(frame)?;
         self.command_data(0x1A, &[FAST_GLOBAL_TEMPERATURE])?;
+        input_timing::mark(Phase::SpiDone);
         self.turn_on_display(0xD7)?;
+        input_timing::mark(Phase::BusyDone);
         self.temperature_loaded = true;
+        // 0xD7 ends by disabling the analog supply and the clock.
+        self.analog_on = false;
+        self.keep_analog_on_next = false;
         Ok(())
     }
 
@@ -254,10 +281,18 @@ where
     /// safety fallback), and the first partial after a controller reset
     /// reads it itself (0xFF), which bounds staleness to at most
     /// `PANEL_PARTIAL_REFRESH_LIMIT` partials or one idle-sleep interval.
+    ///
+    /// The control byte normally ends by switching the analog supply and
+    /// the clock off again (0xDF / 0xFF). After
+    /// [`Self::keep_analog_on_for_next_partial`] it leaves them on instead
+    /// (0xDC / 0xFC, what GxEPD2 does for this panel), so a refresh that
+    /// follows shortly does not pay for the supply ramping up and down
+    /// again; [`Self::power_off_analog`] then has to be called.
     pub fn show_partial_fullscreen(&mut self, frame: &[u8]) -> Result<()> {
         validate_frame(frame)?;
         debug!("epd397: partial full-screen refresh");
         let _span = crate::boot_profile::span("epd-partial-refresh");
+        input_timing::mark(Phase::PanelStart);
         self.command_data(0x18, &[0x80])?;
         self.command_data(0x3C, &[0x80])?;
         self.command_data(0x44, &[0x00, 0x00, 0x18, 0x03])?; // 0 .. 792
@@ -266,15 +301,86 @@ where
         self.command_data(0x4F, &[0x00, 0x00])?;
         self.command(0x24)?;
         self.data(frame)?;
-        let control = if self.temperature_loaded { 0xDF } else { 0xFF };
+        input_timing::mark(Phase::SpiDone);
+        let keep_on = core::mem::take(&mut self.keep_analog_on_next);
+        let control = match (keep_on, self.temperature_loaded) {
+            (true, true) => 0xDC,
+            (true, false) => 0xFC,
+            (false, true) => 0xDF,
+            (false, false) => 0xFF,
+        };
         self.turn_on_display(control)?;
+        input_timing::mark(Phase::BusyDone);
         self.temperature_loaded = true;
+        self.analog_on = keep_on;
+        self.analog_used_us = crate::boot_profile::now_us();
         Ok(())
+    }
+
+    /// Ask the next partial refresh to leave the analog supply on, for a
+    /// refresh likely to be followed by another within moments (stepping
+    /// through a menu, turning pages). One-shot: every other refresh
+    /// switches the supply off as before.
+    pub fn keep_analog_on_for_next_partial(&mut self, keep: bool) {
+        self.keep_analog_on_next = keep;
+    }
+
+    /// Whether the next partial refresh will leave the analog supply on.
+    #[must_use]
+    pub fn keeps_analog_on_next(&self) -> bool {
+        self.keep_analog_on_next
+    }
+
+    /// Whether a partial refresh left the analog supply on.
+    #[must_use]
+    pub fn analog_is_on(&self) -> bool {
+        self.analog_on
+    }
+
+    /// Switch the analog supply and the clock off (0x22 0x83, GxEPD2's
+    /// power-off for this panel). Does nothing when they are off already.
+    pub fn power_off_analog(&mut self) -> Result<()> {
+        if !self.analog_on {
+            return Ok(());
+        }
+        debug!("epd397: analog supply off");
+        self.analog_on = false;
+        self.command_data(0x22, &[0x83])?;
+        self.command(0x20)?;
+        self.wait_until_idle()
+    }
+
+    /// [`Self::power_off_analog`] once the supply has sat unused for
+    /// `idle_ms`. Returns whether it was switched off now.
+    ///
+    /// `shown_frame` is the frame on the glass, written back to both RAM
+    /// planes afterwards. Without that, the partial refresh that followed a
+    /// separate power-off compared the new frame against a stale "previous
+    /// image": black pixels of the frame on the glass that the new frame
+    /// wanted white were left as they were (the old selection border, the
+    /// text of the page just left). The power-off is its own update
+    /// sequence, and it leaves that plane behind the glass.
+    pub fn power_off_analog_if_idle(&mut self, idle_ms: u32, shown_frame: &[u8]) -> Result<bool> {
+        if !self.analog_on {
+            return Ok(false);
+        }
+        let idle_us = crate::boot_profile::now_us() - self.analog_used_us;
+        if idle_us < i64::from(idle_ms) * 1_000 {
+            return Ok(false);
+        }
+        self.power_off_analog()?;
+        self.load_base_silent(shown_frame)?;
+        Ok(true)
     }
 
     /// Put the panel controller into deep sleep and disable its PMIC rail.
     pub fn sleep(&mut self) -> Result<()> {
         info!("epd397: deep sleep and disable ALDO3");
+        // Best effort: the rail is cut right below either way.
+        if let Err(error) = self.power_off_analog() {
+            debug!("epd397: analog supply off before sleep failed: {error:#}");
+        }
+        self.keep_analog_on_next = false;
         self.command_data(0x10, &[0x01])?;
         self.delay.delay_ms(10);
         self.reset

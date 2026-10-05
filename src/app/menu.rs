@@ -13,7 +13,7 @@ use super::router::ScreenRoute;
 
 pub const MAIN_CATEGORY_COUNT: usize = 7;
 pub const CATEGORY_COUNT: usize = 1;
-pub const SETTINGS_ENTRY_COUNT: usize = 7;
+pub const SETTINGS_ENTRY_COUNT: usize = 8;
 /// Maximum number of tiles shown under the "Most used" / "Più usate"
 /// heading of the Settings grid (see
 /// `screens::category::render_tile_grid`). The section holds the entries
@@ -110,8 +110,8 @@ const HOME_ENTRIES: [MenuEntry; MAIN_CATEGORY_COUNT] = [
         label_it: "Opzioni",
         subtitle_en: "Device services and display",
         subtitle_it: "Servizi del dispositivo e schermo",
-        badge_en: "7",
-        badge_it: "7",
+        badge_en: "8",
+        badge_it: "8",
         route: ScreenRoute::Settings,
     },
     // Kept last rather than first so the grid tiles above keep the leading
@@ -202,6 +202,17 @@ const SETTINGS_ENTRIES: [MenuEntry; SETTINGS_ENTRY_COUNT] = [
         badge_en: "",
         badge_it: "",
         route: ScreenRoute::DeviceInfo,
+    },
+    MenuEntry {
+        // The first-run pages, to go through again: shown by themselves
+        // only once, on a new card.
+        label_en: "First steps",
+        label_it: "Primi passi",
+        subtitle_en: "Keys, Wi-Fi, clock and first book",
+        subtitle_it: "Tasti, Wi-Fi, orologio e primo libro",
+        badge_en: "",
+        badge_it: "",
+        route: ScreenRoute::Setup,
     },
 ];
 

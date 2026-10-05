@@ -20,6 +20,7 @@ pub mod ota;
 pub mod power_key;
 pub mod reader;
 pub mod reading_stats;
+pub mod setup;
 pub mod upload;
 pub mod usb_disk;
 
@@ -64,6 +65,8 @@ pub fn render_active_screen(
         ScreenRoute::DeviceInfoRuntime => device_info::render_device_info_runtime(display, state),
         ScreenRoute::OtaUpdate => ota::render_ota_update(display, state),
         ScreenRoute::UsbDisk => usb_disk::render_usb_disk(display, state),
+        ScreenRoute::Setup => setup::render_setup(display, state),
+        ScreenRoute::CardWarning => setup::render_card_warning(display, state),
         ScreenRoute::Settings => {
             unreachable!("category routes handled above")
         }

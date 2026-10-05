@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.5.0-beta.4 — First start, and the Wi-Fi page rebuilt
+
+First start:
+
+- A microSD never used before gets its folders by itself (`RUSTMIX/BOOKS`, `AUDIO`, `SLEEP`, made on every boot when missing) and two "read me" files, `LEGGIMI.TXT` and `README.TXT`.
+- On such a card the device opens on the first-run pages instead of an empty Home: the language first, in both languages with English under the cursor, then five numbered pages (the keys, Wi-Fi, date and time, how to add books, where to find the pages again). None is mandatory: the first row is what the page proposes, the last moves on without it, BOOT goes back a page. The pages show once; **Primi passi** (First steps), a new tile in Settings, opens them again.
+- A card counts as new only when it was read twice without an error and holds neither settings nor books; anything that could not be read counts as used. How far the pages got is kept in `RUSTMIX/SETUP.TXT`, so a restart picks up from the same page. A card already in use gets `done=1` there on its first boot with this firmware.
+- Choosing the language puts a short guide among the books as a first one to open, `Guida rapida.txt` or `Quick guide.txt`; a file already there is never replaced.
+- With no card, or one that cannot be read, the device opens on a warning in both languages, with **Riavvia** and **Continua senza**, instead of an empty Home.
+- Empty lists say what to do and SELECT does it: an empty Library or Audiobooks list opens Upload, and Home's Continue card reads **Aggiungi il primo libro** and opens Upload when the books folder holds nothing. A card that cannot be read is said in plain words instead of the system's error.
+
+Wi-Fi page, rebuilt:
+
+- One look for the whole page: a header that says whether the device still answers (**Collegato** / **Non collegato**) and how much space is free, five tabs (**Libri**, **Audiolibri**, **Sfondi**, **File**, **Wi-Fi**), messages in a line at the bottom that goes away by itself. On the device's own hotspot the page opens on Wi-Fi, since that is why one is there.
+- **File** works like a file explorer. On a phone a tap opens a folder or previews a text or a picture, the three dots hold a row's actions (download, rename, move, delete), a long press starts a selection with a bar for download, move and delete. With a mouse there is a side panel, sortable columns, click to select, double click to open, right click for the menu, F2, Del, and a row can be dragged onto a folder; files dragged from the computer upload to the folder they are dropped on. Folders come first and carry the names people know (`BOOKS` shows as **Libri**), and the device's own files are hidden until asked for.
+- Delete has **Annulla**: the row leaves the list at once and the file is deleted six seconds later, or on leaving the page. A folder is deleted with what it holds (`/api/delete?recursive=1`; the card's top folder is always refused).
+- **Scarica** saves the file instead of opening it in the browser: the device now answers a download with the file's type and `Content-Disposition: attachment` under its own name (it sent neither, and the server's default is `text/html`).
+- **Sfondi**: pictures are searched inside the page, on Wikimedia Commons (free pictures; Google's results cannot be shown inside another page, and stay one link away), or chosen from the phone, pasted, or dragged in. The picture is framed upright, as the device is held, dragged to position and zoomed with two fingers, the wheel or the slider; the page turns it into the panel's 800×480 when it saves. **Come si vedrà** shows the black and white result first. Brightness, contrast, the rotate buttons and the file name field are gone: tones are stretched by themselves and the file gets the first free `SLEEPnnn.BMP`. The images on the device are listed upright too.
+- **Audiolibri**, new: one MP3 is one audiobook; several chosen together are asked for a title and go into a folder of that name. The list shows each title with its tracks and size.
+- **Wi-Fi**: signal bars instead of dBm, the whole network name, a **Mostra** button for the password, and a line that says why nearby networks only show from the device's hotspot.
+- The page keeps the session alive while it is open and in use (`/api/status?alive=1`), so framing a wallpaper for ten minutes no longer finds the portal closed; a page left open and forgotten still lets it close.
+- The device's errors are worded for the user, and a file over 64 MB or a path over 128 bytes is refused before it is sent.
+- English: the page follows the device's language (`lang` in `/api/status`).
+
+Display:
+
+- Moving the selection with the rocker no longer switches the panel's analog supply off and on at every step (update control `0xDC`/`0xFC` instead of `0xDF`/`0xFF`, as GxEPD2 does for this panel): a partial refresh takes about 370 ms instead of about 510 ms. The supply is switched off after 1.5 s without a key, and both image memories of the controller are then rewritten with the frame on screen, which is what keeps the next partial refresh from showing the previous screen under the new one.
+
+Development:
+
+- `scripts/flash-and-log.sh` flashes like `scripts/flash.sh` and keeps the serial monitor's output in `dist/monitor.log`; on Windows it first closes a monitor left open by an earlier run.
+- `src/input_timing.rs` measures, key by key, the time from contact to the end of the refresh. Off by default (`ENABLED`), and a test fails while it is on.
+
 ## v1.5.0-beta.3 — One interface, and the functions it lacked
 
 - Library and Home covers are stretched to fill their cell instead of centre-cropped, so the whole cover shows whatever its shape; thumbnails already on the card are rebuilt once. The full-screen sleep cover is still cropped.

@@ -466,22 +466,31 @@ pub fn render_library(
 
     let (entries, in_progress_count) = library_grid_entries(reader);
     if entries.is_empty() {
-        let (title, message) = match reader.library_error.as_deref() {
-            Some(error) => (
+        // A card that cannot be read is said in plain words; what the
+        // system answered is added, small, only when the card is mounted
+        // and the folder still failed, which nobody expects.
+        let error = reader.library_error.as_deref();
+        let (title, message) = if error.is_some() {
+            (
                 t(locale, "Library unavailable", "Libreria non disponibile"),
-                error,
-            ),
-            None => (
+                t(
+                    locale,
+                    "The memory card cannot be read. Check that it is pushed all the way in, then restart the device.",
+                    "La scheda di memoria non si legge. Controlla che sia inserita fino in fondo, poi riavvia il dispositivo.",
+                ),
+            )
+        } else {
+            (
                 t(locale, "No books yet", "Nessun libro"),
                 t(
                     locale,
-                    "Copy EPUB or TXT books into the /RUSTMIX/BOOKS folder of the SD card, or send them from your phone with Upload.",
-                    "Copia libri EPUB o TXT nella cartella /RUSTMIX/BOOKS della scheda SD, oppure inviali dal telefono con Carica.",
+                    "Press SELECT to open Upload and copy them from a phone or a computer. Books are EPUB or TXT files, kept in the RUSTMIX/BOOKS folder of the card.",
+                    "Premi SELECT per aprire Carica e copiarli dal telefono o dal computer. I libri sono file EPUB o TXT, nella cartella RUSTMIX/BOOKS della scheda.",
                 ),
-            ),
+            )
         };
         let next = draw_section_title(display, preferences, FIRST_BASELINE, title)?;
-        draw_paragraph(
+        let after = draw_paragraph(
             display,
             message,
             CONTENT_LEFT,
@@ -491,7 +500,24 @@ pub fn render_library(
             6,
             6,
         )?;
-        return draw_footer(display, state, &back_only(locale));
+        if let Some(error) = error.filter(|_| state.storage.mounted) {
+            draw_paragraph(
+                display,
+                error,
+                CONTENT_LEFT,
+                after + 10,
+                preferences.detail_style(),
+                CONTENT_WIDTH,
+                3,
+                4,
+            )?;
+        }
+        let hint = if error.is_some() {
+            back_only(locale)
+        } else {
+            select_and_back(locale, t(locale, "UPLOAD", "CARICA"))
+        };
+        return draw_footer(display, state, &hint);
     }
 
     let blocks = library_blocks(entries.len(), in_progress_count);

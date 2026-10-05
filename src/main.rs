@@ -25,6 +25,7 @@ mod firmware {
         io::vfs::MountedFatfs,
         log::EspLogger,
         sys,
+        timer::EspTaskTimerService,
     };
     use log::{debug, info, warn};
     use waveshare_epd397_rust_app::{
@@ -58,8 +59,10 @@ mod firmware {
         },
         cover_cache::CoverCache,
         epaper::{self, Epaper397},
+        first_run::{self, CardSetup, SetupProgress},
         framebuffer::FrameBuffer,
         input_events::{InputEvent, InputEventQueue},
+        input_timing::{self, Phase},
         mcu_deep_sleep,
         network::{
             espidf::NetworkRuntime, NetworkLogFingerprint, NetworkSnapshot, WifiConnectionState,
@@ -106,8 +109,9 @@ mod firmware {
         },
         usb_disk::{self, UsbDiskPhase},
         wifi_transfer::{
-            espidf::WifiTransferServer, WifiTransferSnapshot, WifiTransferUiRequest,
-            NETWORK_PROVISION_RESCAN_SECONDS, WIFI_TRANSFER_ROOT, WIFI_TRANSFER_SERVER_STACK_BYTES,
+            espidf::WifiTransferServer, set_portal_locale, WifiTransferSnapshot,
+            WifiTransferUiRequest, NETWORK_PROVISION_RESCAN_SECONDS, WIFI_TRANSFER_ROOT,
+            WIFI_TRANSFER_SERVER_STACK_BYTES,
         },
     };
 
@@ -656,10 +660,13 @@ mod firmware {
                     let mut delay = FreeRtosDelay;
                     loop {
                         let mut activity = false;
+                        // Input timing diagnostic: when each poll started,
+                        // which is when a key it reports was first seen.
+                        let seen_us = input_timing_now();
                         match back_button.poll(&mut delay) {
                             Ok(true) => {
                                 boot_profile::mark_with("input-detected", Some("back"));
-                                input_queue.push(InputEvent::Back);
+                                input_queue.push_seen_at(InputEvent::Back, seen_us);
                                 activity = true;
                             }
                             Ok(false) => {}
@@ -667,15 +674,17 @@ mod firmware {
                                 "rustmix-wave=input-poll-thread component=back status=read-failed error={error:#}"
                             ),
                         }
+                        let seen_us = input_timing_now();
                         match select_button.poll(&mut delay) {
                             Ok(Some(SelectPressEvent::LongPress)) => {
                                 boot_profile::mark_with("input-detected", Some("select-long"));
-                                input_queue.push(InputEvent::SelectLongPress);
+                                input_queue.push_seen_at(InputEvent::SelectLongPress, seen_us);
                                 activity = true;
                             }
                             Ok(Some(SelectPressEvent::ShortPress)) => {
                                 boot_profile::mark_with("input-detected", Some("select"));
-                                input_queue.push(InputEvent::Button(ButtonEvent::Select));
+                                input_queue
+                                    .push_seen_at(InputEvent::Button(ButtonEvent::Select), seen_us);
                                 activity = true;
                             }
                             Ok(None) => {}
@@ -683,10 +692,11 @@ mod firmware {
                                 "rustmix-wave=input-poll-thread component=select status=read-failed error={error:#}"
                             ),
                         }
+                        let seen_us = input_timing_now();
                         match buttons.poll(&mut delay) {
                             Ok(Some(event)) => {
                                 boot_profile::mark_with("input-detected", Some("up-down"));
-                                input_queue.push(InputEvent::Button(event));
+                                input_queue.push_seen_at(InputEvent::Button(event), seen_us);
                                 activity = true;
                             }
                             Ok(None) => {}
@@ -705,6 +715,45 @@ mod firmware {
         debug!(
             "rustmix-wave=input-poll-thread status=ready stack-bytes={INPUT_POLL_STACK_BYTES} idle-sleep-ms={INPUT_POLL_IDLE_SLEEP_MS}"
         );
+        // Input timing diagnostic: sample the four key levels every
+        // millisecond, so its report shows the real contact times next to
+        // what the polling thread saw. Kept alive until `run` returns.
+        let _input_timing_sampler = if input_timing::ENABLED {
+            let service = EspTaskTimerService::new()?;
+            let timer = service.timer(|| {
+                let mut mask = 0_u8;
+                for (gpio, bit) in [
+                    (4, input_timing::KEY_UP_BIT),
+                    (6, input_timing::KEY_DOWN_BIT),
+                    (5, input_timing::KEY_SELECT_BIT),
+                    (0, input_timing::KEY_BOOT_BIT),
+                ] {
+                    if unsafe { sys::gpio_get_level(gpio) } != 0 {
+                        mask |= bit;
+                    }
+                }
+                input_timing::sample_levels(mask);
+            })?;
+            timer.every(Duration::from_millis(1))?;
+            warn!(
+                "rustmix-wave=input-timing-diagnostic status=enabled version={FIRMWARE_VERSION} sample-period-ms=1 poll-idle-ms={INPUT_POLL_IDLE_SLEEP_MS} report={}",
+                input_timing::REPORT_PATH
+            );
+            if mounted_sd.is_some() {
+                let header = format!(
+                    "=== input-timing version={FIRMWARE_VERSION} boot-ms={}\n",
+                    boot_started.elapsed().as_millis()
+                );
+                if let Err(error) = sd_log::append(input_timing::REPORT_PATH, &header) {
+                    warn!(
+                        "rustmix-wave=input-timing-diagnostic status=sd-write-failed error={error}"
+                    );
+                }
+            }
+            Some((service, timer))
+        } else {
+            None
+        };
 
         inputs_span.end();
         let appstate_span = boot_profile::span("appstate-and-regional-init");
@@ -836,6 +885,7 @@ mod firmware {
         power_key_span.end();
         let snapshot_span = boot_profile::span("board-snapshot-read");
         state.update_board_snapshot(board_services.read_light_snapshot());
+        input_timing::mark(Phase::Snapshot);
         snapshot_span.end();
         log_board_snapshot(state.board, state.regional);
 
@@ -897,6 +947,48 @@ mod firmware {
                 info!("rustmix-wave=deep-sleep-restore status=no-resumable-book");
             }
         }
+
+        // A card that cannot be read gets a warning instead of an empty
+        // Home. A card that can gets the folders the firmware expects and,
+        // when it was never used, the first-run pages; one left halfway
+        // through them picks up where it was. Before the first frame, so
+        // that frame is already the right screen.
+        let first_run_span = boot_profile::span("first-run-check");
+        let boots_into_home = state.active_route() == ScreenRoute::Home;
+        if mounted_sd.is_none() {
+            if boots_into_home {
+                state.show_card_warning();
+            }
+            info!("rustmix-wave=first-run status=card-unreadable warning={boots_into_home}");
+        } else {
+            match first_run::prepare_card(SD_MOUNT_POINT) {
+                Ok(true) => {
+                    info!("rustmix-wave=first-run folders=created");
+                    if let Err(error) = first_run::write_readme(SD_MOUNT_POINT) {
+                        warn!("rustmix-wave=first-run readme=failed error={error}");
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => warn!("rustmix-wave=first-run folders=failed error={error}"),
+            }
+            let setup = first_run::card_setup(SD_MOUNT_POINT);
+            info!("rustmix-wave=first-run status={setup:?}");
+            match setup {
+                CardSetup::New if boots_into_home => state.begin_first_run_setup(0),
+                CardSetup::Resume(page) if boots_into_home => state.begin_first_run_setup(page),
+                CardSetup::Used => {
+                    if let Err(error) =
+                        first_run::save_progress(SD_MOUNT_POINT, SetupProgress::Done)
+                    {
+                        warn!("rustmix-wave=first-run marker=failed error={error}");
+                    }
+                }
+                CardSetup::New | CardSetup::Resume(_) | CardSetup::Done => {}
+            }
+            apply_first_run_ui_request(&mut state);
+            state.library_known_empty = first_run::books_folder_is_empty(SD_MOUNT_POINT);
+        }
+        first_run_span.end();
 
         // Everything Home's Continue Reading card draws, so the first frame
         // is already complete: the reading stats behind its remaining-time
@@ -1255,6 +1347,17 @@ mod firmware {
         // the 100 ms power-key poll and the 250 ms Reader tick it paces.
         const MAIN_LOOP_ACTIVE_TICK_MS: u64 = 20;
         const MAIN_LOOP_IDLE_WAIT_MS: u64 = 100;
+        // Input timing diagnostic: how long the keys must be quiet before
+        // the report is printed, and how many lines go out per iteration.
+        const INPUT_TIMING_REPORT_IDLE_MS: u64 = 1_500;
+        // Keep the panel's analog supply on between rocker steps, as
+        // GxEPD2 does for this panel, instead of ramping it down after
+        // every partial refresh (measured: 372 ms against 512 ms per
+        // refresh). It is switched off once it has sat unused this long;
+        // only a quick run of steps is meant to find it still on.
+        const PANEL_KEEP_ANALOG_ON: bool = true;
+        const PANEL_ANALOG_IDLE_OFF_MS: u32 = 1_500;
+        const INPUT_TIMING_LINES_PER_TICK: usize = 6;
         let mut light_sleep_guard = LightSleepGuard::new();
         // Diagnostic PM-profiling build only (see `power_profile`).
         let mut power_profile_tracker = PowerProfileTracker::default();
@@ -1581,6 +1684,7 @@ mod firmware {
                         Err(error) => warn!("rustmix-wave=rtc-sync status=failed error={error:#}"),
                     }
                     state.update_board_snapshot(board_services.read_light_snapshot());
+                    input_timing::mark(Phase::Snapshot);
                     log_board_snapshot(state.board, state.regional);
                     // Diagnostic for the OTA-worker internal-RAM fragmentation
                     // investigation: captures the heap right as Wi-Fi finishes
@@ -2270,6 +2374,7 @@ mod firmware {
                 && last_status_refresh.elapsed() >= Duration::from_secs(live_refresh_seconds)
             {
                 state.update_board_snapshot(board_services.read_light_snapshot());
+                input_timing::mark(Phase::Snapshot);
                 log_board_snapshot(state.board, state.regional);
                 refresh_screen(
                     &mut panel,
@@ -2297,6 +2402,7 @@ mod firmware {
                 && last_charging_poll.elapsed() >= Duration::from_secs(CHARGING_STATUS_POLL_SECONDS)
             {
                 state.update_board_snapshot(board_services.read_light_snapshot());
+                input_timing::mark(Phase::Snapshot);
                 // Matches `AppState::battery_charging`'s own definition
                 // exactly, so this only repaints when what the header
                 // actually draws would change.
@@ -2333,7 +2439,18 @@ mod firmware {
             } else {
                 SELECT_LONG_PRESS_MS
             });
-            if let Some(input_event) = input_queue.pop() {
+            if let Some((input_event, input_event_timing)) = input_queue.pop_timed() {
+                if input_timing::ENABLED {
+                    for (dropped, timing) in input_queue.take_dropped() {
+                        input_timing::note_dropped(dropped.marker(), timing);
+                    }
+                    input_timing::begin(
+                        input_event.marker(),
+                        input_event_timing,
+                        input_queue.len(),
+                        state.active_route().marker(),
+                    );
+                }
                 // Whole handling of one key, including the refresh it causes:
                 // any gap between this span's start and its nested
                 // `epd-*` span is work done before the panel is touched.
@@ -2353,8 +2470,10 @@ mod firmware {
                         let woke_from_sleep = !state.panel_awake;
                         if woke_from_sleep {
                             wake_panel_silently(&mut panel, &frame, &mut state)?;
+                            input_timing::mark(Phase::Woke);
                         }
                         state.update_board_snapshot(board_services.read_light_snapshot());
+                        input_timing::mark(Phase::Snapshot);
                         let previous_route = state.active_route();
                         if previous_route == ScreenRoute::Home {
                             info!("rustmix-wave=hierarchical-back outcome=ignored route=home");
@@ -2370,6 +2489,7 @@ mod firmware {
                             );
                         } else {
                             state.back();
+                            apply_first_run_ui_request(&mut state);
                             apply_portal_ui_request(
                                 &mut network_runtime,
                                 &mut wifi_transfer_server,
@@ -2519,8 +2639,10 @@ mod firmware {
                             let woke_from_sleep = !state.panel_awake;
                             if woke_from_sleep {
                                 wake_panel_silently(&mut panel, &frame, &mut state)?;
+                                input_timing::mark(Phase::Woke);
                             }
                             state.update_board_snapshot(board_services.read_light_snapshot());
+                            input_timing::mark(Phase::Snapshot);
                             log_board_snapshot(state.board, state.regional);
                             let request = RefreshRequest::Normal;
                             refresh_screen(
@@ -2549,9 +2671,11 @@ mod firmware {
                         let woke_from_sleep = !state.panel_awake;
                         if woke_from_sleep {
                             wake_panel_silently(&mut panel, &frame, &mut state)?;
+                            input_timing::mark(Phase::Woke);
                         }
 
                         state.update_board_snapshot(board_services.read_light_snapshot());
+                        input_timing::mark(Phase::Snapshot);
                         let previous_route = state.active_route();
                         let previous_display = state.display;
                         let previous_ota_channel = state.ota_channel;
@@ -2700,6 +2824,7 @@ mod firmware {
                         );
                         apply_clock_set_time_ui_request(&mut board_services, &mut state);
                         apply_clock_set_timezone_ui_request(&mut network_config, &mut state);
+                        apply_first_run_ui_request(&mut state);
                         log_reader_persistence_event(&mut state);
                         if state.display != previous_display {
                             match state.display.save_to_path(DISPLAY_CONFIG_PATH) {
@@ -2794,6 +2919,13 @@ mod firmware {
                         } else {
                             RefreshRequest::Normal
                         };
+                        // Stepping with the rocker is usually followed by
+                        // another step: leave the panel's analog supply on
+                        // for it (switched off again once idle, below).
+                        panel.keep_analog_on_for_next_partial(
+                            PANEL_KEEP_ANALOG_ON
+                                && matches!(event, ButtonEvent::Up | ButtonEvent::Down),
+                        );
                         refresh_screen(
                             &mut panel,
                             &mut frame,
@@ -2805,6 +2937,7 @@ mod firmware {
                         last_status_refresh = Instant::now();
                     }
                 }
+                input_timing::end(state.active_route().marker());
             }
 
             let needs_fast_tick = !matches!(
@@ -2827,6 +2960,39 @@ mod firmware {
             if !first_loop_idle_marked {
                 boot_profile::mark("first-loop-iteration-done");
                 first_loop_idle_marked = true;
+            }
+            // The panel's analog supply, left on after a rocker step,
+            // goes off once no refresh has used it for a while.
+            if panel.analog_is_on() && input_queue.is_empty() {
+                let started_us = boot_profile::now_us();
+                if panel.power_off_analog_if_idle(PANEL_ANALOG_IDLE_OFF_MS, frame.as_bytes())? {
+                    input_timing::note_analog_off(started_us, boot_profile::now_us() - started_us);
+                }
+            }
+            // Input timing diagnostic: its report goes out only while the
+            // device sits idle, a few lines per loop iteration and never
+            // with a key waiting, so printing cannot delay what it measures.
+            if input_timing::ENABLED
+                && input_queue.is_empty()
+                && last_activity.elapsed() >= Duration::from_millis(INPUT_TIMING_REPORT_IDLE_MS)
+            {
+                let mut printed = 0;
+                while printed < INPUT_TIMING_LINES_PER_TICK && input_queue.is_empty() {
+                    let Some(line) = input_timing::next_report_line() else {
+                        break;
+                    };
+                    println!("{line}");
+                    printed += 1;
+                }
+                if let Some(text) = input_timing::take_sd_batch() {
+                    if mounted_sd.is_some() {
+                        if let Err(error) = sd_log::append(input_timing::REPORT_PATH, &text) {
+                            warn!(
+                                "rustmix-wave=input-timing-diagnostic status=sd-write-failed error={error}"
+                            );
+                        }
+                    }
+                }
             }
             input_queue.wait_timeout(Duration::from_millis(if needs_fast_tick {
                 MAIN_LOOP_ACTIVE_TICK_MS
@@ -2957,6 +3123,8 @@ mod firmware {
                     return;
                 }
                 *lan_recovering = false;
+                // The page speaks the device's language.
+                set_portal_locale(state.regional.locale);
                 state.update_wifi_transfer_snapshot(WifiTransferSnapshot::starting());
                 // Free the background-warmed book sessions first, exactly as
                 // the OTA install does: they hold ~30 KB of internal RAM
@@ -3884,6 +4052,7 @@ mod firmware {
             Err(error) => warn!("rustmix-wave=rtc-manual-set status=failed error={error:#}"),
         }
         state.update_board_snapshot(board_services.read_light_snapshot());
+        input_timing::mark(Phase::Snapshot);
         log_board_snapshot(state.board, state.regional);
     }
 
@@ -4003,6 +4172,32 @@ mod firmware {
         d3: 18,
     };
 
+    /// What the first-run pages asked for on the last key: the quick guide
+    /// among the books once the language is chosen, and the page they got
+    /// to, so a restart picks up from it.
+    fn apply_first_run_ui_request(state: &mut AppState) {
+        if state.setup.take_guide_request() {
+            match first_run::write_quick_guide(SD_MOUNT_POINT, state.regional.locale) {
+                Ok(written) => info!(
+                    "rustmix-wave=first-run guide={} locale={}",
+                    if written { "written" } else { "kept" },
+                    state.regional.locale.name()
+                ),
+                Err(error) => warn!("rustmix-wave=first-run guide=failed error={error}"),
+            }
+        }
+        if let Some(progress) = state.setup.take_progress() {
+            match first_run::save_progress(SD_MOUNT_POINT, progress) {
+                Ok(()) => info!("rustmix-wave=first-run progress={progress:?}"),
+                Err(error) => {
+                    warn!(
+                        "rustmix-wave=first-run progress={progress:?} status=failed error={error}"
+                    );
+                }
+            }
+        }
+    }
+
     /// Disk mode's only loop: nothing else runs while the PC owns the card.
     /// Any key but BOOT restarts the device -- GPIO0 is a strapping pin, and
     /// a restart with it held down would enter download mode. Presses queued
@@ -4111,6 +4306,7 @@ mod firmware {
         DELAY: DelayNs,
         POWER: waveshare_epd397_rust_app::power::PanelPower,
     {
+        input_timing::mark(Phase::Applied);
         settle_fast_reader_open(state);
         if state.active_route() == ScreenRoute::AudiobookPlayer {
             state.audiobooks.note_player_drawn();
@@ -4148,6 +4344,15 @@ mod firmware {
         let plan = coordinator.plan_for_frame(coordinator_request, full_page_image, inverted);
         sync_panel_refresh_diagnostics(state, coordinator);
         render_frame(frame, state)?;
+        input_timing::mark(Phase::Rendered);
+        input_timing::note_plan(match plan {
+            PanelRefreshPlan::GlobalBase { reason } if reason.uses_fast_waveform() => "global-fast",
+            PanelRefreshPlan::GlobalBase { .. } => "global",
+            PanelRefreshPlan::PartialFullscreen { .. } if panel.keeps_analog_on_next() => {
+                "partial-keep-on"
+            }
+            PanelRefreshPlan::PartialFullscreen { .. } => "partial",
+        });
 
         match plan {
             PanelRefreshPlan::GlobalBase { reason } => {
@@ -4503,6 +4708,16 @@ mod firmware {
     /// SHTC3 init and sample, QMI8658 CTRL9 handshakes, e-paper reset pulse).
     #[derive(Clone, Copy, Debug, Default)]
     struct FreeRtosDelay;
+
+    /// Timestamp for the input timing diagnostic; 0 when it is off, so the
+    /// polling thread does not read the clock for nothing.
+    fn input_timing_now() -> i64 {
+        if input_timing::ENABLED {
+            boot_profile::now_us()
+        } else {
+            0
+        }
+    }
 
     const FREERTOS_TICK_US: u32 = 1_000_000 / sys::configTICK_RATE_HZ;
 

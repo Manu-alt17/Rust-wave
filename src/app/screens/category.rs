@@ -183,7 +183,16 @@ pub(crate) fn draw_continue_reading_tile(
 
     let book = state.reader.continue_reading_book();
     let title = book.as_ref().map_or_else(
-        || t(locale, "No saved book", "Nessun libro salvato").to_string(),
+        || {
+            // With no book on the card at all, the card says what SELECT
+            // does: it opens Upload (see `AppState::activate_continue_reading`).
+            if state.library_known_empty {
+                t(locale, "Add your first book", "Aggiungi il primo libro")
+            } else {
+                t(locale, "No saved book", "Nessun libro salvato")
+            }
+            .to_string()
+        },
         |book| book.title.clone(),
     );
     cursor_top += CONTINUE_TILE_TITLE_GAP;

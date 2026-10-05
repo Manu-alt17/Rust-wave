@@ -18,6 +18,7 @@
 //! and sleep ownership.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::regional::Locale;
 
@@ -281,6 +282,82 @@ pub fn is_sd_safe_name(component: &str) -> bool {
             .any(|character| character.is_control() || "\\/:*?\"<>|".contains(character))
 }
 
+/// Media type a downloaded file is declared as, from its extension. Without
+/// one the HTTP server calls everything `text/html`, and a browser then shows
+/// the file as a page instead of saving it.
+#[must_use]
+pub fn download_content_type(name: &str) -> &'static str {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "epub" => "application/epub+zip",
+        "txt" | "log" | "old" => "text/plain; charset=utf-8",
+        "bmp" => "image/bmp",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
+}
+
+/// `Content-Disposition` value that makes a browser save a download under
+/// the file's own name. The plain `filename` carries an ASCII stand-in for
+/// old clients; `filename*` (RFC 6266) carries the real name, percent-encoded
+/// as UTF-8, and is the one current browsers use.
+#[must_use]
+pub fn download_content_disposition(name: &str) -> String {
+    let fallback: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_graphic() && !matches!(character, '"' | '\\' | '%' | ';') {
+                character
+            } else if character == ' ' {
+                ' '
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut encoded = String::with_capacity(name.len() * 3);
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~!$&+^`|".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
+}
+
+/// Whether the page is shown in English: the device's own language, set by
+/// the runtime owner in main.rs each time the portal starts.
+static PORTAL_ENGLISH: AtomicBool = AtomicBool::new(false);
+
+/// Tell the page which language the device is in.
+pub fn set_portal_locale(locale: Locale) {
+    PORTAL_ENGLISH.store(matches!(locale, Locale::English), Ordering::Relaxed);
+}
+
+/// The page's language as `/api/status` reports it.
+#[must_use]
+pub fn portal_locale_code() -> &'static str {
+    if PORTAL_ENGLISH.load(Ordering::Relaxed) {
+        "en"
+    } else {
+        "it"
+    }
+}
+
+/// Whether `path` is the card's own top folder, as [`resolve_portal_path`]
+/// returns it for `/`. Deleting a folder with what it holds stops here: the
+/// top folder holds the settings and everything else.
+#[must_use]
+pub fn is_portal_root(path: &Path) -> bool {
+    path == Path::new(WIFI_TRANSFER_ROOT)
+}
+
 /// Tiny query parser used by the portal API.  The firmware intentionally avoids
 /// allocating a generic web framework.
 #[must_use]
@@ -356,258 +433,587 @@ pub mod espidf {
     use crate::storage::SD_MOUNT_POINT;
 
     use super::{
-        is_protected_portal_path, is_same_origin_request, query_value, resolve_portal_path,
-        JoinAttemptState, PendingJoinRequest, WifiTransferSnapshot, WifiTransferState,
-        NETWORK_PROVISION_INACTIVITY_SECONDS, WIFI_TRANSFER_HTTP_PORT,
+        download_content_disposition, download_content_type, is_portal_root,
+        is_protected_portal_path, is_same_origin_request, portal_locale_code, query_value,
+        resolve_portal_path, JoinAttemptState, PendingJoinRequest, WifiTransferSnapshot,
+        WifiTransferState, NETWORK_PROVISION_INACTIVITY_SECONDS, WIFI_TRANSFER_HTTP_PORT,
         WIFI_TRANSFER_INACTIVITY_SECONDS, WIFI_TRANSFER_MAX_DIRECTORY_ROWS,
         WIFI_TRANSFER_MAX_UPLOAD_BYTES, WIFI_TRANSFER_ROOT, WIFI_TRANSFER_SERVER_STACK_BYTES,
         WIFI_TRANSFER_STREAM_CHUNK_BYTES,
     };
 
     const PORTAL_HTML: &str = r##"<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Rustmix-Wave</title><style>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rustmix Wave</title><style>
 *{box-sizing:border-box}
-:root{--bg:#f5f6f8;--card:#fff;--text:#1a1d23;--muted:#6b7280;--border:#e2e5ea;--accent:#2563eb;--accent-dark:#1d4ed8;--danger:#dc2626;--radius:10px}
-@media (prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1c1f26;--text:#e8eaed;--muted:#9aa3b2;--border:#2a2e37;--accent:#3b82f6;--accent-dark:#60a5fa;--danger:#f87171}}
-body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+:root{--bg:#f5f6f8;--card:#fff;--text:#1a1d23;--muted:#6b7280;--border:#e2e5ea;--accent:#2563eb;--accent-dark:#1d4ed8;--accent-soft:#e8effd;--danger:#dc2626;--ok:#16a34a;--radius:10px}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1c1f26;--text:#e8eaed;--muted:#9aa3b2;--border:#2a2e37;--accent:#3b82f6;--accent-dark:#60a5fa;--accent-soft:#1e2a44;--danger:#f87171;--ok:#4ade80}}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:16px}
 [hidden]{display:none!important}
-.wrap{max-width:960px;margin:0 auto;padding:1rem}
-header.top{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;justify-content:space-between;margin-bottom:1rem}
-h1{font-size:1.2rem;margin:0}
-.badge{background:var(--card);border:1px solid var(--border);border-radius:999px;padding:.3rem .8rem;font-size:.8rem;color:var(--muted)}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1rem;margin-bottom:1rem}
-input,button{font:inherit}
-input[type=text],input[type=search],input[type=password]{background:transparent;border:1px solid var(--border);border-radius:8px;padding:.5rem .7rem;color:var(--text)}
-ul{list-style:none;margin:0;padding:0}
-li{display:flex;align-items:center;gap:.6rem;padding:.5rem 0;border-bottom:1px solid var(--border)}
-li:last-child{border-bottom:none}
-li .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rssi{color:var(--muted);font-size:.85rem}
-#wifiJoinCard input{width:100%;margin:.3rem 0}
-button{border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:.5rem .9rem;cursor:pointer}
-button:hover{border-color:var(--accent)}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-button.primary:hover{background:var(--accent-dark)}
-button.danger{color:var(--danger);border-color:var(--danger)}
-button.danger:hover{background:var(--danger);color:#fff}
-.crumbs{display:flex;flex-wrap:wrap;gap:.25rem;font-size:.9rem;margin-bottom:.6rem}
-.crumbs a{color:var(--accent);cursor:pointer;text-decoration:none}
-.crumbs span{color:var(--muted)}
-.drop{border:2px dashed var(--border);border-radius:var(--radius);padding:1.5rem;text-align:center;color:var(--muted);cursor:pointer;transition:border-color .15s}
-.drop.drag{border-color:var(--accent);color:var(--accent)}
-.queue{margin-top:.8rem;display:flex;flex-direction:column;gap:.5rem}
+button,input{font:inherit;color:inherit}
+svg{width:22px;height:22px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+h2{font-size:1rem;margin:0 0 .5rem}
+a{color:var(--accent)}
+.top{display:flex;align-items:center;gap:.5rem;padding:.6rem 1rem;background:var(--card);border-bottom:1px solid var(--border)}
+.top h1{font-size:1.05rem;margin:0;flex:1;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.pill{font-size:.75rem;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:.25rem .6rem;white-space:nowrap}
+.pill b{font-weight:600}
+.only-wide{display:none}
+@media (min-width:480px){.only-wide{display:inline}}
+.pill.on b{color:var(--ok)}
+.pill.off{border-color:var(--danger);color:var(--danger)}
+.banner{background:var(--card);border-bottom:2px solid var(--danger);padding:.7rem 1rem;display:flex;gap:.8rem;align-items:center;font-size:.9rem}
+.banner span{flex:1}
+.tabs{display:flex;background:var(--card);border-bottom:1px solid var(--border);overflow-x:auto}
+.tab{flex:1;min-width:max-content;border:0;background:none;padding:.8rem .55rem;min-height:48px;color:var(--muted);border-bottom:3px solid transparent;cursor:pointer}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.wrap{padding:.8rem;max-width:1180px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:.9rem;margin-bottom:.8rem}
+.card.flush{padding:0;overflow:hidden}
+.btn{border:1px solid var(--border);background:var(--card);border-radius:8px;padding:0 .9rem;min-height:44px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:.4rem;text-decoration:none;color:var(--text);white-space:nowrap}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn.primary:hover{background:var(--accent-dark)}
+.btn.danger{color:var(--danger);border-color:var(--danger)}
+.btn.icon{width:44px;padding:0}
+.btn.small{min-height:40px;padding:0 .7rem;font-size:.85rem}
+.btn[disabled]{opacity:.4;cursor:default}
+input[type=text],input[type=search],input[type=password]{background:transparent;border:1px solid var(--border);border-radius:8px;padding:0 .8rem;min-height:44px;min-width:0}
+.hint{font-size:.8rem;color:var(--muted);margin:.4rem 0}
+.row-flex{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.grow{flex:1;min-width:0}
+.drop{border:2px dashed var(--border);border-radius:var(--radius);padding:1.2rem;text-align:center;color:var(--muted);cursor:pointer}
+.drop.drag,.dragover{border-color:var(--accent)!important;color:var(--accent)}
+.queue{display:flex;flex-direction:column;gap:.5rem}
+.queue:not(:empty){margin-top:.8rem}
 .qitem{display:flex;align-items:center;gap:.6rem;font-size:.85rem}
 .qitem .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.qitem input[type=text]{width:8rem}
-.bar{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
-.bar>i{display:block;height:100%;background:var(--accent);width:0%}
-.qitem.done .bar>i{background:#16a34a}
-.qitem.error .bar>i{background:var(--danger)}
-table{width:100%;border-collapse:collapse;font-size:.9rem}
-th,td{padding:.5rem .4rem;border-bottom:1px solid var(--border);text-align:left}
-th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;letter-spacing:.02em}
-.actions{display:flex;gap:.4rem;flex-wrap:wrap}
-.actions button{padding:.3rem .6rem;font-size:.8rem}
-.toolbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:.8rem}
-.toolbar input[type=search]{flex:1;min-width:10rem}
-.bulk{display:none;align-items:center;gap:.6rem;background:var(--card);border:1px solid var(--accent);border-radius:8px;padding:.5rem .8rem;margin-bottom:.8rem;font-size:.85rem}
-.bulk.show{display:flex}
-#status{font-size:.85rem;color:var(--muted);white-space:pre-wrap;margin:0 0 .8rem}
-.hint{font-size:.8rem;color:var(--muted)}
-.kind-folder{color:var(--accent)}
-.crop-frame{position:relative;overflow:hidden;width:100%;max-width:480px;aspect-ratio:5/3;background:#000;border-radius:8px;margin:.6rem auto;touch-action:none;cursor:grab}
-.crop-frame:active{cursor:grabbing}
-.crop-frame img{position:absolute;top:0;left:0;transform-origin:top left;user-select:none;-webkit-user-drag:none}
-.stage{display:none}
-.stage.show{display:block}
-.slider-row{display:flex;align-items:center;gap:.6rem;margin:.5rem 0;font-size:.85rem}
-.slider-row input[type=range]{flex:1}
-.bg-preview{width:100%;max-width:480px;height:auto;display:block;margin:.6rem auto;border-radius:8px;image-rendering:pixelated;border:1px solid var(--border)}
-.search-row{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem}
-.search-row input[type=text]{flex:1;min-width:10rem}
-.tabs{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.8rem}
-.tab{border:1px solid var(--border);background:var(--card);color:var(--muted);border-radius:999px;padding:.55rem 1.1rem;cursor:pointer;font-size:.9rem}
-.tab.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-.book-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:1rem;margin-top:.6rem}
-.book-card{border:1px solid var(--border);border-radius:var(--radius);padding:.6rem;display:flex;flex-direction:column;gap:.4rem}
+.qitem .bar{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.qitem .bar>i{display:block;height:100%;background:var(--accent);width:0%}
+.qitem.done .bar>i{background:var(--ok)}
+.qitem.error{flex-wrap:wrap}
+.qitem.error .bar{display:none}
+.qitem.error .state{flex-basis:100%;color:var(--danger)}
+.qitem .state{color:var(--muted);font-size:.8rem}
+.book-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:.8rem}
+.book-card{border:1px solid var(--border);border-radius:var(--radius);padding:.6rem;display:flex;flex-direction:column;gap:.4rem;min-width:0}
 .book-cover{position:relative;aspect-ratio:208/252;background:var(--bg);border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;border:1px solid var(--border)}
 .book-cover img{width:100%;height:100%;object-fit:cover;image-rendering:pixelated}
 .book-cover.empty img{display:none}
-.book-cover.empty::after{content:'Nessuna copertina';color:var(--muted);font-size:.7rem;padding:.5rem;text-align:center}
+.book-cover.empty::after{content:attr(data-empty);color:var(--muted);font-size:.7rem;padding:.5rem;text-align:center}
 .book-title{font-size:.85rem;font-weight:600;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.book-card .actions{margin-top:auto;display:flex;gap:.4rem}
-.book-card .actions a,.book-card .actions button{padding:.3rem .5rem;font-size:.75rem;flex:1;text-align:center;text-decoration:none}
+.card-actions{margin-top:auto;display:flex;gap:.4rem;flex-wrap:wrap}
+.card-actions .btn{flex:1;min-height:40px;padding:0 .4rem;font-size:.8rem}
+/* lists: files, audiobooks, wifi */
+.rows{border-top:1px solid var(--border)}
+.row{display:flex;align-items:center;gap:.7rem;padding:0 .4rem 0 .8rem;min-height:56px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;-webkit-user-select:none}
+.row:last-child{border-bottom:0}
+.row.sel{background:var(--accent-soft)}
+.row.sys{opacity:.6}
+.row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.row .ic{color:var(--accent);display:flex}
+.row .ic.file{color:var(--muted)}
+.row .nm{flex:1;min-width:0}
+.row .nm div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .meta{font-size:.8rem;color:var(--muted)}
+.row .col{display:none;font-size:.85rem;color:var(--muted);white-space:nowrap}
+.more{width:44px;height:44px;border:0;background:none;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted);cursor:pointer;flex:none}
+.more:hover{background:var(--bg)}
+.check{width:22px;height:22px;border:2px solid var(--border);border-radius:6px;flex:none;display:none;align-items:center;justify-content:center;color:#fff}
+.check svg{width:16px;height:16px;stroke-width:3}
+.row.sel .check{background:var(--accent);border-color:var(--accent)}
+.selmode .check{display:flex;border-color:var(--accent)}
+.empty-note{padding:1.4rem .9rem;color:var(--muted);text-align:center;font-size:.9rem}
+.bar{display:flex;align-items:center;gap:.5rem;padding:.5rem}
+.bar+.bar{padding-top:0}
+.path{flex:1;display:flex;align-items:center;gap:.25rem;min-height:44px;border:1px solid var(--border);border-radius:8px;padding:0 .7rem;overflow:hidden;white-space:nowrap;min-width:0}
+.path span{color:var(--muted)}
+.path button{border:0;background:none;padding:.4rem .1rem;cursor:pointer;color:var(--text)}
+.path button:last-child{font-weight:600}
+.sys-line{display:flex;align-items:center;gap:.5rem;padding:.6rem .8rem;color:var(--muted);font-size:.85rem;border-top:1px solid var(--border)}
+.sys-line span{flex:1}
+.sys-line button{border:0;background:none;color:var(--accent);min-height:40px;cursor:pointer}
+.side,.thead,.statusbar{display:none}
+.selbar{position:fixed;left:.6rem;right:.6rem;bottom:.6rem;max-width:560px;margin:0 auto;background:#1a1d23;color:#fff;border-radius:12px;padding:.4rem .5rem .4rem .9rem;display:flex;align-items:center;gap:.2rem;box-shadow:0 6px 24px rgba(0,0,0,.3);z-index:20}
+.selbar span{flex:1;font-size:.9rem}
+.selbar button{background:none;border:0;color:#fff;min-height:48px;min-width:52px;padding:0 .5rem;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:.7rem;gap:2px;cursor:pointer}
+.selbar button.del{color:#fca5a5}
+.menu{position:fixed;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.22);padding:.3rem;min-width:200px;z-index:40}
+.menu button{display:flex;align-items:center;gap:.6rem;min-height:44px;padding:0 .7rem;border-radius:7px;border:0;background:none;width:100%;text-align:left;cursor:pointer}
+.menu button:hover{background:var(--bg)}
+.menu button.del{color:var(--danger)}
+.menu hr{border:0;border-top:1px solid var(--border);margin:.3rem 0}
+.menu .lab{font-size:.7rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:.4rem .7rem .1rem}
+#toast{position:fixed;left:.6rem;right:.6rem;margin:0 auto;width:fit-content;max-width:min(560px,calc(100% - 1.2rem));bottom:4.6rem;background:#1a1d23;color:#fff;border-radius:10px;padding:.7rem .9rem;display:flex;gap:.8rem;align-items:center;font-size:.9rem;z-index:50;box-shadow:0 6px 24px rgba(0,0,0,.3)}
+#toast.error{background:#7f1d1d}
+#toast button{background:none;border:0;color:#93c5fd;font-weight:600;min-height:40px;padding:0 .4rem;cursor:pointer;white-space:nowrap}
+#shade{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:30;display:flex;align-items:flex-end;justify-content:center}
+.sheet{background:var(--card);border-radius:14px 14px 0 0;padding:1rem;width:100%;max-width:520px;max-height:88vh;overflow:auto}
+.sheet h2{font-size:1.05rem}
+.sheet input[type=text],.sheet input[type=password]{width:100%;margin:.3rem 0}
+.sheet .actions{display:flex;gap:.5rem;margin-top:.9rem}
+.sheet .actions .btn{flex:1}
+.sheet pre{white-space:pre-wrap;word-break:break-word;font-size:.8rem;background:var(--bg);border-radius:8px;padding:.7rem;max-height:50vh;overflow:auto;margin:.4rem 0}
+.sheet .preview{max-width:100%;max-height:55vh;display:block;margin:.4rem auto;border:1px solid var(--border)}
+.pick{border:1px solid var(--border);border-radius:8px;max-height:45vh;overflow:auto;margin:.5rem 0}
+.pick .row{min-height:48px}
+/* wallpapers */
+.search-row{display:flex;gap:.5rem}
+.search-row input{flex:1}
+.results{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin:.6rem 0 0}
+.results button{aspect-ratio:1;border-radius:8px;overflow:hidden;border:1px solid var(--border);padding:0;background:var(--bg);cursor:pointer}
+.results button.busy{outline:3px solid var(--accent);outline-offset:1px}
+.results img{width:100%;height:100%;object-fit:cover;display:block}
+.stage{display:none}
+.stage.show{display:block}
+.device-frame{width:min(100%,250px);margin:.8rem auto .4rem;border:2px solid var(--text);border-radius:14px;padding:9px;background:var(--bg)}
+.crop-frame{position:relative;overflow:hidden;width:100%;aspect-ratio:3/5;background:#000;border:1px solid var(--muted);touch-action:none;cursor:grab}
+.crop-frame:active{cursor:grabbing}
+.crop-frame img{position:absolute;top:0;left:0;transform-origin:top left;user-select:none;-webkit-user-drag:none;max-width:none}
+.crop-frame canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.slider-row{display:flex;align-items:center;gap:.6rem;margin:.5rem 0;font-size:.85rem}
+.slider-row input[type=range]{flex:1}
+.seg{display:flex;justify-content:center;margin:.6rem 0}
+.seg button{border:1px solid var(--border);background:var(--card);min-height:40px;padding:0 .9rem;cursor:pointer}
+.seg button:first-child{border-radius:8px 0 0 8px}
+.seg button:last-child{border-radius:0 8px 8px 0;border-left:none}
+.seg button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.stage-actions{display:flex;gap:.5rem}
+.stage-actions .btn{flex:1}
+.sleep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:.8rem}
+.sleep-thumb{aspect-ratio:3/5;background:var(--bg);border-radius:6px;overflow:hidden;border:1px solid var(--border);display:flex;align-items:center;justify-content:center}
+.sleep-thumb canvas{width:100%;height:100%;display:block}
+.sleep-thumb.empty::after{content:attr(data-empty);color:var(--muted);font-size:.7rem;padding:.5rem;text-align:center}
+/* wifi */
+.net{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;padding:.6rem 0;border-bottom:1px solid var(--border)}
+.net:last-child{border-bottom:0}
+.net .name{flex:1 1 60%;min-width:0;overflow-wrap:anywhere;font-weight:600;display:flex;align-items:center;gap:.5rem}
+.bars{display:inline-flex;align-items:flex-end;gap:2px;height:16px}
+.bars i{width:4px;background:var(--border);border-radius:1px}
+.bars i.on{background:var(--text)}
+.pw{display:flex;gap:.5rem}
+.pw input{flex:1}
+@media (min-width:900px){
+  .wrap{padding:1rem}
+  #shade{align-items:center}
+  .sheet{border-radius:14px}
+  .explorer{display:grid;grid-template-columns:230px minmax(0,1fr);border-top:1px solid var(--border);min-height:420px}
+  .side{display:block;border-right:1px solid var(--border);padding:.5rem}
+  .side button{display:flex;align-items:center;gap:.6rem;padding:.45rem .6rem;border-radius:7px;font-size:.92rem;border:0;background:none;width:100%;text-align:left;cursor:pointer;min-height:36px}
+  .side button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .side .lab{font-size:.7rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:.7rem .6rem .25rem}
+  .side .sub{padding-left:1.6rem;color:var(--muted)}
+  .rows{border-top:0}
+  .thead{display:flex;align-items:center;gap:.7rem;padding:0 .4rem 0 .8rem;border-bottom:1px solid var(--border);min-height:36px}
+  .thead button{border:0;background:none;font-size:.75rem;font-weight:600;color:var(--muted);cursor:pointer;padding:.4rem 0;text-align:left}
+  .thead .nm{flex:1}
+  .row{min-height:42px;cursor:default}
+  .row .meta{display:none}
+  .row .col,.thead .col{display:block}
+  .c-date{width:150px}.c-type{width:120px}.c-size{width:80px}
+  .check{display:flex}
+  .row .more{width:36px;height:36px}
+  .thead .sp-check{width:22px;flex:none}.thead .sp-ic{width:22px;flex:none}.thead .sp-more{width:36px;flex:none}
+  .statusbar{display:flex;justify-content:space-between;gap:1rem;padding:.5rem .8rem;border-top:1px solid var(--border);font-size:.8rem;color:var(--muted)}
+  .sys-line{display:none}
+  .only-phone{display:none!important}
+  .dropzone-desktop{display:block}
+}
+.dropzone-desktop{display:none;margin:1rem;border:2px dashed var(--border);border-radius:10px;padding:1.2rem;text-align:center;color:var(--muted)}
+@media (max-width:899px){.only-desktop{display:none!important}}
 </style></head><body>
-<div class="wrap" id="app">
 <header class="top">
-<div>
-<h1>Rustmix-Wave</h1>
-<p class="hint" style="margin:.15rem 0 0">Gestisci libri, sfondi, file e reti Wi-Fi dal browser</p>
-</div>
-<div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
-<span class="badge" id="space">Spazio: --</span>
-<button onclick="refreshActiveTab()">Aggiorna</button>
-</div>
+<h1>Rustmix Wave</h1>
+<span class="pill" id="linkPill"><b>&#9679;</b> <span id="linkText">...</span></span>
+<span class="pill" id="space"><span id="spaceNum">--</span><span class="only-wide" id="spaceWord"></span></span>
+<button class="btn icon small" id="reloadBtn" onclick="refreshActiveTab()" aria-label="Ricarica" data-en-label="Reload"></button>
 </header>
-<nav class="tabs">
-<button class="tab" data-tab="books" onclick="showTab('books')">Libri</button>
-<button class="tab" data-tab="wallpaper" onclick="showTab('wallpaper')">Sfondi</button>
-<button class="tab" data-tab="files" onclick="showTab('files')">File</button>
+<div class="banner" id="offline" hidden><span data-en="The device does not answer. Check that the Upload, Wi-Fi screen is still open on the device, then tap Retry.">Il dispositivo non risponde. Controlla che sul dispositivo sia ancora aperta la schermata Carica, Wi-Fi, poi tocca Riprova.</span><button class="btn small" onclick="retryLink()" data-en="Retry">Riprova</button></div>
+<nav class="tabs" id="tabs">
+<button class="tab" data-tab="books" onclick="showTab('books')" data-en="Books">Libri</button>
+<button class="tab" data-tab="audio" onclick="showTab('audio')" data-en="Audiobooks">Audiolibri</button>
+<button class="tab" data-tab="wallpaper" onclick="showTab('wallpaper')" data-en="Wallpapers">Sfondi</button>
+<button class="tab" data-tab="files" onclick="showTab('files')" data-en="Files">File</button>
 <button class="tab" data-tab="wifi" onclick="showTab('wifi')">Wi-Fi</button>
 </nav>
-<pre id="status"></pre>
+<div class="wrap" id="app">
 
 <section id="tab-books" class="tabpanel" hidden>
 <div class="card">
-<div class="drop" id="dropBooks" onclick="document.getElementById('fileBooks').click()">Trascina qui i tuoi eBook (EPUB o TXT) oppure tocca per selezionarli<div class="hint">I file mantengono il loro nome</div></div>
-<input id="fileBooks" type="file" multiple accept=".epub,.txt" style="display:none">
+<div class="drop" id="dropBooks" onclick="document.getElementById('fileBooks').click()" data-en="Tap to choose your books (EPUB or TXT), or drag them here">Tocca per scegliere i tuoi libri (EPUB o TXT), oppure trascinali qui</div>
+<input id="fileBooks" type="file" multiple accept=".epub,.txt" hidden>
 <div class="queue" id="queueBooks"></div>
 </div>
 <div class="card">
-<div class="toolbar"><input id="bookSearch" type="search" placeholder="Cerca nei tuoi libri..." oninput="renderBooks()"><span class="hint" id="bookCount"></span></div>
-<div class="book-grid" id="bookGrid"><p class="hint">Caricamento...</p></div>
+<div class="row-flex" style="margin-bottom:.8rem"><input class="grow" id="bookSearch" type="search" placeholder="Cerca nei tuoi libri..." data-en-ph="Search your books..." oninput="renderBooks()"><span class="hint" id="bookCount"></span></div>
+<div class="book-grid" id="bookGrid"></div>
+</div>
+</section>
+
+<section id="tab-audio" class="tabpanel" hidden>
+<div class="card">
+<div class="drop" id="dropAudio" onclick="document.getElementById('fileAudio').click()" data-en="Tap to choose the MP3 files of an audiobook, or drag them here">Tocca per scegliere i file MP3 di un audiolibro, oppure trascinali qui</div>
+<input id="fileAudio" type="file" multiple accept=".mp3,audio/mpeg" hidden>
+<p class="hint" data-en="One file is one audiobook. Several files together become one title, and its tracks play in name order. Files over 64 MB go by USB cable.">Un file solo &egrave; un audiolibro. Pi&ugrave; file insieme diventano un solo titolo, con le tracce in ordine di nome. I file oltre 64 MB si copiano con il cavo USB.</p>
+<div class="queue" id="queueAudio"></div>
+</div>
+<div class="card flush">
+<h2 style="padding:.9rem .9rem 0" data-en="Audiobooks on the device">Audiolibri sul dispositivo</h2>
+<div class="rows" id="audioRows" style="border-top:0"></div>
 </div>
 </section>
 
 <section id="tab-wallpaper" class="tabpanel" hidden>
 <div class="card" id="wallpaper">
-<h2 style="margin:0 0 .5rem;font-size:1.05rem">Sfondo schermata di sospensione</h2>
-<p class="hint">Crea un&apos;immagine 800&times;480 in bianco e nero (dithering) per la cartella SLEEP. Cerca un&apos;immagine, salvala sul PC, poi trascinala qui per ritagliarla.</p>
-<div class="search-row">
-<input id="gquery" type="text" placeholder="Cerca immagini su Google...">
-<button onclick="searchGoogleImages()">Cerca su Google Immagini</button>
+<h2 data-en="New wallpaper">Nuovo sfondo</h2>
+<div id="bgPick">
+<p class="hint" data-en="The picture that stays on the screen while the device is in standby. It is saved in black and white.">&Egrave; l&apos;immagine che resta sullo schermo quando il dispositivo &egrave; in standby. Viene salvata in bianco e nero.</p>
+<div id="imgSearch">
+<div class="search-row"><input id="imgQuery" type="search" placeholder="Cerca un&apos;immagine..." data-en-ph="Search for a picture..." enterkeyhint="search"><button class="btn primary icon" id="imgGo" onclick="searchImages(false)" aria-label="Cerca" data-en-label="Search"></button></div>
+<div class="results" id="imgResults"></div>
+<p class="hint" id="imgNote"></p>
+<button class="btn small" id="imgMore" onclick="searchImages(true)" hidden data-en="More results">Altri risultati</button>
 </div>
-<div class="drop" id="dropBg" onclick="document.getElementById('fileBg').click()">Trascina un&apos;immagine JPEG/PNG qui oppure tocca per selezionarla</div>
-<input id="fileBg" type="file" accept="image/*" style="display:none">
+<p class="hint" id="imgOffline" hidden data-en="Searching needs the Internet, and here you are on the device's own hotspot: choose a picture you already have.">La ricerca ha bisogno di Internet, e qui sei collegato all&apos;hotspot del dispositivo: scegli un&apos;immagine che hai gi&agrave;.</p>
+<div class="row-flex" style="margin-top:.6rem">
+<button class="btn grow" id="bgChoose" onclick="document.getElementById('fileBg').click()"></button>
+<button class="btn grow only-desktop" onclick="toast(L('Copia un\'immagine in un altro sito, poi premi Ctrl+V su questa pagina.','Copy a picture on another site, then press Ctrl+V on this page.'))" id="bgPaste"></button>
+</div>
+<input id="fileBg" type="file" accept="image/*" hidden>
+<p class="hint"><span data-en="Nothing suitable?">Non trovi quella giusta?</span> <a href="#" onclick="searchGoogleImages();return false" data-en="Search on Google">Cerca su Google</a><span data-en=" (opens another tab: copy the picture and paste it here, or save it and choose it)."> (si apre un&apos;altra scheda: copia l&apos;immagine e incollala qui, oppure salvala e sceglila).</span></p>
+</div>
 <div class="stage" id="cropStage">
-<div class="crop-frame" id="cropFrame"><img id="cropImg" alt=""></div>
-<div class="slider-row"><span>Zoom</span><input id="zoomRange" type="range" min="1" max="3" step="0.01" value="1"><button onclick="rotateImage(-90)" title="Ruota antiorario">&#8634;</button><button onclick="rotateImage(90)" title="Ruota orario">&#8635;</button></div>
-<p><button class="primary" onclick="confirmCrop()">Continua</button> <button onclick="cancelCrop()">Annulla</button></p>
+<p class="hint" style="text-align:center;margin:.4rem 0 0" data-en="Drag to move. Pinch or use the slider to zoom.">Trascina per spostare. Pizzica o usa il cursore per ingrandire.</p>
+<div class="device-frame"><div class="crop-frame" id="cropFrame"><img id="cropImg" alt=""><canvas id="cropPreview" width="480" height="800" hidden></canvas></div></div>
+<div class="slider-row"><span>Zoom</span><input id="zoomRange" type="range" min="1" max="4" step="0.01" value="1" aria-label="Zoom"></div>
+<div class="seg"><button id="viewPhoto" class="on" onclick="setBgView(false)" data-en="Photo">Foto</button><button id="viewFinal" onclick="setBgView(true)" data-en="As it will look">Come si vedr&agrave;</button></div>
+<div class="stage-actions"><button class="btn" onclick="cancelCrop()" data-en="Cancel">Annulla</button><button class="btn primary" id="bgSave" onclick="uploadBackground()" data-en="Save wallpaper">Salva sfondo</button></div>
 </div>
-<div class="stage" id="adjustStage">
-<canvas class="bg-preview" id="bgPreview" width="800" height="480"></canvas>
-<div class="slider-row"><span>Luminosit&agrave;</span><input id="brightRange" type="range" min="-100" max="100" step="1" value="0"></div>
-<div class="slider-row"><span>Contrasto</span><input id="contrastRange" type="range" min="-100" max="100" step="1" value="0"></div>
-<label>Nome file <input id="bgName" type="text" maxlength="12" value="SLEEP001.BMP"></label>
-<p><button class="primary" onclick="uploadBackground()">Carica come sfondo</button> <button onclick="backToCrop()">Indietro</button></p>
-</div>
-<pre id="bgStatus" class="hint"></pre>
+<p id="bgStatus" class="hint" role="status"></p>
 </div>
 <div class="card">
-<h2 style="margin:0 0 .5rem;font-size:1.05rem">Sfondi sul dispositivo</h2>
-<div class="book-grid" id="sleepGallery"><p class="hint">Caricamento...</p></div>
+<h2 data-en="Wallpapers on the device">Sfondi sul dispositivo</h2>
+<div class="sleep-grid" id="sleepGallery"></div>
 </div>
 </section>
 
 <section id="tab-files" class="tabpanel" hidden>
-<div class="card">
-<div class="crumbs" id="crumbs"></div>
-<div class="toolbar">
-<input id="search" type="search" placeholder="Cerca nella cartella..." oninput="renderTable()">
-<button onclick="newFolder()">+ Cartella</button>
+<div class="card flush" id="filesCard">
+<div class="bar">
+<button class="btn icon" id="fxUp" onclick="fxGoUp()" aria-label="Cartella superiore" data-en-label="Parent folder"></button>
+<div class="path" id="fxPath"></div>
+<input class="only-desktop" id="fxSearch" type="search" style="width:240px" oninput="fxRender()">
+<button class="btn icon only-phone" id="fxSearchBtn" onclick="fxToggleSearch()" aria-label="Cerca" data-en-label="Search"></button>
+<button class="btn primary only-desktop" id="fxUploadD" onclick="document.getElementById('fileFx').click()"></button>
+<button class="btn only-desktop" id="fxNewD" onclick="fxNewFolder()"></button>
 </div>
-<div class="bulk" id="bulk"><span id="bulkCount">0 selezionati</span><button class="danger" onclick="bulkDelete()">Elimina selezionati</button><button onclick="clearSelection()">Annulla</button></div>
-<table><thead><tr><th style="width:2rem"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th><th>Nome</th><th>Tipo</th><th>Dimensione</th><th>Azioni</th></tr></thead><tbody id="rows"></tbody></table>
+<div class="bar only-phone" id="fxSearchBar" hidden><input class="grow" id="fxSearchP" type="search" oninput="fxRender()"></div>
+<div class="bar only-phone">
+<button class="btn primary" id="fxUploadP" onclick="document.getElementById('fileFx').click()"></button>
+<button class="btn" id="fxNewP" onclick="fxNewFolder()"></button>
+<span class="grow"></span>
+<button class="btn icon" id="fxMoreBtn" onclick="fxToolbarMenu(this)" aria-label="Altro" data-en-label="More"></button>
 </div>
-<div class="card">
-<div class="drop" id="drop" onclick="document.getElementById('file').click()">Trascina i file qui oppure tocca per selezionarli<div class="hint">I file mantengono il loro nome</div></div>
-<input id="file" type="file" multiple style="display:none">
-<div class="queue" id="queue"></div>
+<input id="fileFx" type="file" multiple hidden>
+<div class="queue" id="queueFx" style="padding:0 .6rem"></div>
+<div class="explorer">
+<div class="side" id="fxSide"></div>
+<div>
+<div class="thead" id="fxHead"></div>
+<div class="rows" id="fxRows"></div>
+<div class="sys-line" id="fxSys" hidden></div>
+<div class="dropzone-desktop" id="fxDropHint"></div>
+</div>
+</div>
+<div class="statusbar"><span id="fxStatus"></span><span data-en="Double click opens · F2 renames · Del deletes · right click for the menu">Doppio clic apre &middot; F2 rinomina &middot; Canc elimina &middot; tasto destro per il menu</span></div>
 </div>
 </section>
 
 <section id="tab-wifi" class="tabpanel" hidden>
-<div class="card" id="wifiScanCard">
-<h2 style="margin:0 0 .5rem;font-size:1.05rem">Reti vicine</h2>
-<ul id="wifiScan"><li class="hint">Scansione...</li></ul>
+<div class="card">
+<h2 data-en="Saved networks">Reti salvate</h2>
+<div id="wifiSaved"></div>
+<button class="btn" style="margin-top:.6rem" onclick="wifiOpenJoin('',false)" data-en="Add a network by name">Aggiungi una rete scrivendo il nome</button>
 </div>
 <div class="card">
-<h2 style="margin:0 0 .5rem;font-size:1.05rem">Reti salvate</h2>
-<ul id="wifiSaved"><li class="hint">Caricamento...</li></ul>
-<p class="hint" id="wifiHint" hidden>Sei collegato via LAN: aggiungere o cambiare una rete disconnette temporaneamente il dispositivo per provarla. Se la nuova rete funziona, il dispositivo passa a quella (raggiungibile a un indirizzo diverso); se fallisce, torna automaticamente alla rete attuale.</p>
-</div>
-<div class="card" id="wifiJoinCard" style="display:none">
-<h2 id="wifiJoinTitle" style="margin:0 0 .5rem;font-size:1.05rem">Aggiungi rete</h2>
-<input id="wifiJoinSsid" type="text" placeholder="Nome rete">
-<input id="wifiJoinPassword" type="password" placeholder="Password (vuota se aperta)">
-<p class="hint" id="wifiJoinWarning" hidden>Il dispositivo si disconnettera&apos; da questa rete per provare quella nuova: se riesce dovrai raggiungerlo a un indirizzo diverso, se fallisce torna qui da solo.</p>
-<p><button class="primary" onclick="wifiSubmitJoin()">Connetti e salva</button> <button onclick="wifiCloseJoin()">Annulla</button></p>
-<pre id="wifiJoinStatus" class="hint"></pre>
-</div>
-<div class="card" id="wifiForgetCard" style="display:none">
-<h2 style="margin:0 0 .5rem;font-size:1.05rem">Dimenticare la rete?</h2>
-<p id="wifiForgetText" class="hint"></p>
-<p><button class="danger" onclick="wifiConfirmForget()">S&igrave;, dimentica</button> <button onclick="wifiCancelForget()">Annulla</button></p>
+<h2 data-en="Networks nearby">Reti vicine</h2>
+<div id="wifiScan"></div>
+<p class="hint" id="wifiLanNote" hidden data-en="Nearby networks show only while you are on the device's own hotspot. From here you can still add one by typing its name: the device leaves this network to try it, and comes back by itself if it fails.">Le reti vicine si vedono solo quando sei collegato all&apos;hotspot del dispositivo. Da qui puoi comunque aggiungerne una scrivendo il nome: il dispositivo lascia questa rete per provarla, e ci torna da solo se non riesce.</p>
 </div>
 </section>
 </div>
+<div id="toast" hidden role="status"></div>
 <script>
-let current='/',entries=[],selected=new Set(),activeTab='books',books=[];
-function status(t){document.getElementById('status').textContent=t}
+// --- base ---
+// The page is written in Italian and carries its English beside it: static
+// text in `data-en` attributes, everything built here through L(it, en).
+// The language is the device's own, read from /api/status.
+let LANG='it',activeTab='books',portalHotspot=false,linkUp=true;
+function L(it,en){return LANG==='en'?en:it}
+function $(id){return document.getElementById(id)}
 function enc(s){return encodeURIComponent(s)}
-function join(n){return (current==='/'?'/':current+'/')+n}
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
-function formatBytes(n){if(n===undefined||n===null)return '--';const u=['B','KB','MB','GB'];let i=0,v=n;while(v>=1024&&i<u.length-1){v/=1024;i++}return (i===0?v:v.toFixed(1))+' '+u[i]}
-async function api(url,opt){let r=await fetch(url,opt);let t=await r.text();if(!r.ok)throw new Error(t||('HTTP '+r.status));return t}
-async function fetchSpace(){try{let s=JSON.parse(await api('/api/status'));document.getElementById('space').textContent='Spazio libero: '+formatBytes(s.free_bytes)+' / '+formatBytes(s.total_bytes)}catch(e){}}
+function formatBytes(n){
+  if(n===undefined||n===null)return '--';
+  const u=['B','KB','MB','GB'];let i=0,v=n;
+  while(v>=1024&&i<u.length-1){v/=1024;i++}
+  return (i===0?String(v):v.toLocaleString(LANG,{minimumFractionDigits:1,maximumFractionDigits:1}))+' '+u[i];
+}
+function formatDate(seconds,short){
+  if(!seconds)return '';
+  let d=new Date(seconds*1000);
+  try{
+    return short?d.toLocaleDateString(LANG,{day:'numeric',month:'short'}):d.toLocaleString(LANG,{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  }catch(e){return d.toISOString().slice(0,10)}
+}
+function parentOf(p){let i=p.lastIndexOf('/');return i<=0?'/':p.slice(0,i)}
+function baseName(p){return p.slice(p.lastIndexOf('/')+1)}
+function joinPath(dir,name){return (dir==='/'?'/':dir+'/')+name}
+const ICON={
+ folder:'<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+ file:'<svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M14 3v5h5"/></svg>',
+ book:'<svg viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>',
+ img:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M21 16l-5-5-8 8"/></svg>',
+ music:'<svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
+ more:'<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="19" r="1.2"/></svg>',
+ up:'<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+ plus:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+ upload:'<svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>',
+ down:'<svg viewBox="0 0 24 24"><path d="M12 4v12M6 10l6 6 6-6M4 20h16"/></svg>',
+ move:'<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M10 13h6M13 10l3 3-3 3"/></svg>',
+ edit:'<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
+ trash:'<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+ check:'<svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>',
+ search:'<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>',
+ paste:'<svg viewBox="0 0 24 24"><rect x="6" y="5" width="12" height="16" rx="2"/><path d="M9 5V3h6v2"/></svg>',
+ x:'<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+ reload:'<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg>',
+ open:'<svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+ select:'<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12l3 3 5-6"/></svg>',
+ eye:'<svg viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>'};
+async function api(url,opt){
+  let r;
+  try{r=await fetch(url,opt)}catch(e){noteLinkDown();throw e}
+  let t=await r.text();
+  if(!r.ok)throw new Error(t||('HTTP '+r.status));
+  return t;
+}
 async function ensureDir(path){try{await api('/api/list?path='+enc(path))}catch(e){try{await api('/api/mkdir?path='+enc(path),{method:'POST'})}catch(e2){}}}
 
-// --- schede ---
-function showTab(name){
-  document.querySelectorAll('.tabpanel').forEach(el=>{el.hidden=true});
-  document.querySelectorAll('.tab').forEach(el=>el.classList.toggle('active',el.dataset.tab===name));
-  document.getElementById('tab-'+name).hidden=false;
-  activeTab=name;
-  if(name==='books')refreshBooks();
-  else if(name==='wallpaper')refreshSleepGallery();
-  else if(name==='files')loadList(current);
-  else if(name==='wifi')wifiRefreshStatus().then(()=>{wifiLoadSaved();wifiLoadScan()});
-}
-function refreshActiveTab(){showTab(activeTab);fetchSpace()}
-function initApp(){
-  fetchSpace();
-  ensureDir('/BOOKS');
-  showTab('books');
+// What the device or the browser answered, in the user's words. The device
+// answers in English and with the system's own messages; anything not known
+// here is shown as it came.
+const MAX_UPLOAD_BYTES=64*1024*1024;
+function tooBigText(){return L('Il file supera i 64 MB che si possono caricare da qui. Usa il cavo USB: sul dispositivo, Carica, poi Cavo USB.','The file is over the 64 MB that can be uploaded from here. Use the USB cable: on the device, Upload, then USB cable.')}
+function explainError(e){
+  let raw=String(e&&e.message!==undefined?e.message:e);
+  const known=[
+    [/failed to fetch|networkerror|load failed|network error/i,L('Il dispositivo non risponde. Controlla che sul dispositivo sia ancora aperta la schermata Carica, Wi-Fi.','The device does not answer. Check that the Upload, Wi-Fi screen is still open on the device.')],
+    [/upload exceeds/i,tooBigText()],
+    [/protected configuration file/i,L('È un file di impostazioni del dispositivo: da qui non si può toccare.','This is one of the device\'s settings files: it cannot be changed from here.')],
+    [/name not allowed/i,L('Questo nome non si può usare sulla scheda: niente / : * ? " < > | né barre rovesciate, e niente punti o spazi alla fine.','This name cannot be used on the card: no / : * ? " < > | or backslashes, and no dots or spaces at the end.')],
+    [/path exceeds/i,L('Il percorso è troppo lungo: accorcia il nome del file o della cartella.','The path is too long: shorten the name of the file or folder.')],
+    [/path traversal|not UTF-8|top folder/i,L('Percorso non valido.','Invalid path.')],
+    [/another site/i,L("Richiesta rifiutata: apri la pagina dall'indirizzo mostrato sul dispositivo.",'Request refused: open the page from the address shown on the device.')],
+    [/cover not cached/i,L('La copertina non è ancora pronta.','The cover is not ready yet.')],
+    [/not empty|os error (39|66|90)\b/i,L('La cartella non è vuota: elimina prima quello che contiene.','The folder is not empty: delete what it holds first.')],
+    [/no such file|os error 2\b/i,L('File o cartella non trovati: forse sono già stati spostati o eliminati.','File or folder not found: it may already have been moved or deleted.')],
+    [/already exists|file exists|os error 17\b/i,L('Esiste già un elemento con questo nome.','Something with this name is already there.')],
+    [/no space|os error 28\b/i,L('La scheda di memoria è piena.','The memory card is full.')]
+  ];
+  for(const [pattern,text] of known){if(pattern.test(raw))return text}
+  return L('Errore: ','Error: ')+raw;
 }
 
-// --- caricamento file: una fabbrica condivisa tra la scheda Libri e la
-// Gestione file, ciascuna con la propria coda e cartella di destinazione.
+// --- messaggi: una riga in basso, vicino al pollice, che sparisce da sola ---
+let toastTimer=null;
+function toast(text,opts){
+  opts=opts||{};
+  let el=$('toast');
+  el.className=opts.error?'error':'';
+  el.innerHTML='<span>'+escapeHtml(text)+'</span>'+(opts.action?'<button id="toastAction">'+escapeHtml(opts.actionLabel)+'</button>':'');
+  el.hidden=false;
+  if(opts.action)$('toastAction').onclick=function(){hideToast();opts.action()};
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(hideToast,opts.ms||(opts.error?8000:4000));
+}
+function hideToast(){clearTimeout(toastTimer);$('toast').hidden=true}
+function status(text){toast(text)}
+// With the device gone the banner at the top already says so, once.
+function fail(e){if(linkUp)toast(explainError(e),{error:true})}
+
+// --- collegamento: si vede se il dispositivo risponde, e la pagina aperta e
+// usata tiene viva la sessione (`alive=1`); una pagina dimenticata no, cosi
+// il dispositivo la chiude da solo come prima.
+let lastTouch=Date.now();
+['pointerdown','keydown','wheel'].forEach(ev=>document.addEventListener(ev,()=>{lastTouch=Date.now()},{passive:true}));
+function showLink(up){
+  linkUp=up;
+  $('linkPill').className='pill '+(up?'on':'off');
+  $('linkText').textContent=up?L('Collegato','Connected'):L('Non collegato','Not connected');
+  $('offline').hidden=up;
+  $('space').hidden=!up;
+}
+function noteLinkDown(){showLink(false)}
+function showSpace(bytes){$('spaceNum').textContent=formatBytes(bytes);$('spaceWord').textContent=L(' liberi',' free');$('space').title=L('Spazio libero sulla scheda','Free space on the card')}
+async function readStatus(alive){
+  let r=await fetch('/api/status'+(alive?'?alive=1':''));
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  let s=JSON.parse(await r.text());
+  portalHotspot=!!s.hotspot;
+  showSpace(s.free_bytes);
+  showLink(true);
+  return s;
+}
+async function pollLink(){
+  if(document.visibilityState!=='visible')return;
+  try{await readStatus(Date.now()-lastTouch<10*60*1000)}catch(e){showLink(false)}
+}
+function fetchSpace(){readStatus(false).catch(()=>{})}
+async function retryLink(){try{await readStatus(true);refreshActiveTab()}catch(e){showLink(false)}}
+
+// --- finestre: testo da chiedere, cartella da scegliere, anteprima ---
+let sheetClose=null;
+function openSheet(html,onClose){
+  closeSheet();
+  let shade=document.createElement('div');
+  shade.id='shade';
+  shade.innerHTML='<div class="sheet" role="dialog" aria-modal="true">'+html+'</div>';
+  shade.addEventListener('pointerdown',e=>{if(e.target===shade)closeSheet()});
+  document.body.appendChild(shade);
+  sheetClose=onClose||null;
+  return shade.firstChild;
+}
+function closeSheet(){
+  let shade=$('shade');
+  if(!shade)return;
+  shade.remove();
+  let done=sheetClose;sheetClose=null;
+  if(done)done();
+}
+function askText(title,value,okLabel,note){
+  return new Promise(resolve=>{
+    let answered=false;
+    let sheet=openSheet('<h2>'+escapeHtml(title)+'</h2>'+(note?'<p class="hint">'+escapeHtml(note)+'</p>':'')+'<input type="text" id="askInput" autocomplete="off"><div class="actions"><button class="btn" id="askNo">'+L('Annulla','Cancel')+'</button><button class="btn primary" id="askOk">'+escapeHtml(okLabel)+'</button></div>',()=>{if(!answered)resolve(null)});
+    let input=sheet.querySelector('#askInput');
+    input.value=value||'';
+    let ok=()=>{let v=input.value.trim();if(!v)return;answered=true;closeSheet();resolve(v)};
+    sheet.querySelector('#askOk').onclick=ok;
+    sheet.querySelector('#askNo').onclick=closeSheet;
+    input.addEventListener('keydown',e=>{if(e.key==='Enter')ok()});
+    input.focus();
+    let dot=input.value.lastIndexOf('.');
+    input.setSelectionRange(0,dot>0?dot:input.value.length);
+  });
+}
+function askConfirm(title,text,okLabel){
+  return new Promise(resolve=>{
+    let answered=false;
+    let sheet=openSheet('<h2>'+escapeHtml(title)+'</h2><p class="hint">'+escapeHtml(text)+'</p><div class="actions"><button class="btn" id="askNo">'+L('Annulla','Cancel')+'</button><button class="btn danger" id="askOk">'+escapeHtml(okLabel)+'</button></div>',()=>{if(!answered)resolve(false)});
+    sheet.querySelector('#askOk').onclick=()=>{answered=true;closeSheet();resolve(true)};
+    sheet.querySelector('#askNo').onclick=closeSheet;
+  });
+}
+
+// --- menu: le azioni di una riga, sotto il dito o sotto il puntatore ---
+function closeMenu(){let m=document.querySelector('.menu');if(m)m.remove()}
+function openMenu(at,items){
+  closeMenu();
+  let menu=document.createElement('div');
+  menu.className='menu';
+  menu.setAttribute('role','menu');
+  for(const item of items){
+    if(item==='-'){menu.appendChild(document.createElement('hr'));continue}
+    if(item.label&&!item.run){let lab=document.createElement('div');lab.className='lab';lab.textContent=item.label;menu.appendChild(lab);continue}
+    let b=document.createElement('button');
+    b.setAttribute('role','menuitem');
+    if(item.danger)b.className='del';
+    b.innerHTML=(item.icon?ICON[item.icon]:'<svg viewBox="0 0 24 24"></svg>')+'<span>'+escapeHtml(item.label)+'</span>';
+    b.onclick=function(){closeMenu();item.run()};
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  let x,y;
+  if(at&&at.getBoundingClientRect){let r=at.getBoundingClientRect();x=r.right-menu.offsetWidth;y=r.bottom+4}else{x=at.x;y=at.y}
+  x=Math.max(8,Math.min(x,innerWidth-menu.offsetWidth-8));
+  if(y+menu.offsetHeight>innerHeight-8)y=Math.max(8,innerHeight-menu.offsetHeight-8);
+  menu.style.left=x+'px';menu.style.top=y+'px';
+}
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('.menu'))closeMenu()},true);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeMenu();closeSheet()}});
+window.addEventListener('scroll',closeMenu,{passive:true});
+
+// --- elimina con «Annulla»: l'elemento sparisce subito dall'elenco, ma viene
+// eliminato davvero solo dopo qualche secondo, o quando si lascia la pagina.
+let pendingDeletes=new Map(),pendingTimer=null,pendingAfter=null;
+function isPendingDelete(path){return pendingDeletes.has(path)}
+function deleteWithUndo(items,after){
+  // items: [{path, folder}]
+  flushDeletes();
+  for(const item of items)pendingDeletes.set(item.path,item);
+  pendingAfter=after;
+  if(after)after();
+  let label=items.length===1?L('«'+baseName(items[0].path)+'» eliminato','"'+baseName(items[0].path)+'" deleted'):L(items.length+' elementi eliminati',items.length+' items deleted');
+  toast(label,{ms:6000,actionLabel:L('Annulla','Undo'),action:function(){clearTimeout(pendingTimer);pendingDeletes.clear();if(after)after()}});
+  pendingTimer=setTimeout(flushDeletes,6000);
+}
+function deleteUrl(item){return '/api/delete?path='+enc(item.path)+(item.folder?'&recursive=1':'')}
+async function flushDeletes(){
+  clearTimeout(pendingTimer);
+  if(pendingDeletes.size===0)return;
+  let items=Array.from(pendingDeletes.values()),after=pendingAfter,failed=null;
+  for(const item of items){
+    try{await api(deleteUrl(item),{method:'POST'})}catch(e){failed=e}
+    pendingDeletes.delete(item.path);
+  }
+  if(failed)fail(failed);
+  fetchSpace();
+  if(after)after(true);
+}
+// Leaving the page keeps the user's word: what was deleted goes.
+window.addEventListener('pagehide',()=>{for(const item of pendingDeletes.values()){try{fetch(deleteUrl(item),{method:'POST',keepalive:true})}catch(e){}}pendingDeletes.clear()});
+
+// --- caricamento file: una fabbrica condivisa, ciascuna scheda con la sua
+// coda e la sua cartella di destinazione.
 // Long file names are kept: only the characters FAT cannot store are
 // replaced, and the trailing dots and spaces it would silently drop.
 function safeName(name){let s=String(name).replace(/[\\\/:*?"<>|\u0000-\u001f]/g,'_').replace(/[. ]+$/,'').trim();return s.slice(0,200)||'file'}
+function queueStateText(state){return {queued:L('in coda','queued'),uploading:L('caricamento','uploading'),done:L('caricato','uploaded')}[state]}
 function createUploader(opts){
   let queue=[],busy=false;
   function render(){
     let html='';
     for(const item of queue){
-      html+='<div class="qitem '+item.status+'" data-id="'+item.id+'"><span class="name">'+escapeHtml(item.file.name)+'</span>'+(item.status==='queued'?'<input type="text" value="'+escapeHtml(item.name)+'" onchange="'+opts.varName+'.rename(\''+item.id+'\',this.value)">':'<span class="name">'+escapeHtml(item.name)+'</span>')+'<div class="bar"><i style="width:'+item.progress+'%"></i></div><span class="hint">'+(item.status==='error'?item.error:item.status)+'</span>'+(item.status==='queued'?'<button onclick="'+opts.varName+'.remove(\''+item.id+'\')">x</button>':'')+'</div>';
+      html+='<div class="qitem '+item.status+'"><span class="name">'+escapeHtml(item.name)+'</span><div class="bar"><i style="width:'+item.progress+'%"></i></div><span class="state">'+escapeHtml(item.status==='error'?item.error:queueStateText(item.status))+'</span></div>';
     }
-    document.getElementById(opts.containerId).innerHTML=html;
+    $(opts.containerId).innerHTML=html;
   }
-  function handleFiles(fileList){
-    let used=opts.getExisting();
+  // `dir` overrides the uploader's own folder for this batch, `existing`
+  // the names already in it.
+  function handleFiles(fileList,dir,existing){
+    let target=dir||opts.getDir();
+    let used=existing||opts.getExisting(target);
+    queue=queue.filter(q=>q.status==='queued'||q.status==='uploading');
     for(const file of Array.from(fileList)){
       let name=safeName(file.name),base=name,i=1;
       while(used.has(name.toLowerCase())){let dot=base.lastIndexOf('.');let stem=dot<=0?base:base.slice(0,dot);let ext=dot<=0?'':base.slice(dot);name=stem+' ('+i+')'+ext;i++}
       used.add(name.toLowerCase());
-      queue.push({file:file,name:name,status:'queued',progress:0,error:'',id:Math.random().toString(36).slice(2)});
+      // Refused here rather than by the device after 64 MB went through.
+      // So is a path longer than the device accepts (128 bytes).
+      let refused=file.size>MAX_UPLOAD_BYTES?tooBigText():(new TextEncoder().encode(joinPath(target,name)).length>128?explainError('path exceeds'):'');
+      queue.push({file:file,name:name,dir:target,status:refused?'error':'queued',progress:0,error:refused});
     }
     render();
     process();
   }
-  function rename(id,value){let item=queue.find(q=>q.id===id);if(item)item.name=safeName(value)}
-  function remove(id){queue=queue.filter(q=>!(q.id===id&&q.status==='queued'));render()}
   function uploadOne(item){
     return new Promise((resolve,reject)=>{
       let xhr=new XMLHttpRequest();
-      let dir=opts.getDir();
-      let path=(dir==='/'?'/':dir+'/')+item.name;
-      let url='/api/upload?path='+enc(path);
-      xhr.open('POST',url);
+      xhr.open('POST','/api/upload?path='+enc(joinPath(item.dir,item.name)));
       xhr.upload.onprogress=function(e){if(e.lengthComputable){item.progress=Math.round(e.loaded/e.total*100);render()}};
       xhr.onload=function(){if(xhr.status>=200&&xhr.status<300)resolve();else reject(new Error(xhr.responseText||('HTTP '+xhr.status)))};
-      xhr.onerror=function(){reject(new Error('errore di rete'))};
+      xhr.onerror=function(){reject(new Error('Failed to fetch'))};
       xhr.send(item.file);
     });
   }
@@ -616,26 +1022,35 @@ function createUploader(opts){
     while(true){
       let item=queue.find(q=>q.status==='queued');
       if(!item)break;
-      any=true;item.status='uploading';render();
+      any=true;item.status='uploading';render();lastTouch=Date.now();
       try{await uploadOne(item);item.status='done';item.progress=100}
-      catch(e){item.status='error';item.error=e.message||'errore'}
+      catch(e){item.status='error';item.error=explainError(e)}
       if(item.status==='done'&&opts.onItemDone){
         try{await opts.onItemDone(item)}catch(e){/* best-effort, never fails the upload itself */}
       }
       render();
     }
     busy=false;
+    // What went through leaves the queue after a moment; what did not stays,
+    // with its reason, until the next batch.
+    setTimeout(()=>{if(!busy){queue=queue.filter(q=>q.status!=='done');render()}},4000);
     if(any&&opts.onDone)opts.onDone();
   }
-  return {handleFiles:handleFiles,rename:rename,remove:remove};
+  return {handleFiles:handleFiles};
 }
 function wireDropZone(zoneId,inputId,uploader){
-  let zone=document.getElementById(zoneId);
+  let zone=$(zoneId);
   ['dragover','dragenter'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('drag')}));
   ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('drag')}));
   zone.addEventListener('drop',e=>{if(e.dataTransfer.files.length)uploader.handleFiles(e.dataTransfer.files)});
-  document.getElementById(inputId).addEventListener('change',e=>{if(e.target.files.length)uploader.handleFiles(e.target.files);e.target.value=''});
+  $(inputId).addEventListener('change',e=>{if(e.target.files.length)uploader.handleFiles(e.target.files);e.target.value=''});
 }
+function downloadPaths(paths){
+  // One after the other: a browser asked for several files at once stops
+  // after the first.
+  paths.forEach((p,i)=>setTimeout(()=>{let a=document.createElement('a');a.href='/api/download?path='+enc(p);a.download=baseName(p);document.body.appendChild(a);a.click();a.remove()},i*700));
+}
+
 // --- copertina libro generata nel browser: lo stesso principio gia usato
 // per gli sfondi (il decoder JPEG/PNG del browser fa il lavoro pesante, non
 // l'ESP32) applicato agli EPUB. Un tentativo lato
@@ -787,139 +1202,119 @@ async function pregenerateBookCoverClientSide(item){
   await ensureDir(COVER_CACHE_DIR);
   await api('/api/upload?path='+enc(COVER_CACHE_DIR+'/'+fingerprintHex+'.THB'),{method:'POST',body:new Blob([thb])});
 }
-const queueUploader=createUploader({containerId:'queue',varName:'queueUploader',getDir:()=>current,getExisting:()=>new Set(entries.map(e=>e.name.toLowerCase())),onDone:()=>{status('Caricamento completato');loadList(current)}});
-const booksUploader=createUploader({containerId:'queueBooks',varName:'booksUploader',getDir:()=>'/BOOKS',getExisting:()=>new Set(books.map(b=>b.path.split('/').pop().toLowerCase())),onItemDone:pregenerateBookCoverClientSide,onDone:()=>{status('Libri caricati');refreshBooks();fetchSpace()}});
-wireDropZone('drop','file',queueUploader);
-wireDropZone('dropBooks','fileBooks',booksUploader);
 
-// --- libreria libri: le copertine arrivano gia pronte dal browser (vedi
+// --- libri: le copertine arrivano gia pronte dal browser (vedi
 // pregenerateBookCoverClientSide sopra), quindi sia questa pagina che la
-// schermata Library del dispositivo le trovano gia in cache.
+// schermata Libreria del dispositivo le trovano gia in cache.
+let books=[];
+const booksUploader=createUploader({containerId:'queueBooks',getDir:()=>'/BOOKS',getExisting:()=>new Set(books.map(b=>baseName(b.path).toLowerCase())),onItemDone:pregenerateBookCoverClientSide,onDone:()=>{status(L('Libri caricati','Books uploaded'));refreshBooks();fetchSpace()}});
+wireDropZone('dropBooks','fileBooks',booksUploader);
 async function refreshBooks(){
   try{
-    let t=await api('/api/books');
-    books=JSON.parse(t);
+    await ensureDir('/BOOKS');
+    books=JSON.parse(await api('/api/books'));
     renderBooks();
-    document.getElementById('bookCount').textContent=books.length+(books.length===1?' libro':' libri');
-  }catch(e){document.getElementById('bookGrid').innerHTML='<p class="hint">Errore: '+escapeHtml(e.message)+'</p>'}
+  }catch(e){$('bookGrid').innerHTML='<p class="hint">'+escapeHtml(explainError(e))+'</p>'}
 }
 function renderBooks(){
-  let q=document.getElementById('bookSearch').value.trim().toLowerCase();
-  let visible=books.filter(b=>!q||b.title.toLowerCase().includes(q));
+  let q=$('bookSearch').value.trim().toLowerCase();
+  let present=books.filter(b=>!isPendingDelete(b.path));
+  let visible=present.filter(b=>!q||b.title.toLowerCase().includes(q));
   let html='';
   for(const b of visible){
-    let coverUrl='/api/cover?path='+enc(b.path);
-    html+='<div class="book-card"><div class="book-cover"><img src="'+coverUrl+'" alt="" loading="lazy" onerror="this.parentElement.classList.add(\'empty\')"></div><div class="book-title">'+escapeHtml(b.title)+'</div><div class="hint">'+b.format+' &middot; '+formatBytes(b.size)+'</div><div class="actions"><a href="/api/download?path='+enc(b.path)+'">Scarica</a><button class="danger" data-p="'+escapeHtml(b.path)+'" onclick="deleteBook(this.dataset.p)">Elimina</button></div></div>';
+    let p=escapeHtml(b.path);
+    html+='<div class="book-card"><div class="book-cover" data-empty="'+L('Nessuna copertina','No cover')+'"><img src="/api/cover?path='+enc(b.path)+'" alt="" loading="lazy" onerror="this.parentElement.classList.add(\'empty\')"></div><div class="book-title">'+escapeHtml(b.title)+'</div><div class="hint" style="margin:0">'+escapeHtml(b.format)+' &middot; '+formatBytes(b.size)+'</div><div class="card-actions"><button class="btn" data-p="'+p+'" onclick="downloadPaths([this.dataset.p])">'+L('Scarica','Download')+'</button><button class="btn danger" data-p="'+p+'" onclick="deleteBook(this.dataset.p)">'+L('Elimina','Delete')+'</button></div></div>';
   }
-  document.getElementById('bookGrid').innerHTML=html||'<p class="hint">Nessun libro caricato. Trascina un file EPUB o TXT qui sopra per iniziare.</p>';
+  $('bookGrid').innerHTML=html||'<p class="hint">'+(present.length?L('Nessun libro con questo titolo.','No book with this title.'):L('Nessun libro. Tocca il riquadro qui sopra per caricare i tuoi EPUB o TXT.','No books yet. Tap the box above to upload your EPUB or TXT files.'))+'</p>';
+  $('bookCount').textContent=present.length+' '+(present.length===1?L('libro','book'):L('libri','books'));
 }
-async function deleteBook(path){
-  if(!confirm('Eliminare questo libro dal dispositivo?'))return;
-  try{await api('/api/delete?path='+enc(path),{method:'POST'});status('Libro eliminato');refreshBooks();fetchSpace()}catch(e){status('Errore: '+e.message)}
+function deleteBook(path){deleteWithUndo([{path:path,folder:false}],done=>{if(done)refreshBooks();else renderBooks()})}
+
+// --- audiolibri: un file MP3 e un titolo; una cartella di MP3 e un titolo
+// con le sue tracce (come li legge il dispositivo, vedi `audiobook.rs`).
+let audioEntries=[],audioInfo=new Map();
+const audioUploader=createUploader({containerId:'queueAudio',getDir:()=>'/AUDIO',getExisting:()=>new Set(),onDone:()=>{status(L('Audiolibro caricato','Audiobook uploaded'));refreshAudio();fetchSpace()}});
+function commonTitle(files){
+  let names=files.map(f=>f.name.replace(/\.mp3$/i,''));
+  let prefix=names[0];
+  for(const n of names){while(prefix&&!n.startsWith(prefix))prefix=prefix.slice(0,-1)}
+  prefix=prefix.replace(/[\s._\-–(\[#]*\d*$/,'').replace(/[\s._\-–(\[#]+$/,'').trim();
+  return prefix.length>=3?prefix:L('Audiolibro','Audiobook');
+}
+async function audioFilesChosen(list){
+  let files=Array.from(list).filter(f=>/\.mp3$/i.test(f.name));
+  if(!files.length){toast(L('Servono file MP3.','MP3 files are needed.'),{error:true});return}
+  if(files.length===1){
+    audioUploader.handleFiles(files,'/AUDIO',new Set(audioEntries.map(e=>e.name.toLowerCase())));
+    return;
+  }
+  let title=await askText(L('Titolo dell\'audiolibro','Title of the audiobook'),commonTitle(files),L('Carica','Upload'),L(files.length+' tracce, in una cartella con questo nome.',files.length+' tracks, in a folder of this name.'));
+  if(!title)return;
+  let dir='/AUDIO/'+safeName(title);
+  await ensureDir('/AUDIO');
+  await ensureDir(dir);
+  let existing=new Set();
+  try{existing=new Set(JSON.parse(await api('/api/list?path='+enc(dir))).map(e=>e.name.toLowerCase()))}catch(e){fail(e);return}
+  files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+  audioUploader.handleFiles(files,dir,existing);
+}
+(function(){
+  let zone=$('dropAudio');
+  ['dragover','dragenter'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('drag')}));
+  ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('drag')}));
+  zone.addEventListener('drop',e=>{if(e.dataTransfer.files.length)audioFilesChosen(e.dataTransfer.files)});
+  $('fileAudio').addEventListener('change',e=>{if(e.target.files.length)audioFilesChosen(e.target.files);e.target.value=''});
+})();
+async function refreshAudio(){
+  try{
+    await ensureDir('/AUDIO');
+    audioEntries=JSON.parse(await api('/api/list?path=/AUDIO')).filter(e=>e.kind==='folder'||/\.mp3$/i.test(e.name));
+    audioEntries.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}));
+    renderAudio();
+    // One folder at a time: the device answers a single request comfortably.
+    for(const e of audioEntries){
+      if(e.kind!=='folder'||activeTab!=='audio')continue;
+      try{
+        let tracks=JSON.parse(await api('/api/list?path='+enc('/AUDIO/'+e.name))).filter(t=>t.kind==='file'&&/\.mp3$/i.test(t.name));
+        audioInfo.set(e.name,{count:tracks.length,size:tracks.reduce((sum,t)=>sum+t.size,0)});
+        renderAudio();
+      }catch(err){}
+    }
+  }catch(e){$('audioRows').innerHTML='<div class="empty-note">'+escapeHtml(explainError(e))+'</div>'}
+}
+function renderAudio(){
+  let html='';
+  for(const e of audioEntries){
+    let path='/AUDIO/'+e.name;
+    if(isPendingDelete(path))continue;
+    let folder=e.kind==='folder',info=audioInfo.get(e.name);
+    let meta=folder?(info?info.count+' '+(info.count===1?L('traccia','track'):L('tracce','tracks'))+' · '+formatBytes(info.size):'...'):'1 file · '+formatBytes(e.size);
+    html+='<div class="row" tabindex="0" data-p="'+escapeHtml(path)+'" data-f="'+(folder?1:0)+'" onclick="audioMenu(this,this.querySelector(\'.more\'))"><span class="ic">'+ICON.music+'</span><div class="nm"><div>'+escapeHtml(folder?e.name:e.name.replace(/\.mp3$/i,''))+'</div><div class="meta" style="display:block">'+escapeHtml(meta)+'</div></div><button class="more" aria-label="'+L('Azioni','Actions')+'">'+ICON.more+'</button></div>';
+  }
+  $('audioRows').innerHTML=html||'<div class="empty-note">'+L('Nessun audiolibro. Tocca il riquadro qui sopra per caricare i file MP3.','No audiobooks yet. Tap the box above to upload MP3 files.')+'</div>';
+}
+function audioMenu(row,anchor){
+  let path=row.dataset.p,folder=row.dataset.f==='1';
+  let items=[];
+  if(folder)items.push({icon:'open',label:L('Apri in File','Open in Files'),run:()=>{showTab('files');fxOpen(path)}});
+  else items.push({icon:'down',label:L('Scarica','Download'),run:()=>downloadPaths([path])});
+  items.push({icon:'edit',label:L('Rinomina','Rename'),run:()=>renameEntry(path,refreshAudio)});
+  items.push('-');
+  items.push({icon:'trash',label:L('Elimina','Delete'),danger:true,run:()=>deleteWithUndo([{path:path,folder:folder}],done=>{if(done)refreshAudio();else renderAudio()})});
+  openMenu(anchor,items);
+}
+// Rename, shared by every list. The extension stays unless the user types
+// another one.
+async function renameEntry(path,after){
+  let old=baseName(path);
+  let name=await askText(L('Rinomina','Rename'),old,L('Rinomina','Rename'));
+  if(!name)return;
+  let safe=safeName(name);
+  if(safe===old)return;
+  try{await api('/api/rename?from='+enc(path)+'&to='+enc(joinPath(parentOf(path),safe)),{method:'POST'});after()}catch(e){fail(e)}
 }
 
-// --- gestione file (avanzata) ---
-// Paths ride in data- attributes, escaped, instead of inside the onclick
-// source: long names can hold quotes and apostrophes (L'amica geniale).
-function crumbsHtml(path){let parts=path.split('/').filter(Boolean);let html='<a onclick="loadList(\'/\')">RUSTMIX</a>';let acc='';for(const p of parts){acc+='/'+p;html+='<span>/</span><a data-p="'+escapeHtml(acc)+'" onclick="loadList(this.dataset.p)">'+escapeHtml(p)+'</a>'}return html}
-async function loadList(path){try{current=path;let t=await api('/api/list?path='+enc(path));entries=JSON.parse(t);selected.clear();document.getElementById('crumbs').innerHTML=crumbsHtml(path);renderTable();status('Pronto - '+entries.length+' elementi');fetchSpace()}catch(e){status('Errore: '+e.message)}}
-function matchesSearch(name){let q=document.getElementById('search').value.trim().toLowerCase();return !q||name.toLowerCase().includes(q)}
-function renderTable(){let rows='';if(current!=='/')rows+='<tr><td></td><td colspan="3"><button onclick="up()">.. Su</button></td></tr>';let visible=entries.filter(e=>matchesSearch(e.name));for(const e of visible){let p=join(e.name);let checked=selected.has(e.name)?'checked':'';let kindLabel=e.kind==='folder'?'<span class="kind-folder">cartella</span>':'file';let ep=escapeHtml(p);let openOrDownload=e.kind==='folder'?'<button data-p="'+ep+'" onclick="loadList(this.dataset.p)">Apri</button>':'<a href="/api/download?path='+enc(p)+'">Scarica</a>';rows+='<tr><td><input type="checkbox" '+checked+' data-n="'+escapeHtml(e.name)+'" onchange="toggleSelect(this.dataset.n,this.checked)"></td><td>'+escapeHtml(e.name)+'</td><td>'+kindLabel+'</td><td>'+(e.kind==='folder'?'':formatBytes(e.size))+'</td><td class="actions">'+openOrDownload+' <button data-p="'+ep+'" onclick="renamePath(this.dataset.p)">Rinomina</button> <button class="danger" data-p="'+ep+'" onclick="deletePath(this.dataset.p)">Elimina</button></td></tr>'}document.getElementById('rows').innerHTML=rows||'<tr><td colspan="5" class="hint">Nessun elemento</td></tr>';document.getElementById('selectAll').checked=visible.length>0&&visible.every(e=>selected.has(e.name));updateBulkBar()}
-function up(){let p=current.split('/').filter(Boolean);p.pop();loadList('/'+p.join('/'))}
-function toggleSelect(name,checked){if(checked)selected.add(name);else selected.delete(name);renderTable()}
-function toggleSelectAll(checked){let visible=entries.filter(e=>matchesSearch(e.name));for(const e of visible){if(checked)selected.add(e.name);else selected.delete(e.name)}renderTable()}
-function clearSelection(){selected.clear();renderTable()}
-function updateBulkBar(){let bar=document.getElementById('bulk');if(selected.size>0){bar.classList.add('show');document.getElementById('bulkCount').textContent=selected.size+' selezionati'}else{bar.classList.remove('show')}}
-async function bulkDelete(){if(selected.size===0)return;if(!confirm('Eliminare '+selected.size+' elementi selezionati?'))return;let names=Array.from(selected);for(const name of names){try{await api('/api/delete?path='+enc(join(name)),{method:'POST'})}catch(e){status('Errore eliminando '+name+': '+e.message)}}status('Eliminati '+names.length+' elementi');loadList(current)}
-async function newFolder(){let name=prompt('Nome cartella');if(!name)return;let safe=safeName(name);try{await api('/api/mkdir?path='+enc(join(safe)),{method:'POST'});status('Cartella creata: '+safe);loadList(current)}catch(e){status('Errore: '+e.message)}}
-async function renamePath(p){let name=prompt('Nuovo nome',p.substring(p.lastIndexOf('/')+1));if(!name)return;let parent=p.substring(0,p.lastIndexOf('/'))||'/';let safe=safeName(name);let to=(parent==='/'?'/':parent+'/')+safe;try{await api('/api/rename?from='+enc(p)+'&to='+enc(to),{method:'POST'});status('Rinominato in '+safe);loadList(current)}catch(e){status('Errore: '+e.message)}}
-async function deletePath(p){if(!confirm('Eliminare '+p+'?'))return;try{await api('/api/delete?path='+enc(p),{method:'POST'});status('Eliminato');loadList(current)}catch(e){status('Errore: '+e.message)}}
-
-// --- sfondi ---
-function searchGoogleImages(){let q=document.getElementById('gquery').value.trim();if(!q)return;window.open('https://www.google.com/search?tbm=isch&q='+encodeURIComponent(q),'_blank')}
-const BG_W=800,BG_H=480;
-let bgObjectUrl=null,bgColorImageData=null,bgDithered=null;
-let bgCrop={tx:0,ty:0,zoom:1,baseScale:1,frameW:480,frameH:288,natW:0,natH:0};
-function bgStatus(t){document.getElementById('bgStatus').textContent=t}
-function hideStages(){document.querySelectorAll('.stage').forEach(el=>el.classList.remove('show'))}
-function showStage(id){hideStages();document.getElementById(id).classList.add('show')}
-function cancelCrop(){hideStages()}
-function backToCrop(){showStage('cropStage')}
-function onImageReady(resetZoom){
-  let img=document.getElementById('cropImg');
-  bgCrop.natW=img.naturalWidth;bgCrop.natH=img.naturalHeight;
-  showStage('cropStage');
-  let frame=document.getElementById('cropFrame');
-  bgCrop.frameW=frame.clientWidth;bgCrop.frameH=frame.clientHeight;
-  bgCrop.baseScale=Math.max(bgCrop.frameW/bgCrop.natW,bgCrop.frameH/bgCrop.natH);
-  if(resetZoom){bgCrop.zoom=1}else{bgCrop.zoom=Math.max(bgCrop.zoom,1)}
-  document.getElementById('zoomRange').value=bgCrop.zoom;
-  centerCrop();
-  applyCropTransform();
-  bgStatus('');
-}
-function loadBackgroundFile(file){
-  if(bgObjectUrl)URL.revokeObjectURL(bgObjectUrl);
-  bgObjectUrl=URL.createObjectURL(file);
-  let img=document.getElementById('cropImg');
-  img.onload=function(){onImageReady(true)};
-  img.src=bgObjectUrl;
-}
-function rotateImage(delta){
-  let img=document.getElementById('cropImg');
-  if(!img.naturalWidth)return;
-  let srcW=img.naturalWidth,srcH=img.naturalHeight;
-  let canvas=document.createElement('canvas');
-  canvas.width=srcH;canvas.height=srcW;
-  let ctx=canvas.getContext('2d');
-  ctx.translate(canvas.width/2,canvas.height/2);
-  ctx.rotate(delta*Math.PI/180);
-  ctx.drawImage(img,-srcW/2,-srcH/2);
-  canvas.toBlob(function(blob){
-    if(bgObjectUrl)URL.revokeObjectURL(bgObjectUrl);
-    bgObjectUrl=URL.createObjectURL(blob);
-    img.onload=function(){onImageReady(false)};
-    img.src=bgObjectUrl;
-  });
-}
-function centerCrop(){
-  let dispW=bgCrop.natW*bgCrop.baseScale*bgCrop.zoom,dispH=bgCrop.natH*bgCrop.baseScale*bgCrop.zoom;
-  bgCrop.tx=(bgCrop.frameW-dispW)/2;bgCrop.ty=(bgCrop.frameH-dispH)/2;
-}
-function clampCrop(){
-  let dispW=bgCrop.natW*bgCrop.baseScale*bgCrop.zoom,dispH=bgCrop.natH*bgCrop.baseScale*bgCrop.zoom;
-  bgCrop.tx=Math.min(0,Math.max(bgCrop.frameW-dispW,bgCrop.tx));
-  bgCrop.ty=Math.min(0,Math.max(bgCrop.frameH-dispH,bgCrop.ty));
-}
-function applyCropTransform(){
-  let scale=bgCrop.baseScale*bgCrop.zoom;
-  let img=document.getElementById('cropImg');
-  img.style.width=(bgCrop.natW*scale)+'px';
-  img.style.height=(bgCrop.natH*scale)+'px';
-  img.style.transform='translate('+bgCrop.tx+'px,'+bgCrop.ty+'px)';
-}
-const cropFrameEl=document.getElementById('cropFrame');
-let bgDragging=false,bgDragStartX=0,bgDragStartY=0,bgDragStartTx=0,bgDragStartTy=0;
-cropFrameEl.addEventListener('pointerdown',e=>{bgDragging=true;bgDragStartX=e.clientX;bgDragStartY=e.clientY;bgDragStartTx=bgCrop.tx;bgDragStartTy=bgCrop.ty;cropFrameEl.setPointerCapture(e.pointerId)});
-cropFrameEl.addEventListener('pointermove',e=>{if(!bgDragging)return;bgCrop.tx=bgDragStartTx+(e.clientX-bgDragStartX);bgCrop.ty=bgDragStartTy+(e.clientY-bgDragStartY);clampCrop();applyCropTransform()});
-cropFrameEl.addEventListener('pointerup',()=>{bgDragging=false});
-cropFrameEl.addEventListener('pointercancel',()=>{bgDragging=false});
-document.getElementById('zoomRange').addEventListener('input',e=>{bgCrop.zoom=parseFloat(e.target.value);clampCrop();applyCropTransform()});
-wireDropZone('dropBg','fileBg',{handleFiles:list=>loadBackgroundFile(list[0])});
-function confirmCrop(){
-  let scale=bgCrop.baseScale*bgCrop.zoom;
-  let sx=-bgCrop.tx/scale,sy=-bgCrop.ty/scale,sw=bgCrop.frameW/scale,sh=bgCrop.frameH/scale;
-  let canvas=document.createElement('canvas');
-  canvas.width=BG_W;canvas.height=BG_H;
-  let ctx=canvas.getContext('2d');
-  ctx.drawImage(document.getElementById('cropImg'),sx,sy,sw,sh,0,0,BG_W,BG_H);
-  bgColorImageData=ctx.getImageData(0,0,BG_W,BG_H);
-  document.getElementById('brightRange').value=0;
-  document.getElementById('contrastRange').value=0;
-  renderDitheredPreview();
-  showStage('adjustStage');
-  suggestBgName();
-}
+// --- bianco e nero: condiviso tra copertine e sfondi ---
 function computeLuminance(data,width,height,brightness,contrast){
   let n=width*height,lum=new Float32Array(n),cf=1+contrast/100;
   for(let i=0;i<n;i++){let o=i*4;let v=0.299*data[o]+0.587*data[o+1]+0.114*data[o+2];lum[i]=(v-128)*cf+128+brightness}
@@ -942,20 +1337,158 @@ function ditherFloydSteinberg(lum,width,height){
   }
   return out;
 }
-function renderDitheredPreview(){
-  if(!bgColorImageData)return;
-  let brightness=parseInt(document.getElementById('brightRange').value,10);
-  let contrast=parseInt(document.getElementById('contrastRange').value,10);
-  let lum=computeLuminance(bgColorImageData.data,BG_W,BG_H,brightness,contrast);
-  bgDithered=ditherFloydSteinberg(lum,BG_W,BG_H);
-  let canvas=document.getElementById('bgPreview');
-  let ctx=canvas.getContext('2d');
-  let out=ctx.createImageData(BG_W,BG_H);
-  for(let i=0;i<bgDithered.length;i++){let v=bgDithered[i],o=i*4;out.data[o]=v;out.data[o+1]=v;out.data[o+2]=v;out.data[o+3]=255}
-  ctx.putImageData(out,0,0);
+
+// --- sfondi ---
+// The device is held upright, 480 wide and 800 tall, so that is how the
+// image is framed here. The sleep file itself is the panel's native 800x480
+// (see `sleep_images.rs`): the turn is made when saving, never by the user.
+function searchGoogleImages(){let q=$('imgQuery').value.trim();window.open('https://www.google.com/search?tbm=isch'+(q?'&q='+encodeURIComponent(q):''),'_blank')}
+const BG_W=800,BG_H=480,BG_PW=480,BG_PH=800,BG_ZOOM_MAX=4;
+let bgObjectUrl=null,bgFinalView=false,bgPreviewTimer=null,bgBusy=false;
+let bgCrop={tx:0,ty:0,zoom:1,baseScale:1,frameW:240,frameH:400,natW:0,natH:0};
+function bgStatus(t){document.getElementById('bgStatus').textContent=t}
+function hideStages(){document.querySelectorAll('.stage').forEach(el=>el.classList.remove('show'));document.getElementById('bgPick').hidden=false}
+function showStage(id){hideStages();document.getElementById(id).classList.add('show');document.getElementById('bgPick').hidden=true}
+function cancelCrop(){hideStages();bgStatus('')}
+function onImageReady(){
+  let img=document.getElementById('cropImg');
+  bgCrop.natW=img.naturalWidth;bgCrop.natH=img.naturalHeight;
+  showStage('cropStage');
+  let frame=document.getElementById('cropFrame');
+  bgCrop.frameW=frame.clientWidth;bgCrop.frameH=frame.clientHeight;
+  // At zoom 1 the image covers the frame: no empty band can be left.
+  bgCrop.baseScale=Math.max(bgCrop.frameW/bgCrop.natW,bgCrop.frameH/bgCrop.natH);
+  bgCrop.zoom=1;
+  document.getElementById('zoomRange').value=1;
+  centerCrop();
+  setBgView(false);
+  applyCropTransform();
+  bgStatus('');
+  lastTouch=Date.now();
+  document.getElementById('wallpaper').scrollIntoView({behavior:'smooth',block:'start'});
 }
-document.getElementById('brightRange').addEventListener('input',renderDitheredPreview);
-document.getElementById('contrastRange').addEventListener('input',renderDitheredPreview);
+function loadBackgroundFile(file){
+  if(!file)return;
+  if(bgObjectUrl)URL.revokeObjectURL(bgObjectUrl);
+  bgObjectUrl=URL.createObjectURL(file);
+  let img=document.getElementById('cropImg');
+  img.onload=onImageReady;
+  img.onerror=function(){hideStages();bgStatus(L('Questo file non è un\'immagine che il browser sa aprire. Prova con un JPEG o un PNG.','The browser cannot open this file as a picture. Try a JPEG or a PNG.'))};
+  img.src=bgObjectUrl;
+}
+function centerCrop(){
+  let dispW=bgCrop.natW*bgCrop.baseScale*bgCrop.zoom,dispH=bgCrop.natH*bgCrop.baseScale*bgCrop.zoom;
+  bgCrop.tx=(bgCrop.frameW-dispW)/2;bgCrop.ty=(bgCrop.frameH-dispH)/2;
+}
+function clampCrop(){
+  let dispW=bgCrop.natW*bgCrop.baseScale*bgCrop.zoom,dispH=bgCrop.natH*bgCrop.baseScale*bgCrop.zoom;
+  bgCrop.tx=Math.min(0,Math.max(bgCrop.frameW-dispW,bgCrop.tx));
+  bgCrop.ty=Math.min(0,Math.max(bgCrop.frameH-dispH,bgCrop.ty));
+}
+function applyCropTransform(){
+  let scale=bgCrop.baseScale*bgCrop.zoom;
+  let img=document.getElementById('cropImg');
+  img.style.width=(bgCrop.natW*scale)+'px';
+  img.style.height=(bgCrop.natH*scale)+'px';
+  img.style.transform='translate('+bgCrop.tx+'px,'+bgCrop.ty+'px)';
+}
+// Zoom keeping the point (fx, fy) of the frame under the finger or pointer.
+function setBgZoom(zoom,fx,fy){
+  zoom=Math.min(BG_ZOOM_MAX,Math.max(1,zoom));
+  let old=bgCrop.baseScale*bgCrop.zoom,next=bgCrop.baseScale*zoom;
+  bgCrop.tx=fx-(fx-bgCrop.tx)*next/old;bgCrop.ty=fy-(fy-bgCrop.ty)*next/old;
+  bgCrop.zoom=zoom;
+  document.getElementById('zoomRange').value=zoom;
+  clampCrop();applyCropTransform();bgCropChanged();
+}
+const cropFrameEl=document.getElementById('cropFrame');
+let bgPointers=new Map(),bgDragStart=null,bgPinchStart=null;
+function bgFramePoint(e){let r=cropFrameEl.getBoundingClientRect();return {x:e.clientX-r.left-cropFrameEl.clientLeft,y:e.clientY-r.top-cropFrameEl.clientTop}}
+function bgGestureStart(){
+  let pts=Array.from(bgPointers.values());
+  if(pts.length===1){bgDragStart={x:pts[0].x,y:pts[0].y,tx:bgCrop.tx,ty:bgCrop.ty};bgPinchStart=null}
+  else if(pts.length>=2){bgDragStart=null;bgPinchStart={d:Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y)||1,zoom:bgCrop.zoom}}
+}
+cropFrameEl.addEventListener('pointerdown',e=>{bgPointers.set(e.pointerId,bgFramePoint(e));cropFrameEl.setPointerCapture(e.pointerId);bgGestureStart();showBgPhotoWhileMoving()});
+cropFrameEl.addEventListener('pointermove',e=>{
+  if(!bgPointers.has(e.pointerId))return;
+  bgPointers.set(e.pointerId,bgFramePoint(e));
+  let pts=Array.from(bgPointers.values());
+  if(bgPinchStart&&pts.length>=2){
+    let d=Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y)||1;
+    setBgZoom(bgPinchStart.zoom*d/bgPinchStart.d,(pts[0].x+pts[1].x)/2,(pts[0].y+pts[1].y)/2);
+  }else if(bgDragStart){
+    bgCrop.tx=bgDragStart.tx+(pts[0].x-bgDragStart.x);bgCrop.ty=bgDragStart.ty+(pts[0].y-bgDragStart.y);
+    clampCrop();applyCropTransform();
+  }
+});
+function bgPointerEnd(e){bgPointers.delete(e.pointerId);bgGestureStart();if(bgPointers.size===0)bgCropChanged()}
+cropFrameEl.addEventListener('pointerup',bgPointerEnd);
+cropFrameEl.addEventListener('pointercancel',bgPointerEnd);
+cropFrameEl.addEventListener('wheel',e=>{e.preventDefault();let p=bgFramePoint(e);showBgPhotoWhileMoving();setBgZoom(bgCrop.zoom*(e.deltaY<0?1.08:1/1.08),p.x,p.y)},{passive:false});
+document.getElementById('zoomRange').addEventListener('input',e=>{showBgPhotoWhileMoving();setBgZoom(parseFloat(e.target.value),bgCrop.frameW/2,bgCrop.frameH/2)});
+$('fileBg').addEventListener('change',e=>{if(e.target.files.length)loadBackgroundFile(e.target.files[0]);e.target.value=''});
+// The framed part of the image, 480x800, upright as the user sees it.
+function renderPortraitDither(){
+  let scale=bgCrop.baseScale*bgCrop.zoom;
+  let sx=-bgCrop.tx/scale,sy=-bgCrop.ty/scale,sw=bgCrop.frameW/scale,sh=bgCrop.frameH/scale;
+  let canvas=document.createElement('canvas');
+  canvas.width=BG_PW;canvas.height=BG_PH;
+  let ctx=canvas.getContext('2d');
+  // Transparency on white, as on paper.
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,BG_PW,BG_PH);
+  ctx.drawImage(document.getElementById('cropImg'),sx,sy,sw,sh,0,0,BG_PW,BG_PH);
+  let lum=computeLuminance(ctx.getImageData(0,0,BG_PW,BG_PH).data,BG_PW,BG_PH,0,0);
+  autoLevels(lum);
+  return ditherFloydSteinberg(lum,BG_PW,BG_PH);
+}
+// Stretches the tones between black and white, leaving out the darkest and
+// lightest 1%: a dull photo would otherwise dither into an even grey. A
+// picture that is nearly one tone already is left alone.
+function autoLevels(lum){
+  let hist=new Uint32Array(256),n=lum.length;
+  for(let i=0;i<n;i++)hist[Math.max(0,Math.min(255,Math.round(lum[i])))]++;
+  let cut=n*0.01,lo=0,hi=255,acc=0;
+  for(;lo<255;lo++){acc+=hist[lo];if(acc>cut)break}
+  acc=0;
+  for(;hi>0;hi--){acc+=hist[hi];if(acc>cut)break}
+  if(hi-lo<32)return;
+  let k=255/(hi-lo);
+  for(let i=0;i<n;i++)lum[i]=(lum[i]-lo)*k;
+}
+function drawBgPreview(){
+  let dithered=renderPortraitDither();
+  let canvas=document.getElementById('cropPreview'),ctx=canvas.getContext('2d');
+  let out=ctx.createImageData(BG_PW,BG_PH);
+  for(let i=0;i<dithered.length;i++){let v=dithered[i],o=i*4;out.data[o]=v;out.data[o+1]=v;out.data[o+2]=v;out.data[o+3]=255}
+  ctx.putImageData(out,0,0);
+  canvas.hidden=false;
+}
+function setBgView(finalView){
+  bgFinalView=finalView;
+  document.getElementById('viewPhoto').classList.toggle('on',!finalView);
+  document.getElementById('viewFinal').classList.toggle('on',finalView);
+  if(finalView)drawBgPreview();else document.getElementById('cropPreview').hidden=true;
+}
+// While the image moves, the photo is shown: the black and white version is
+// redrawn once it has stopped.
+function showBgPhotoWhileMoving(){if(bgFinalView)document.getElementById('cropPreview').hidden=true}
+function bgCropChanged(){
+  if(!bgFinalView)return;
+  clearTimeout(bgPreviewTimer);
+  bgPreviewTimer=setTimeout(()=>{if(bgFinalView&&bgPointers.size===0)drawBgPreview()},180);
+}
+// Upright 480x800 to the panel's native 800x480. The firmware's portrait
+// layer maps logical (x, y) to native (y, 479 - x) (`orientation.rs`), so
+// native (nx, ny) is upright (479 - ny, nx).
+function portraitToNative(portrait){
+  let out=new Uint8Array(BG_W*BG_H);
+  for(let ny=0;ny<BG_H;ny++){
+    let lx=BG_PW-1-ny;
+    for(let nx=0;nx<BG_W;nx++)out[ny*BG_W+nx]=portrait[nx*BG_PW+lx];
+  }
+  return out;
+}
 function buildSleepBmp(dithered){
   const rowBytes=BG_W/8,pixelBytes=rowBytes*BG_H,headerSize=62,total=headerSize+pixelBytes;
   let buf=new Uint8Array(total),dv=new DataView(buf.buffer);
@@ -985,157 +1518,628 @@ function buildSleepBmp(dithered){
   }
   return buf;
 }
-function bgFileName(raw){
-  let dot=raw.lastIndexOf('.');
-  let stem=dot<0?raw:raw.slice(0,dot);
-  stem=stem.toUpperCase().replace(/[^A-Z0-9_\-~]/g,'').slice(0,8)||'SLEEP';
-  return stem+'.BMP';
-}
-async function suggestBgName(){
-  try{
-    await ensureDir('/SLEEP');
-    let t=await api('/api/list?path=/SLEEP');
-    let existing=new Set(JSON.parse(t).map(e=>e.name.toUpperCase()));
-    for(let i=1;i<=999;i++){
-      let candidate='SLEEP'+String(i).padStart(3,'0')+'.BMP';
-      if(!existing.has(candidate)){document.getElementById('bgName').value=candidate;return}
-    }
-  }catch(e){}
+// The file gets the first free SLEEPnnn.BMP: a name is nothing the user has
+// to think about.
+async function nextSleepName(){
+  await ensureDir('/SLEEP');
+  let existing=new Set(JSON.parse(await api('/api/list?path=/SLEEP')).map(e=>e.name.toUpperCase()));
+  for(let i=1;i<=999;i++){
+    let candidate='SLEEP'+String(i).padStart(3,'0')+'.BMP';
+    if(!existing.has(candidate))return candidate;
+  }
+  throw new Error(L('troppi sfondi: eliminane qualcuno','too many wallpapers: delete some'));
 }
 async function uploadBackground(){
-  if(!bgDithered){bgStatus('Nessuna immagine pronta');return}
-  let name=bgFileName(document.getElementById('bgName').value||'SLEEP001');
-  document.getElementById('bgName').value=name;
-  bgStatus('Preparazione BMP...');
+  if(bgBusy||!document.getElementById('cropImg').naturalWidth)return;
+  bgBusy=true;document.getElementById('bgSave').disabled=true;
+  bgStatus(L('Preparazione...','Preparing...'));
   try{
-    await ensureDir('/SLEEP');
-    let bytes=buildSleepBmp(bgDithered);
+    let bytes=buildSleepBmp(portraitToNative(renderPortraitDither()));
+    let name=await nextSleepName();
     let blob=new Blob([bytes],{type:'application/octet-stream'});
     await new Promise((resolve,reject)=>{
       let xhr=new XMLHttpRequest();
-      let url='/api/upload?path='+enc('/SLEEP/'+name);
-      xhr.open('POST',url);
-      xhr.upload.onprogress=function(e){if(e.lengthComputable)bgStatus('Caricamento '+Math.round(e.loaded/e.total*100)+'%')};
+      xhr.open('POST','/api/upload?path='+enc('/SLEEP/'+name));
+      xhr.upload.onprogress=function(e){if(e.lengthComputable)bgStatus(L('Salvataggio ','Saving ')+Math.round(e.loaded/e.total*100)+'%')};
       xhr.onload=function(){if(xhr.status>=200&&xhr.status<300)resolve();else reject(new Error(xhr.responseText||('HTTP '+xhr.status)))};
-      xhr.onerror=function(){reject(new Error('errore di rete'))};
+      xhr.onerror=function(){reject(new Error('Failed to fetch'))};
       xhr.send(blob);
     });
-    bgStatus('Sfondo caricato: /SLEEP/'+name);
+    hideStages();
+    bgStatus(L('Sfondo salvato. Lo trovi qui sotto.','Wallpaper saved. You find it below.'));
     refreshSleepGallery();
     fetchSpace();
-  }catch(e){bgStatus('Errore: '+e.message)}
+  }catch(e){bgStatus(explainError(e))}
+  bgBusy=false;document.getElementById('bgSave').disabled=false;
+}
+
+// --- sfondi: da dove arriva l'immagine ---
+// The search runs in the user's browser against Wikimedia Commons, which
+// lets any page ask (`origin=*`) and serves its pictures readable by other
+// sites, so the one chosen can be turned to black and white here. Google's
+// results cannot be shown inside another page; it stays one link away.
+// Nothing of this reaches the device, and nothing works on the device's own
+// hotspot, where the phone has no Internet.
+const COMMONS='https://commons.wikimedia.org/w/api.php?format=json&origin=*&action=query&prop=imageinfo&iiprop=url%7Cmime%7Csize';
+let imgNext=0,imgQueryRun='';
+function imgNote(text){$('imgNote').textContent=text}
+async function searchImages(more){
+  let q=more?imgQueryRun:$('imgQuery').value.trim();
+  if(!q)return;
+  if(!more){imgNext=0;imgQueryRun=q;$('imgResults').innerHTML=''}
+  $('imgMore').hidden=true;
+  imgNote(L('Ricerca...','Searching...'));
+  try{
+    let r=await fetch(COMMONS+'&generator=search&gsrnamespace=6&gsrlimit=18&gsroffset='+imgNext+'&iiurlwidth=330&gsrsearch='+enc(q+' filetype:bitmap'));
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    let j=await r.json();
+    let pages=Object.values((j.query||{}).pages||{}).sort((a,b)=>a.index-b.index);
+    let html='';
+    for(const p of pages){
+      let info=p.imageinfo&&p.imageinfo[0];
+      // Pictures only, and large enough for a 480x800 screen.
+      if(!info||!/^image\/(jpeg|png)$/.test(info.mime)||info.width<480||info.height<480||!info.thumburl)continue;
+      html+='<button data-t="'+escapeHtml(p.title)+'" onclick="pickSearchImage(this)" title="'+escapeHtml(p.title.replace(/^File:/,''))+'"><img src="'+escapeHtml(info.thumburl)+'" alt="" loading="lazy"></button>';
+    }
+    $('imgResults').insertAdjacentHTML('beforeend',html);
+    imgNext=j.continue&&j.continue.gsroffset?j.continue.gsroffset:0;
+    $('imgMore').hidden=!imgNext;
+    imgNote($('imgResults').children.length?L('Immagini libere da Wikimedia Commons. Tocca quella che vuoi.','Free pictures from Wikimedia Commons. Tap the one you want.'):L('Nessun risultato: prova con altre parole, anche in inglese.','No results: try other words.'));
+  }catch(e){
+    imgNote(L('La ricerca non riesce a raggiungere Internet. Puoi sempre scegliere un\'immagine che hai già.','The search cannot reach the Internet. You can still choose a picture you already have.'));
+  }
+}
+async function pickSearchImage(button){
+  if(document.querySelector('.results .busy'))return;
+  button.classList.add('busy');
+  imgNote(L('Scarico l\'immagine...','Getting the picture...'));
+  try{
+    // A rendition 1280 wide: plenty for the screen, a fraction of the original.
+    let j=await (await fetch(COMMONS+'&iiurlwidth=1280&titles='+enc(button.dataset.t))).json();
+    let info=Object.values(j.query.pages)[0].imageinfo[0];
+    let r=await fetch(info.thumburl||info.url);
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    loadBackgroundFile(await r.blob());
+    imgNote(L('Immagini libere da Wikimedia Commons. Tocca quella che vuoi.','Free pictures from Wikimedia Commons. Tap the one you want.'));
+  }catch(e){
+    imgNote(L('Non riesco a scaricare questa immagine: provane un\'altra.','This picture could not be fetched: try another one.'));
+  }
+  button.classList.remove('busy');
+}
+$('imgQuery').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();searchImages(false)}});
+// A picture copied on any other site, pasted here. On this page (not served
+// encrypted) a button may not read the clipboard, so the paste itself is
+// what is listened for.
+document.addEventListener('paste',e=>{
+  if(activeTab!=='wallpaper'||!e.clipboardData)return;
+  let file=Array.from(e.clipboardData.files||[]).find(f=>f.type.startsWith('image/'));
+  if(file){e.preventDefault();loadBackgroundFile(file)}
+});
+// A picture dragged here: a file from the computer, or straight from another
+// tab when that site lets its pictures be read.
+(function(){
+  let card=$('wallpaper');
+  ['dragover','dragenter'].forEach(ev=>card.addEventListener(ev,e=>{e.preventDefault();card.classList.add('dragover')}));
+  ['dragleave','drop'].forEach(ev=>card.addEventListener(ev,e=>{e.preventDefault();card.classList.remove('dragover')}));
+  card.addEventListener('drop',async e=>{
+    let file=Array.from(e.dataTransfer.files||[]).find(f=>f.type.startsWith('image/'));
+    if(file){loadBackgroundFile(file);return}
+    let url=(e.dataTransfer.getData('text/uri-list')||e.dataTransfer.getData('text/plain')||'').split('\n')[0].trim();
+    if(!/^https?:/.test(url))return;
+    try{
+      let r=await fetch(url);
+      let blob=await r.blob();
+      if(!blob.type.startsWith('image/'))throw new Error('not an image');
+      loadBackgroundFile(blob);
+    }catch(err){
+      bgStatus(L('Quel sito non lascia leggere l\'immagine da qui. Copiala e incollala (Ctrl+V), oppure salvala e sceglila.','That site does not let the picture be read from here. Copy and paste it (Ctrl+V), or save it and choose it.'));
+    }
+  });
+})();
+function showWallpaperSources(){
+  $('imgSearch').hidden=portalHotspot;
+  $('imgOffline').hidden=!portalHotspot;
+  let phone=matchMedia('(pointer:coarse)').matches;
+  $('bgChoose').innerHTML=ICON.img+(phone?L('Dal telefono','From the phone'):L('Dal computer','From the computer'));
+  $('bgPaste').innerHTML=ICON.paste+L('Incolla','Paste');
+  $('imgGo').innerHTML=ICON.search;
+}
+
+// --- sfondi sul dispositivo ---
+// A sleep file is stored turned, as the panel wants it: each thumbnail is
+// turned back so it shows the way it will on the device. Decoded pictures
+// are kept, so a list drawn again does not ask the device for them twice.
+let sleepEntries=[],sleepBitmaps=new Map();
+async function drawSleepThumb(canvas,url,key){
+  try{
+    let bitmap=sleepBitmaps.get(key);
+    if(!bitmap){
+      let r=await fetch(url);
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      bitmap=await createImageBitmap(await r.blob());
+      sleepBitmaps.set(key,bitmap);
+    }
+    let ctx=canvas.getContext('2d'),k=canvas.width/bitmap.height;
+    ctx.translate(canvas.width,0);ctx.rotate(Math.PI/2);ctx.scale(k,k);
+    ctx.drawImage(bitmap,0,0);
+  }catch(e){if(canvas.parentElement)canvas.parentElement.classList.add('empty');canvas.remove()}
 }
 async function refreshSleepGallery(){
   try{
     await ensureDir('/SLEEP');
-    let t=await api('/api/list?path=/SLEEP');
-    let list=JSON.parse(t).filter(e=>e.kind==='file');
-    let html='';
-    for(const e of list){
-      let url='/api/download?path='+enc('/SLEEP/'+e.name);
-      html+='<div class="book-card"><div class="book-cover"><img src="'+url+'" alt="" loading="lazy" onerror="this.parentElement.classList.add(\'empty\')"></div><div class="book-title">'+escapeHtml(e.name)+'</div><div class="actions"><a href="'+url+'">Scarica</a><button class="danger" onclick="deleteSleepImage(\''+e.name+'\')">Elimina</button></div></div>';
-    }
-    document.getElementById('sleepGallery').innerHTML=html||'<p class="hint">Nessuno sfondo caricato.</p>';
-  }catch(e){document.getElementById('sleepGallery').innerHTML='<p class="hint">Errore: '+escapeHtml(e.message)+'</p>'}
+    sleepEntries=JSON.parse(await api('/api/list?path=/SLEEP')).filter(e=>e.kind==='file');
+    renderSleepGallery();
+  }catch(e){$('sleepGallery').innerHTML='<p class="hint">'+escapeHtml(explainError(e))+'</p>'}
 }
-async function deleteSleepImage(name){
-  if(!confirm('Eliminare questo sfondo?'))return;
-  try{await api('/api/delete?path='+enc('/SLEEP/'+name),{method:'POST'});status('Sfondo eliminato');refreshSleepGallery();fetchSpace()}catch(e){status('Errore: '+e.message)}
+async function renderSleepGallery(){
+  let gallery=$('sleepGallery'),html='';
+  for(const e of sleepEntries){
+    let path='/SLEEP/'+e.name;
+    if(isPendingDelete(path))continue;
+    let p=escapeHtml(path);
+    html+='<div class="book-card"><div class="sleep-thumb" data-empty="'+L('Anteprima non disponibile','No preview')+'"><canvas width="240" height="400" data-p="'+p+'" data-k="'+escapeHtml(e.name+':'+e.size+':'+e.modified)+'"></canvas></div><div class="card-actions"><button class="btn" data-p="'+p+'" onclick="downloadPaths([this.dataset.p])">'+L('Scarica','Download')+'</button><button class="btn danger" data-p="'+p+'" onclick="deleteSleepImage(this.dataset.p)">'+L('Elimina','Delete')+'</button></div></div>';
+  }
+  gallery.innerHTML=html||'<p class="hint">'+L('Nessuno sfondo caricato.','No wallpapers yet.')+'</p>';
+  // One at a time: the device serves a single file comfortably.
+  for(const canvas of Array.from(gallery.querySelectorAll('canvas[data-p]'))){
+    if(!canvas.isConnected)return;
+    await drawSleepThumb(canvas,'/api/download?path='+enc(canvas.dataset.p),canvas.dataset.k);
+  }
 }
+function deleteSleepImage(path){deleteWithUndo([{path:path,folder:false}],done=>{if(done)refreshSleepGallery();else renderSleepGallery()})}
 
-// --- Wi-Fi: sempre disponibile la lista reti salvate (dimentica funziona
-// sia via hotspot che gia' in LAN, e' solo una modifica a WIFI.TXT); la
-// scansione e l'aggiunta di una nuova rete richiedono invece di essere sul
-// hotspot di bootstrap del dispositivo, perche' unirsi a una rete diversa
-// da quella gia' in uso va prima validato con una connessione reale (vedi
-// NetworkRuntime::try_join_candidate lato firmware).
-let wifiHotspot=false;
-// onclick="..." attributes below are double-quoted, so an embedded argument
-// must be single-quoted JS (matching e.g. deleteBook's own pattern above) --
-// JSON.stringify's double-quoted output would close the HTML attribute at
-// its very first character and silently break the handler.
-function jsq(s){return "'"+String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")+"'"}
-async function wifiRefreshStatus(){
-  try{
-    let s=JSON.parse(await api('/api/status'));
-    wifiHotspot=!!s.hotspot;
-    document.getElementById('wifiHint').hidden=wifiHotspot;
-  }catch(e){}
+// --- file: la scheda di memoria come in un esplora file ---
+// On a phone: a tap opens, the three dots hold a row's actions, a long press
+// starts a selection. With a mouse: a click selects, a double click opens,
+// the right button opens the menu, F2 renames, Del deletes, and a row can be
+// dragged onto a folder. The device only ever sees list, upload, rename
+// (which also moves), mkdir and delete.
+const FRIENDLY={BOOKS:['Libri','Books'],AUDIO:['Audiolibri','Audiobooks'],SLEEP:['Sfondi','Wallpapers'],APPS:['App e dizionari','Apps and dictionaries']};
+let fx={path:'/',entries:[],sel:new Set(),selMode:false,sort:'name',asc:true,showSys:false,anchor:null,loaded:false};
+let fxCounts=new Map(),fxDragging=null,fxLongPress=null,fxSkipClick=false;
+const fxMouse=matchMedia('(hover:hover) and (pointer:fine)');
+function fxFriendly(dir,name){return dir==='/'&&FRIENDLY[name]?L(FRIENDLY[name][0],FRIENDLY[name][1]):name}
+// What the device keeps for itself: at the top of the card, every file but
+// the two "read me" ones, and the folders of reading positions and
+// statistics. Hidden until asked for, so they are not deleted by mistake.
+function fxIsSystem(dir,e){
+  if(e.name.startsWith('.'))return true;
+  if(dir!=='/')return false;
+  if(e.kind==='folder')return e.name==='READER'||e.name==='STATS';
+  return !/^(LEGGIMI|README)\.TXT$/i.test(e.name);
 }
-async function wifiLoadScan(){
+function fxExt(name){let i=name.lastIndexOf('.');return i<0?'':name.slice(i+1).toLowerCase()}
+function fxKind(dir,e){
+  if(e.kind==='folder')return 'folder';
+  let ext=fxExt(e.name);
+  if(ext==='epub'||(ext==='txt'&&dir.startsWith('/BOOKS')))return 'book';
+  if(ext==='mp3')return 'music';
+  if(ext==='bmp'||ext==='png'||ext==='jpg'||ext==='jpeg')return 'img';
+  return 'file';
+}
+function fxTypeLabel(dir,e){
+  if(e.kind==='folder')return L('Cartella','Folder');
+  let ext=fxExt(e.name);
+  if(ext==='epub')return L('Libro (EPUB)','Book (EPUB)');
+  if(ext==='txt')return dir.startsWith('/BOOKS')?L('Libro (testo)','Book (text)'):L('Testo','Text');
+  if(ext==='mp3')return 'Audio MP3';
+  if(ext==='bmp'||ext==='png'||ext==='jpg'||ext==='jpeg')return L('Immagine','Picture');
+  return ext?'File '+ext.toUpperCase():'File';
+}
+function fxPreviewable(e){let ext=fxExt(e.name);return e.kind==='file'&&(['bmp','png','jpg','jpeg'].includes(ext)||(['txt','log','old'].includes(ext)&&e.size<=300*1024))}
+function fxQuery(){return (fxMouse.matches&&innerWidth>=900?$('fxSearch'):$('fxSearchP')).value.trim().toLowerCase()}
+function fxVisible(){
+  let q=fxQuery();
+  let list=fx.entries.filter(e=>!isPendingDelete(joinPath(fx.path,e.name))&&(fx.showSys||!fxIsSystem(fx.path,e))&&(!q||e.name.toLowerCase().includes(q)||fxFriendly(fx.path,e.name).toLowerCase().includes(q)));
+  let dir=fx.asc?1:-1;
+  list.sort((a,b)=>{
+    // Folders first, whatever the order asked for.
+    if((a.kind==='folder')!==(b.kind==='folder'))return a.kind==='folder'?-1:1;
+    let r=0;
+    if(fx.sort==='date')r=a.modified-b.modified;
+    else if(fx.sort==='size')r=a.size-b.size;
+    else if(fx.sort==='type')r=fxTypeLabel(fx.path,a).localeCompare(fxTypeLabel(fx.path,b));
+    if(r===0)r=fxFriendly(fx.path,a.name).localeCompare(fxFriendly(fx.path,b.name),undefined,{numeric:true,sensitivity:'base'});
+    return r*dir;
+  });
+  return list;
+}
+function fxEntry(name){return fx.entries.find(e=>e.name===name)}
+function fxSelItems(){return Array.from(fx.sel).map(fxEntry).filter(Boolean).map(e=>({path:joinPath(fx.path,e.name),folder:e.kind==='folder',size:e.size}))}
+async function fxOpen(path,keep){
   try{
-    let list=JSON.parse(await api('/api/scan'));
-    let html='';
-    for(let i=0;i<list.length;i++){
-      html+='<li><span class="name">'+escapeHtml(list[i].ssid)+'</span><span class="rssi">'+list[i].rssi+' dBm</span><button onclick="wifiOpenJoin('+jsq(list[i].ssid)+',true)">Aggiungi</button></li>';
+    let entries=JSON.parse(await api('/api/list?path='+enc(path)));
+    let same=fx.path===path;
+    fx.path=path;fx.entries=entries;fx.loaded=true;
+    if(!(keep&&same)){fx.sel.clear();fx.selMode=false;fx.anchor=null}
+    else{for(const n of Array.from(fx.sel)){if(!fxEntry(n))fx.sel.delete(n)}}
+    fxRender();
+    if(path==='/')fxCountRoot();
+  }catch(e){fail(e)}
+}
+function fxGoUp(){if(fx.path!=='/')fxOpen(parentOf(fx.path))}
+// How many things each folder at the top holds, asked one folder at a time.
+async function fxCountRoot(){
+  for(const e of fx.entries){
+    if(e.kind!=='folder'||fxCounts.has(e.name)||activeTab!=='files'||fx.path!=='/')continue;
+    try{fxCounts.set(e.name,JSON.parse(await api('/api/list?path='+enc('/'+e.name))).length);if(fx.path==='/')fxRender()}catch(err){return}
+  }
+}
+function fxRender(){
+  let list=fxVisible(),dir=fx.path;
+  // path
+  let crumbs='<button data-p="/">'+(innerWidth>=900?L('Scheda di memoria','Memory card'):L('Scheda','Card'))+'</button>',acc='';
+  dir.split('/').filter(Boolean).forEach((part,i)=>{let parent=acc||'/';acc+='/'+part;crumbs+='<span>›</span><button data-p="'+escapeHtml(acc)+'">'+escapeHtml(i===0?fxFriendly(parent,part):part)+'</button>'});
+  $('fxPath').innerHTML=crumbs;
+  $('fxUp').disabled=dir==='/';
+  $('fxSearch').placeholder=$('fxSearchP').placeholder=L('Cerca in ','Search in ')+(dir==='/'?L('Scheda','Card'):fxFriendly(parentOf(dir),baseName(dir)));
+  // column heads (mouse)
+  let arrow=key=>fx.sort===key?(fx.asc?' ▲':' ▼'):'';
+  $('fxHead').innerHTML='<span class="sp-check"></span><span class="sp-ic"></span><button class="nm" data-s="name">'+L('Nome','Name')+arrow('name')+'</button><button class="col c-date" data-s="date">'+L('Ultima modifica','Modified')+arrow('date')+'</button><button class="col c-type" data-s="type">'+L('Tipo','Type')+arrow('type')+'</button><button class="col c-size" data-s="size">'+L('Dimensione','Size')+arrow('size')+'</button><span class="sp-more"></span>';
+  // rows
+  let html='';
+  for(const e of list){
+    let folder=e.kind==='folder',kind=fxKind(dir,e),shown=fxFriendly(dir,e.name);
+    let meta;
+    if(folder){
+      let count=dir==='/'?fxCounts.get(e.name):undefined;
+      let parts=[];
+      if(shown!==e.name)parts.push(e.name);
+      if(count!==undefined)parts.push(count===0?L('vuota','empty'):count+' '+(count===1?L('elemento','item'):L('elementi','items')));
+      meta=parts.join(' · ')||L('Cartella','Folder');
+    }else meta=formatBytes(e.size)+(e.modified?' · '+formatDate(e.modified,true):'');
+    html+='<div class="row'+(fx.sel.has(e.name)?' sel':'')+(fxIsSystem(dir,e)?' sys':'')+'" tabindex="0" data-n="'+escapeHtml(e.name)+'"'+(fxMouse.matches?' draggable="true"':'')+'><span class="check">'+ICON.check+'</span><span class="ic'+(folder?'':' file')+'">'+ICON[kind]+'</span><div class="nm"><div>'+escapeHtml(shown)+'</div><div class="meta">'+escapeHtml(meta)+'</div></div><span class="col c-date">'+escapeHtml(formatDate(e.modified,false))+'</span><span class="col c-type">'+escapeHtml(fxTypeLabel(dir,e))+'</span><span class="col c-size">'+(folder?'':formatBytes(e.size))+'</span><button class="more" aria-label="'+L('Azioni','Actions')+'">'+ICON.more+'</button></div>';
+  }
+  let hidden=fx.entries.filter(e=>fxIsSystem(dir,e)).length;
+  $('fxRows').innerHTML=html||'<div class="empty-note">'+(fxQuery()?L('Niente con questo nome in questa cartella.','Nothing with this name in this folder.'):L('Cartella vuota. Usa «Carica qui» per aggiungere file.','Empty folder. Use "Upload here" to add files.'))+'</div>';
+  $('filesCard').classList.toggle('selmode',fx.selMode);
+  // system files line (phone) and side panel (mouse)
+  $('fxSys').hidden=hidden===0;
+  $('fxSys').innerHTML=ICON.folder+'<span>'+(fx.showSys?L('File di sistema mostrati','System files shown'):L('File di sistema nascosti','System files hidden'))+' ('+hidden+')</span><button onclick="fxToggleSys()">'+(fx.showSys?L('Nascondi','Hide'):L('Mostra','Show'))+'</button>';
+  let side=(p,icon,label,cls)=>'<button data-p="'+p+'" class="'+(cls||'')+(dir===p||(p!=='/'&&dir.startsWith(p+'/'))?' on':'')+'">'+ICON[icon]+escapeHtml(label)+'</button>';
+  $('fxSide').innerHTML='<div class="lab">'+L('Raccolte','Collections')+'</div>'+side('/BOOKS','book',L('Libri','Books'))+side('/AUDIO','music',L('Audiolibri','Audiobooks'))+side('/SLEEP','img',L('Sfondi','Wallpapers'))+'<div class="lab">'+L('Scheda di memoria','Memory card')+'</div><button data-p="/" class="'+(dir==='/'?'on':'')+'">'+ICON.folder+L('Tutti i file','All files')+'</button><button class="sub'+(fx.showSys?' on':'')+'" onclick="fxToggleSys()">'+ICON.eye+L('File di sistema','System files')+'</button>';
+  $('fxDropHint').textContent=L('Trascina qui i file per caricarli in «','Drag files here to upload them to "')+(dir==='/'?L('Scheda di memoria','Memory card'):fxFriendly(parentOf(dir),baseName(dir)))+L('»','"');
+  fxRenderSelection(list);
+}
+// The buttons that carry an icon, labelled once the language is known.
+function fxLabels(){
+  $('fxUp').innerHTML=ICON.up;$('fxSearchBtn').innerHTML=ICON.search;$('fxMoreBtn').innerHTML=ICON.more;
+  $('fxUploadP').innerHTML=ICON.upload+L('Carica qui','Upload here');$('fxUploadD').innerHTML=ICON.upload+L('Carica','Upload');
+  $('fxNewP').innerHTML=$('fxNewD').innerHTML=ICON.plus+L('Nuova cartella','New folder');
+}
+function fxRenderSelection(list){
+  let items=fxSelItems();
+  let size=items.reduce((sum,i)=>sum+(i.folder?0:i.size),0);
+  $('fxStatus').textContent=(list?list.length:fxVisible().length)+' '+L('elementi','items')+(items.length?' · '+items.length+' '+(items.length===1?L('selezionato','selected'):L('selezionati','selected'))+(size?' ('+formatBytes(size)+')':''):'');
+  let bar=$('selbar');
+  if(items.length===0||activeTab!=='files'){if(bar)bar.remove();return}
+  if(!bar){bar=document.createElement('div');bar.id='selbar';bar.className='selbar';document.body.appendChild(bar)}
+  bar.innerHTML='<span>'+items.length+' '+(items.length===1?L('selezionato','selected'):L('selezionati','selected'))+'</span><button onclick="fxBulk(\'download\')">'+ICON.down+L('Scarica','Download')+'</button><button onclick="fxBulk(\'move\')">'+ICON.move+L('Sposta','Move')+'</button><button class="del" onclick="fxBulk(\'delete\')">'+ICON.trash+L('Elimina','Delete')+'</button><button onclick="fxClearSel()" aria-label="'+L('Chiudi','Close')+'">'+ICON.x+'</button>';
+}
+// The selection changed and nothing else: the rows stay the same elements
+// (a double click needs its two clicks to land on one), only their mark moves.
+function fxPaintSel(){
+  document.querySelectorAll('#fxRows .row').forEach(row=>row.classList.toggle('sel',fx.sel.has(row.dataset.n)));
+  fxRenderSelection();
+}
+function fxClearSel(){fx.sel.clear();fx.selMode=false;fx.anchor=null;fxRender()}
+function fxToggle(name){if(fx.sel.has(name))fx.sel.delete(name);else fx.sel.add(name);fx.anchor=name;if(fx.sel.size===0)fx.selMode=false;fxRender()}
+function fxToggleSys(){fx.showSys=!fx.showSys;fxRender()}
+function fxToggleSearch(){let bar=$('fxSearchBar');bar.hidden=!bar.hidden;if(bar.hidden){$('fxSearchP').value='';fxRender()}else $('fxSearchP').focus()}
+function fxSortBy(key){if(fx.sort===key)fx.asc=!fx.asc;else{fx.sort=key;fx.asc=true}fxRender()}
+function fxToolbarMenu(anchor){
+  let mark=key=>fx.sort===key?'check':null;
+  openMenu(anchor,[
+    {icon:'select',label:fx.selMode?L('Fine selezione','Done selecting'):L('Seleziona','Select'),run:()=>{if(fx.selMode)fxClearSel();else{fx.selMode=true;fxRender()}}},
+    '-',{label:L('Ordina per','Sort by')},
+    {icon:mark('name'),label:L('Nome','Name'),run:()=>fxSortBy('name')},
+    {icon:mark('date'),label:L('Data','Date'),run:()=>fxSortBy('date')},
+    {icon:mark('size'),label:L('Dimensione','Size'),run:()=>fxSortBy('size')},
+    '-',{icon:'eye',label:fx.showSys?L('Nascondi i file di sistema','Hide system files'):L('Mostra i file di sistema','Show system files'),run:fxToggleSys}
+  ]);
+}
+function fxActivate(name,row){
+  let e=fxEntry(name);
+  if(!e)return;
+  let path=joinPath(fx.path,name);
+  if(e.kind==='folder')fxOpen(path);
+  else if(fxPreviewable(e))fxPreview(path,e);
+  else fxRowMenu(name,row?row.querySelector('.more'):null);
+}
+function fxRowMenu(name,at){
+  let e=fxEntry(name);
+  if(!e)return;
+  let path=joinPath(fx.path,name),folder=e.kind==='folder',items=[];
+  if(folder)items.push({icon:'open',label:L('Apri','Open'),run:()=>fxOpen(path)});
+  else{
+    if(fxPreviewable(e))items.push({icon:'eye',label:L('Anteprima','Preview'),run:()=>fxPreview(path,e)});
+    items.push({icon:'down',label:L('Scarica','Download'),run:()=>downloadPaths([path])});
+  }
+  items.push({icon:'edit',label:L('Rinomina','Rename'),run:()=>renameEntry(path,()=>fxOpen(fx.path))});
+  items.push({icon:'move',label:L('Sposta in...','Move to...'),run:()=>fxMove([path])});
+  items.push('-');
+  items.push({icon:'trash',label:L('Elimina','Delete'),danger:true,run:()=>fxDelete([{path:path,folder:folder}])});
+  openMenu(at||{x:innerWidth/2-100,y:innerHeight/2-120},items);
+}
+function fxBulkMenu(at){
+  let n=fx.sel.size;
+  openMenu(at,[{label:n+' '+L('selezionati','selected')},
+    {icon:'down',label:L('Scarica','Download'),run:()=>fxBulk('download')},
+    {icon:'move',label:L('Sposta in...','Move to...'),run:()=>fxBulk('move')},
+    '-',{icon:'trash',label:L('Elimina','Delete'),danger:true,run:()=>fxBulk('delete')}]);
+}
+function fxBulk(action){
+  let items=fxSelItems();
+  if(!items.length)return;
+  if(action==='download'){
+    let files=items.filter(i=>!i.folder).map(i=>i.path);
+    if(files.length<items.length)toast(L('Le cartelle non si scaricano: scarico solo i file.','Folders cannot be downloaded: only the files are.'));
+    downloadPaths(files);
+  }else if(action==='move')fxMove(items.map(i=>i.path));
+  else fxDelete(items);
+}
+function fxDelete(items){
+  fx.sel.clear();fx.selMode=false;
+  deleteWithUndo(items,done=>{if(done){fxCounts.clear();if(activeTab==='files')fxOpen(fx.path,true)}else fxRender()});
+}
+async function fxNewFolder(){
+  let name=await askText(L('Nuova cartella','New folder'),'',L('Crea','Create'));
+  if(!name)return;
+  try{await api('/api/mkdir?path='+enc(joinPath(fx.path,safeName(name))),{method:'POST'});fxCounts.clear();fxOpen(fx.path)}catch(e){fail(e)}
+}
+async function fxMoveTo(paths,dest){
+  let moved=0,error=null;
+  for(const p of paths){
+    if(parentOf(p)===dest)continue;
+    if(dest===p||dest.startsWith(p+'/')){error=new Error(L('Una cartella non può essere spostata dentro sé stessa.','A folder cannot be moved into itself.'));continue}
+    try{await api('/api/rename?from='+enc(p)+'&to='+enc(joinPath(dest,baseName(p))),{method:'POST'});moved++}catch(e){error=e}
+  }
+  fxCounts.clear();
+  await fxOpen(fx.path);
+  if(error)toast(error.message&&/sé stessa|itself/.test(error.message)?error.message:explainError(error),{error:true});
+  else if(moved)toast(L(moved===1?'Spostato in «':moved+' elementi spostati in «',moved===1?'Moved to "':moved+' items moved to "')+(dest==='/'?L('Scheda','Card'):fxFriendly(parentOf(dest),baseName(dest)))+L('»','"'));
+}
+async function fxMove(paths){
+  let dest=await pickFolder(L('Sposta in...','Move to...'),fx.path,L('Sposta qui','Move here'));
+  if(dest!==null)fxMoveTo(paths,dest);
+}
+// A folder chosen by walking the card, as in any "move to" window.
+function pickFolder(title,start,okLabel){
+  return new Promise(resolve=>{
+    let here=start,answered=false;
+    let sheet=openSheet('<h2>'+escapeHtml(title)+'</h2><div class="path" id="pickPath"></div><div class="pick" id="pickRows"></div><div class="actions"><button class="btn" id="pickNo">'+L('Annulla','Cancel')+'</button><button class="btn primary" id="pickOk">'+escapeHtml(okLabel)+'</button></div>',()=>{if(!answered)resolve(null)});
+    async function show(path){
+      try{
+        let folders=JSON.parse(await api('/api/list?path='+enc(path))).filter(e=>e.kind==='folder'&&(fx.showSys||!fxIsSystem(path,e)));
+        folders.sort((a,b)=>fxFriendly(path,a.name).localeCompare(fxFriendly(path,b.name),undefined,{numeric:true,sensitivity:'base'}));
+        here=path;
+        let crumbs='<button data-p="/">'+L('Scheda','Card')+'</button>',acc='';
+        path.split('/').filter(Boolean).forEach((part,i)=>{let parent=acc||'/';acc+='/'+part;crumbs+='<span>›</span><button data-p="'+escapeHtml(acc)+'">'+escapeHtml(i===0?fxFriendly(parent,part):part)+'</button>'});
+        sheet.querySelector('#pickPath').innerHTML=crumbs;
+        sheet.querySelector('#pickRows').innerHTML=folders.map(e=>'<div class="row" tabindex="0" data-p="'+escapeHtml(joinPath(path,e.name))+'"><span class="ic">'+ICON.folder+'</span><div class="nm"><div>'+escapeHtml(fxFriendly(path,e.name))+'</div></div></div>').join('')||'<div class="empty-note">'+L('Nessuna cartella qui dentro.','No folders in here.')+'</div>';
+      }catch(e){fail(e)}
     }
-    document.getElementById('wifiScan').innerHTML=html||'<li class="hint">Nessuna rete trovata</li>';
-  }catch(e){}
+    sheet.addEventListener('click',e=>{let el=e.target.closest('[data-p]');if(el)show(el.dataset.p)});
+    sheet.querySelector('#pickOk').onclick=()=>{answered=true;closeSheet();resolve(here)};
+    sheet.querySelector('#pickNo').onclick=closeSheet;
+    show(start);
+  });
+}
+async function fxPreview(path,e){
+  let ext=fxExt(e.name),body;
+  if(['bmp','png','jpg','jpeg'].includes(ext)){
+    // A sleep image is stored turned: shown the way the device shows it.
+    body=path.startsWith('/SLEEP/')&&ext==='bmp'?'<div class="sleep-thumb" style="max-width:240px;margin:.4rem auto" data-empty="'+L('Anteprima non disponibile','No preview')+'"><canvas id="previewCanvas" width="480" height="800"></canvas></div>':'<img class="preview" src="/api/download?path='+enc(path)+'" alt="">';
+  }else{
+    try{let text=await api('/api/download?path='+enc(path));body='<pre>'+escapeHtml(text.slice(0,20000))+(text.length>20000?'\n...':'')+'</pre>'}catch(err){fail(err);return}
+  }
+  let sheet=openSheet('<h2 style="overflow-wrap:anywhere">'+escapeHtml(e.name)+'</h2><p class="hint">'+escapeHtml(fxTypeLabel(fx.path,e)+' · '+formatBytes(e.size)+(e.modified?' · '+formatDate(e.modified,false):''))+'</p>'+body+'<div class="actions"><button class="btn" id="pvClose">'+L('Chiudi','Close')+'</button><button class="btn primary" id="pvDown">'+ICON.down+L('Scarica','Download')+'</button></div>');
+  sheet.querySelector('#pvClose').onclick=closeSheet;
+  sheet.querySelector('#pvDown').onclick=()=>downloadPaths([path]);
+  let canvas=sheet.querySelector('#previewCanvas');
+  if(canvas)drawSleepThumb(canvas,'/api/download?path='+enc(path),e.name+':'+e.size+':'+e.modified);
+}
+const fxUploader=createUploader({containerId:'queueFx',getDir:()=>fx.path,getExisting:dir=>dir===fx.path?new Set(fx.entries.map(e=>e.name.toLowerCase())):new Set(),onDone:()=>{status(L('Caricamento completato','Upload complete'));fxCounts.clear();fxOpen(fx.path,true);fetchSpace()}});
+$('fileFx').addEventListener('change',e=>{if(e.target.files.length)fxUploader.handleFiles(e.target.files);e.target.value=''});
+// --- gesti sulle righe ---
+(function(){
+  let rows=$('fxRows');
+  rows.addEventListener('click',e=>{
+    if(fxSkipClick){fxSkipClick=false;return}
+    let row=e.target.closest('.row');
+    if(!row)return;
+    let name=row.dataset.n,more=e.target.closest('.more');
+    if(more){fxRowMenu(name,more);return}
+    if(e.target.closest('.check')){fxToggle(name);return}
+    if(fxMouse.matches){
+      if(e.detail>=2){fxActivate(name,row);return}
+      if(e.shiftKey&&fx.anchor){
+        let names=fxVisible().map(x=>x.name),a=names.indexOf(fx.anchor),b=names.indexOf(name);
+        if(a>=0&&b>=0){fx.sel=new Set(names.slice(Math.min(a,b),Math.max(a,b)+1));fxPaintSel();return}
+      }
+      if(e.ctrlKey||e.metaKey){if(fx.sel.has(name))fx.sel.delete(name);else fx.sel.add(name);fx.anchor=name;fxPaintSel();return}
+      fx.sel=new Set([name]);fx.anchor=name;fxPaintSel();
+    }else if(fx.selMode)fxToggle(name);
+    else fxActivate(name,row);
+  });
+  rows.addEventListener('contextmenu',e=>{
+    let row=e.target.closest('.row');
+    if(!row)return;
+    e.preventDefault();
+    let name=row.dataset.n;
+    if(!fx.sel.has(name)){fx.sel=new Set([name]);fx.anchor=name;fxPaintSel()}
+    if(fx.sel.size>1)fxBulkMenu({x:e.clientX,y:e.clientY});else fxRowMenu(name,{x:e.clientX,y:e.clientY});
+  });
+  // A long press on a touch screen starts a selection.
+  rows.addEventListener('pointerdown',e=>{
+    let row=e.target.closest('.row');
+    if(!row||e.pointerType==='mouse'||e.target.closest('.more'))return;
+    let name=row.dataset.n;
+    clearTimeout(fxLongPress);
+    fxLongPress=setTimeout(()=>{fxSkipClick=true;fx.selMode=true;fx.sel.add(name);fx.anchor=name;fxRender();if(navigator.vibrate)navigator.vibrate(15)},550);
+  });
+  ['pointerup','pointercancel','pointermove','scroll'].forEach(ev=>rows.addEventListener(ev,e=>{if(ev!=='pointermove'||Math.abs(e.movementX)+Math.abs(e.movementY)>4)clearTimeout(fxLongPress)},{passive:true}));
+  rows.addEventListener('keydown',e=>{let row=e.target.closest('.row');if(row&&e.key==='Enter'){e.preventDefault();fxActivate(row.dataset.n,row)}});
+  // Drag: rows onto a folder to move them, files from the computer to upload.
+  rows.addEventListener('dragstart',e=>{
+    let row=e.target.closest('.row');
+    if(!row)return;
+    let name=row.dataset.n;
+    if(!fx.sel.has(name)){fx.sel=new Set([name]);fx.anchor=name;fxPaintSel()}
+    fxDragging=fxSelItems().map(i=>i.path);
+    e.dataTransfer.effectAllowed='move';
+    try{e.dataTransfer.setData('text/plain',name)}catch(err){}
+  });
+  rows.addEventListener('dragend',()=>{fxDragging=null;document.querySelectorAll('.dragover').forEach(el=>el.classList.remove('dragover'))});
+  function target(e){
+    // A folder row, a side-panel entry, or the list itself (the open folder).
+    let row=e.target.closest('#fxRows .row');
+    if(row){let entry=fxEntry(row.dataset.n);if(entry&&entry.kind==='folder')return {el:row,path:joinPath(fx.path,entry.name)}}
+    let side=e.target.closest('#fxSide button[data-p]');
+    if(side)return {el:side,path:side.dataset.p};
+    return {el:$('fxDropHint'),path:fx.path};
+  }
+  let zone=$('filesCard');
+  zone.addEventListener('dragover',e=>{
+    let t=target(e);
+    if(fxDragging&&t.path===fx.path)return;
+    e.preventDefault();
+    document.querySelectorAll('.dragover').forEach(el=>el.classList.remove('dragover'));
+    t.el.classList.add('dragover');
+  });
+  zone.addEventListener('dragleave',e=>{if(!zone.contains(e.relatedTarget))document.querySelectorAll('.dragover').forEach(el=>el.classList.remove('dragover'))});
+  zone.addEventListener('drop',e=>{
+    let t=target(e);
+    document.querySelectorAll('.dragover').forEach(el=>el.classList.remove('dragover'));
+    if(fxDragging){e.preventDefault();let paths=fxDragging;fxDragging=null;if(t.path!==fx.path)fxMoveTo(paths,t.path);return}
+    if(e.dataTransfer.files&&e.dataTransfer.files.length){e.preventDefault();fxUploader.handleFiles(e.dataTransfer.files,t.path)}
+  });
+  $('fxPath').addEventListener('click',e=>{let b=e.target.closest('button[data-p]');if(b)fxOpen(b.dataset.p)});
+  $('fxSide').addEventListener('click',e=>{let b=e.target.closest('button[data-p]');if(b)fxOpen(b.dataset.p)});
+  $('fxHead').addEventListener('click',e=>{let b=e.target.closest('button[data-s]');if(b)fxSortBy(b.dataset.s)});
+  document.addEventListener('keydown',e=>{
+    if(activeTab!=='files'||$('shade')||/^(INPUT|TEXTAREA)$/.test(e.target.tagName))return;
+    let one=fx.sel.size===1?Array.from(fx.sel)[0]:null;
+    if(e.key==='F2'&&one){e.preventDefault();renameEntry(joinPath(fx.path,one),()=>fxOpen(fx.path))}
+    else if(e.key==='Delete'&&fx.sel.size){e.preventDefault();fxDelete(fxSelItems())}
+    else if(e.key==='Enter'&&one&&!e.target.closest('.row')){e.preventDefault();fxActivate(one)}
+    else if(e.key==='Backspace'){e.preventDefault();fxGoUp()}
+    else if(e.key==='Escape'&&fx.sel.size)fxClearSel();
+    else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='a'){e.preventDefault();fx.sel=new Set(fxVisible().map(x=>x.name));fxRender()}
+  });
+  addEventListener('resize',()=>{if(activeTab==='files'&&fx.loaded)fxRender()});
+})();
+
+// --- Wi-Fi: le reti salvate si vedono e si dimenticano sempre (e solo una
+// modifica a WIFI.TXT); la ricerca delle reti vicine funziona solo
+// dall'hotspot del dispositivo, e unirsi a una rete nuova viene prima
+// provato con una connessione vera (vedi NetworkRuntime::try_join_candidate
+// lato firmware).
+function wifiBars(rssi){
+  let n=rssi>=-55?4:rssi>=-67?3:rssi>=-75?2:1;
+  let label=[L('segnale debole','weak signal'),L('segnale discreto','fair signal'),L('segnale buono','good signal'),L('segnale ottimo','excellent signal')][n-1];
+  return '<span class="bars" role="img" title="'+label+'" aria-label="'+label+'">'+[1,2,3,4].map(i=>'<i class="'+(i<=n?'on':'')+'" style="height:'+(i*4)+'px"></i>').join('')+'</span>';
 }
 async function wifiLoadSaved(){
   try{
     let list=JSON.parse(await api('/api/networks'));
-    let html=list.length?'':'<li class="hint">Nessuna rete salvata</li>';
-    for(let i=0;i<list.length;i++){
-      let ssid=list[i].ssid;
-      html+='<li><span class="name">'+escapeHtml(ssid)+'</span><button onclick="wifiOpenJoin('+jsq(ssid)+',true)">Cambia password</button><button class="danger" onclick="wifiForget('+jsq(ssid)+')">Dimentica</button></li>';
+    let html='';
+    for(const net of list){
+      let s=escapeHtml(net.ssid);
+      html+='<div class="net"><div class="name">'+s+'</div><button class="btn small" data-s="'+s+'" onclick="wifiOpenJoin(this.dataset.s,true)">'+L('Cambia password','Change password')+'</button><button class="btn small danger" data-s="'+s+'" onclick="wifiForget(this.dataset.s)">'+L('Dimentica','Forget')+'</button></div>';
     }
-    html+='<li><button onclick="wifiOpenJoin(\'\',false)">+ Aggiungi rete manualmente</button></li>';
-    document.getElementById('wifiSaved').innerHTML=html;
+    $('wifiSaved').innerHTML=html||'<p class="hint">'+L('Nessuna rete salvata.','No saved networks.')+'</p>';
+  }catch(e){$('wifiSaved').innerHTML='<p class="hint">'+escapeHtml(explainError(e))+'</p>'}
+}
+async function wifiLoadScan(){
+  $('wifiLanNote').hidden=portalHotspot;
+  if(!portalHotspot){$('wifiScan').innerHTML='';return}
+  try{
+    let list=JSON.parse(await api('/api/scan'));
+    let html='';
+    for(const net of list){
+      let s=escapeHtml(net.ssid);
+      html+='<div class="net"><div class="name">'+wifiBars(net.rssi)+'<span>'+s+'</span></div><button class="btn small primary" data-s="'+s+'" onclick="wifiOpenJoin(this.dataset.s,true)">'+L('Collega','Connect')+'</button></div>';
+    }
+    $('wifiScan').innerHTML=html||'<p class="hint">'+L('Nessuna rete trovata per ora. La ricerca si ripete da sola ogni pochi secondi.','No networks found yet. The search repeats by itself every few seconds.')+'</p>';
   }catch(e){}
 }
+function wifiShow(){wifiLoadSaved();wifiLoadScan()}
 function wifiOpenJoin(ssid,locked){
-  wifiCancelForget();
-  let card=document.getElementById('wifiJoinCard');
-  card.style.display='block';
-  let field=document.getElementById('wifiJoinSsid');
-  field.value=ssid||'';
-  field.readOnly=!!locked;
-  document.getElementById('wifiJoinPassword').value='';
-  document.getElementById('wifiJoinTitle').textContent=ssid?('Connetti a '+ssid):'Aggiungi rete';
-  document.getElementById('wifiJoinStatus').textContent='';
-  document.getElementById('wifiJoinWarning').hidden=wifiHotspot;
-  card.scrollIntoView({behavior:'smooth',block:'start'});
+  let sheet=openSheet('<h2 style="overflow-wrap:anywhere">'+(ssid?L('Collega a «','Connect to "')+escapeHtml(ssid)+L('»','"'):L('Aggiungi una rete','Add a network'))+'</h2>'
+    +'<input type="text" id="wifiSsid" autocomplete="off" autocapitalize="none" placeholder="'+L('Nome della rete','Network name')+'"'+(locked?' hidden':'')+'>'
+    +'<div class="pw"><input type="password" id="wifiPw" autocomplete="off" autocapitalize="none" placeholder="'+L('Password (vuota se la rete è aperta)','Password (empty for an open network)')+'"><button class="btn" id="wifiPwShow">'+L('Mostra','Show')+'</button></div>'
+    +(portalHotspot?'':'<p class="hint">'+L('Il dispositivo lascia la rete su cui è adesso per provare questa. Se riesce, lo ritrovi al nuovo indirizzo mostrato sul suo schermo; se non riesce, torna qui da solo.','The device leaves the network it is on to try this one. If it works, you find it at the new address shown on its screen; if it fails, it comes back here by itself.')+'</p>')
+    +'<p class="hint" id="wifiJoinStatus" role="status"></p>'
+    +'<div class="actions"><button class="btn" id="wifiNo">'+L('Annulla','Cancel')+'</button><button class="btn primary" id="wifiOk">'+L('Collega e salva','Connect and save')+'</button></div>');
+  let ssidInput=sheet.querySelector('#wifiSsid'),pw=sheet.querySelector('#wifiPw');
+  ssidInput.value=ssid||'';
+  sheet.querySelector('#wifiPwShow').onclick=function(){let hide=pw.type==='text';pw.type=hide?'password':'text';this.textContent=hide?L('Mostra','Show'):L('Nascondi','Hide')};
+  sheet.querySelector('#wifiNo').onclick=closeSheet;
+  sheet.querySelector('#wifiOk').onclick=()=>wifiSubmitJoin(ssidInput.value.trim(),pw.value);
+  (locked?pw:ssidInput).focus();
 }
-function wifiCloseJoin(){document.getElementById('wifiJoinCard').style.display='none'}
-let wifiForgetSsid=null;
-function wifiForget(ssid){
-  wifiCloseJoin();
-  wifiForgetSsid=ssid;
-  document.getElementById('wifiForgetText').textContent='Dimenticare "'+ssid+'"? Non si puo\' annullare.';
-  let card=document.getElementById('wifiForgetCard');
-  card.style.display='block';
-  card.scrollIntoView({behavior:'smooth',block:'center'});
+function wifiJoinNote(text){let el=$('wifiJoinStatus');if(el)el.textContent=text}
+async function wifiSubmitJoin(ssid,password){
+  if(!ssid){wifiJoinNote(L('Scrivi il nome della rete.','Type the network name.'));return}
+  wifiJoinNote(L('Provo a collegarmi...','Trying to connect...'));
+  try{await api('/api/networks?ssid='+enc(ssid)+'&password='+enc(password),{method:'POST'})}catch(e){wifiJoinNote(explainError(e));return}
+  wifiPollJoin(0);
 }
-function wifiCancelForget(){
-  wifiForgetSsid=null;
-  document.getElementById('wifiForgetCard').style.display='none';
-}
-async function wifiConfirmForget(){
-  let ssid=wifiForgetSsid;
-  if(!ssid)return;
-  wifiCancelForget();
-  await api('/api/networks/delete?ssid='+enc(ssid),{method:'POST'});
-  wifiLoadSaved();
-}
-async function wifiSubmitJoin(){
-  let ssid=document.getElementById('wifiJoinSsid').value.trim();
-  let password=document.getElementById('wifiJoinPassword').value;
-  if(!ssid){document.getElementById('wifiJoinStatus').textContent='Il nome della rete e\' obbligatorio.';return}
-  document.getElementById('wifiJoinStatus').textContent='Connessione in corso...';
-  await api('/api/networks?ssid='+enc(ssid)+'&password='+enc(password),{method:'POST'});
-  wifiPollJoinStatus();
-}
-async function wifiPollJoinStatus(){
+async function wifiPollJoin(misses){
+  if(!$('wifiJoinStatus'))return;
   try{
-    let s=JSON.parse(await api('/api/status'));
+    let s=await readStatus(true);
     let j=s.wifi_join||{state:'idle'};
-    if(j.state==='testing'){document.getElementById('wifiJoinStatus').textContent='Connessione in corso...';setTimeout(wifiPollJoinStatus,1000);return}
-    if(j.state==='connected'){document.getElementById('wifiJoinStatus').textContent='Connessa e salvata.';wifiLoadSaved();setTimeout(wifiCloseJoin,1500);return}
-    if(j.state==='failed'){document.getElementById('wifiJoinStatus').textContent='Errore: '+(j.error||'connessione non riuscita');return}
-  }catch(e){document.getElementById('wifiJoinStatus').textContent='Errore di rete.'}
+    if(j.state==='connected'){wifiJoinNote(L('Collegata e salvata.','Connected and saved.'));wifiLoadSaved();setTimeout(closeSheet,1500);return}
+    if(j.state==='failed'){wifiJoinNote(L('Non sono riuscito a collegarmi: ','Could not connect: ')+(j.error||L('controlla la password.','check the password.')));return}
+    setTimeout(()=>wifiPollJoin(0),1000);
+  }catch(e){
+    // The device left this network to try the new one.
+    if(misses>=3){wifiJoinNote(L('Il dispositivo ha lasciato questa rete per provare quella nuova. Guarda il suo schermo: se è riuscito mostra il nuovo indirizzo, altrimenti torna qui tra poco.','The device left this network to try the new one. Look at its screen: if it worked it shows the new address, otherwise it is back here shortly.'));setTimeout(()=>wifiPollJoin(misses),3000);return}
+    setTimeout(()=>wifiPollJoin(misses+1),1500);
+  }
 }
-setInterval(()=>{if(activeTab==='wifi')wifiLoadScan()},12000);
+async function wifiForget(ssid){
+  if(!await askConfirm(L('Dimenticare la rete?','Forget this network?'),L('«'+ssid+'» verrà tolta dalle reti salvate. Per riaverla servirà di nuovo la password.','"'+ssid+'" will be removed from the saved networks. Getting it back needs the password again.'),L('Dimentica','Forget')))return;
+  try{await api('/api/networks/delete?ssid='+enc(ssid),{method:'POST'});setTimeout(wifiLoadSaved,400)}catch(e){fail(e)}
+}
+
+// --- schede e avvio ---
+function applyLang(){
+  document.documentElement.lang=LANG;
+  if(LANG!=='en')return;
+  document.querySelectorAll('[data-en]').forEach(el=>{el.textContent=el.dataset.en});
+  document.querySelectorAll('[data-en-ph]').forEach(el=>{el.placeholder=el.dataset.enPh});
+  document.querySelectorAll('[data-en-label]').forEach(el=>{el.setAttribute('aria-label',el.dataset.enLabel)});
+}
+function showTab(name){
+  closeMenu();
+  document.querySelectorAll('.tabpanel').forEach(el=>{el.hidden=true});
+  document.querySelectorAll('.tab').forEach(el=>el.classList.toggle('active',el.dataset.tab===name));
+  $('tab-'+name).hidden=false;
+  activeTab=name;
+  fxRenderSelection();
+  if(name==='books')refreshBooks();
+  else if(name==='audio')refreshAudio();
+  else if(name==='wallpaper'){showWallpaperSources();refreshSleepGallery()}
+  else if(name==='files')fxOpen(fx.path,true);
+  else if(name==='wifi')wifiShow();
+}
+function refreshActiveTab(){fxCounts.clear();showTab(activeTab);fetchSpace()}
+async function initApp(){
+  $('reloadBtn').innerHTML=ICON.reload;
+  let s=null;
+  try{s=await readStatus(true)}catch(e){showLink(false)}
+  if(s&&s.lang==='en'){LANG='en';showSpace(s.free_bytes)}
+  applyLang();
+  fxLabels();
+  showLink(linkUp);
+  // On the device's own hotspot the reason to be here is the Wi-Fi.
+  showTab(portalHotspot?'wifi':'books');
+  setInterval(pollLink,15000);
+  setInterval(()=>{if(activeTab==='wifi'&&portalHotspot&&document.visibilityState==='visible')wifiLoadScan()},12000);
+}
 
 initApp();
 </script></body></html>"##;
@@ -1301,7 +2305,24 @@ initApp();
                 let relative = required_query(request.uri(), "path")?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
                 let mut file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
-                let mut response = request.into_ok_response()?;
+                // Declared as a file to save, under its own name and with
+                // its own type: left to the server's default (`text/html`)
+                // the browser opened every download as a page. An `<img>`
+                // pointed here still shows the picture.
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("file");
+                let disposition = download_content_disposition(name);
+                let mut response = request.into_response(
+                    200,
+                    Some("OK"),
+                    &[
+                        ("Content-Type", download_content_type(name)),
+                        ("Content-Disposition", disposition.as_str()),
+                        ("Cache-Control", "no-store"),
+                    ],
+                )?;
                 let mut buffer = [0_u8; WIFI_TRANSFER_STREAM_CHUNK_BYTES];
                 let mut total = 0;
                 loop {
@@ -1360,7 +2381,22 @@ initApp();
                 ensure_same_origin(request.header("Origin"), request.header("Host"))?;
                 let relative = required_query(request.uri(), "path")?;
                 let path = resolve_portal_path(&relative).map_err(|error| anyhow!(error))?;
-                if path.is_dir() { fs::remove_dir(&path)?; } else { fs::remove_file(&path)?; }
+                // A folder goes with what it holds only when the page asks
+                // for that (`recursive=1`, after the user's own delete), and
+                // never the card's top folder.
+                let recursive = query_value(request.uri(), "recursive").is_some();
+                if path.is_dir() {
+                    if is_portal_root(&path) {
+                        bail!("the card's top folder cannot be deleted");
+                    }
+                    if recursive {
+                        fs::remove_dir_all(&path)?;
+                    } else {
+                        fs::remove_dir(&path)?;
+                    }
+                } else {
+                    fs::remove_file(&path)?;
+                }
                 lock(&delete_shared).touch(format!("Deleted {relative}"), 0);
                 info!("rustmix-wave=wifi-transfer-request method=POST route=delete path={relative} status=completed");
                 request.into_ok_response()?.write_all(b"deleted")?;
@@ -1395,14 +2431,26 @@ initApp();
 
             let status_shared = Arc::clone(&shared);
             server.fn_handler("/api/status", Method::Get, move |request| {
-                let snapshot = lock(&status_shared).snapshot.clone();
+                // A page that is open and in use says so (`alive=1`), which
+                // counts as activity: framing a wallpaper, say, sends nothing
+                // else for minutes. A plain status read does not, so a page
+                // left open and forgotten still lets the portal close.
+                let alive = query_value(request.uri(), "alive").is_some();
+                let snapshot = {
+                    let mut guard = lock(&status_shared);
+                    if alive {
+                        guard.touch_activity();
+                    }
+                    guard.snapshot.clone()
+                };
                 let (total_bytes, free_bytes) = sd_space_bytes().unwrap_or((0, 0));
                 let body = format!(
-                    "{{\"state\":\"{}\",\"last_action\":\"{}\",\"last_bytes\":{},\"total_bytes\":{total_bytes},\"free_bytes\":{free_bytes},\"hotspot\":{},\"wifi_join\":{}}}",
+                    "{{\"state\":\"{}\",\"last_action\":\"{}\",\"last_bytes\":{},\"total_bytes\":{total_bytes},\"free_bytes\":{free_bytes},\"hotspot\":{},\"lang\":\"{}\",\"wifi_join\":{}}}",
                     snapshot.state.label(),
                     json_escape(&snapshot.last_action),
                     snapshot.last_bytes,
                     snapshot.ap_ssid.is_some(),
+                    portal_locale_code(),
                     wifi_join_json(&snapshot.join),
                 );
                 request.into_ok_response()?.write_all(body.as_bytes())?;
@@ -1950,6 +2998,94 @@ mod tests {
         ));
         assert!(!same(Some("null"), Some("192.168.1.10")));
         assert!(!same(Some("http://192.168.1.10"), None));
+    }
+
+    #[test]
+    fn a_download_is_declared_as_a_file_to_save_under_its_own_name() {
+        use super::{download_content_disposition, download_content_type};
+
+        assert_eq!(download_content_type("Libro.EPUB"), "application/epub+zip");
+        assert_eq!(download_content_type("SLEEP001.BMP"), "image/bmp");
+        assert_eq!(
+            download_content_type("LEGGIMI.TXT"),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(download_content_type("traccia 01.mp3"), "audio/mpeg");
+        assert_eq!(
+            download_content_type("senza estensione"),
+            "application/octet-stream"
+        );
+
+        assert_eq!(
+            download_content_disposition("Mondo Emerso.epub"),
+            "attachment; filename=\"Mondo Emerso.epub\"; filename*=UTF-8''Mondo%20Emerso.epub"
+        );
+        // Accents and quotes cannot ride in the plain name: it gets a
+        // stand-in, and the real name goes percent-encoded beside it.
+        assert_eq!(
+            download_content_disposition("L'età \"d'oro\"; 100%.txt"),
+            "attachment; filename=\"L'et_ _d'oro__ 100_.txt\"; \
+             filename*=UTF-8''L%27et%C3%A0%20%22d%27oro%22%3B%20100%25.txt"
+        );
+    }
+
+    fn portal_page() -> String {
+        // A Windows checkout has CRLF line endings, which `include_str!`
+        // keeps (string literals themselves always get LF).
+        let source = include_str!("wifi_transfer.rs").replace("\r\n", "\n");
+        let page_start = source.find("const PORTAL_HTML").unwrap();
+        let page_end = page_start + source[page_start..].find("\"##;").unwrap();
+        source[page_start..page_end].to_string()
+    }
+
+    #[test]
+    fn the_wallpaper_editor_is_upright_and_has_no_tone_sliders() {
+        let page = portal_page();
+        // Framed as the device is held, 3 wide by 5 tall.
+        assert!(page.contains(
+            ".crop-frame{position:relative;overflow:hidden;width:100%;aspect-ratio:3/5;"
+        ));
+        assert!(page.contains("function portraitToNative("));
+        // Position and zoom only.
+        assert!(!page.contains("brightRange"));
+        assert!(!page.contains("contrastRange"));
+        assert!(!page.contains("rotateImage"));
+        assert!(!page.contains("id=\"bgName\""));
+        // Pictures are searched inside the page, never through the device.
+        assert!(page.contains("https://commons.wikimedia.org/w/api.php"));
+    }
+
+    #[test]
+    fn the_page_saves_downloads_and_deletes_folders_only_on_request() {
+        let page = portal_page();
+        // One place makes every download, and names the file to save.
+        assert!(page.contains("a.download=baseName(p)"));
+        assert!(!page.contains("href=\"/api/download"));
+        // A folder goes with its contents only through the user's delete.
+        assert_eq!(page.matches("&recursive=1").count(), 1);
+        // Both languages are in the page; the device says which to use.
+        assert!(page.contains("function L(it,en){return LANG==='en'?en:it}"));
+        assert!(page.contains("s.lang==='en'"));
+    }
+
+    #[test]
+    fn the_page_language_follows_the_device_and_the_top_folder_is_never_deleted() {
+        use super::{is_portal_root, portal_locale_code, resolve_portal_path, set_portal_locale};
+        use crate::regional::Locale;
+
+        set_portal_locale(Locale::English);
+        assert_eq!(portal_locale_code(), "en");
+        set_portal_locale(Locale::Italian);
+        assert_eq!(portal_locale_code(), "it");
+
+        for spelling in ["/", "", "//", "/."] {
+            let path = resolve_portal_path(spelling).unwrap();
+            assert!(is_portal_root(&path), "{spelling:?}");
+        }
+        assert!(!is_portal_root(&resolve_portal_path("/BOOKS").unwrap()));
+        assert!(!is_portal_root(
+            &resolve_portal_path("/AUDIO/Titolo").unwrap()
+        ));
     }
 
     #[test]
