@@ -53,6 +53,7 @@ pub mod sleep_cover;
 pub mod sleep_images;
 pub mod sleep_mode;
 pub mod sleep_network;
+pub mod sleep_tutorial;
 
 pub mod storage;
 pub mod usb_disk;

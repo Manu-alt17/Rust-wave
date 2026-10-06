@@ -95,11 +95,11 @@ locale=it
 
 ```text
 font_size=compact|standard|large
-sleep_screen=sequential|random|book-cover
+sleep_screen=sequential|random|fixed|book-cover
 auto_sleep=5|10|15|30|60|never
 ```
 
-`font_size` is the interface text, not the books'. `sleep_screen` picks what stays on the glass in standby: the images in `SLEEP` in name order (default), at random, or the cover of the book being read. `auto_sleep` is the idle time in minutes before standby (10 by default).
+`font_size` is the interface text, not the books'. `sleep_screen` picks what stays on the glass in standby: the images in `SLEEP` in name order (default), at random, always the same one (`fixed`: the image named in `SLEEPIDX.TXT`, which is the last one shown or the one chosen in Settings or on the Wi-Fi page), or the cover of the book being read. Firmware older than this value does not know `fixed` and starts with the default display settings. `auto_sleep` is the idle time in minutes before standby (10 by default).
 
 ## Sleep images
 

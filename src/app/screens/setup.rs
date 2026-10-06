@@ -8,25 +8,31 @@ use core::convert::Infallible;
 
 use embedded_graphics::{
     pixelcolor::BinaryColor,
-    prelude::{Point, Size},
+    prelude::{Drawable, Point, Primitive, Size},
+    primitives::{PrimitiveStyle, Rectangle},
 };
-use embedded_iconoir::{icons::size48px::other::Language, prelude::IconoirNewIcon};
 
 use crate::{
     app::{
         i18n::t,
         setup::{SetupPage, SETUP_NUMBERED_PAGES},
         state::AppState,
+        typography::Text,
         widgets::{
             footer::{draw_footer, draw_footer_paged, footer_hints, select_and_back, FooterKey},
             header::draw_header,
             home_tile::{draw_icon_tile, TILE_GAP_X},
-            layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE, FIRST_ROW_TOP},
-            list::{
-                draw_field, draw_list_row, draw_section_title, draw_tall_row, ROW_STEP,
-                TALL_ROW_STEP,
+            keys_figure::{
+                draw_device_figure, draw_edge_key_gesture, draw_press_gesture, draw_turn_gesture,
+                EdgeKey, KeyNames, GESTURE_ICON_HEIGHT, GESTURE_ICON_WIDTH,
             },
-            text::draw_paragraph,
+            layout::{CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_WIDTH, FIRST_BASELINE, FIRST_ROW_TOP},
+            list::{
+                centered_baseline, draw_field, draw_list_row, draw_section_title, ROW_HEIGHT,
+                ROW_STEP,
+            },
+            text::{draw_paragraph, wrap_to_width},
+            tile_icons::TileIcon,
         },
     },
     orientation::OrientedFrameBuffer,
@@ -137,7 +143,7 @@ fn draw_language(
             ),
             tile,
             locale.display_label(),
-            &Language::new(BinaryColor::On),
+            TileIcon::Language,
             state.setup.selected == index,
             preferences,
         )?;
@@ -151,55 +157,197 @@ fn draw_language(
     draw_footer(display, state, &hint)
 }
 
-/// What each key does, then "next" and "skip the setup".
+/// Gap between the device's picture and the table under it.
+const KEYS_FIGURE_GAP: i32 = 14;
+/// Gap between the columns of the table: key, gesture, what it does.
+const KEYS_COLUMN_GAP: i32 = 12;
+/// Space above the first and below the last row of a key, inside its rules.
+const KEYS_GROUP_PAD: i32 = 5;
+/// The picture of the device is as tall as the page leaves room for,
+/// between these two.
+const KEYS_FIGURE_HEIGHTS: (i32, i32) = (130, 236);
+
+/// A gesture on one of the keys, as the table pictures it.
+#[derive(Clone, Copy)]
+enum KeyGesture {
+    Turn,
+    PressRocker,
+    HoldRocker,
+    Press(EdgeKey),
+    Hold(EdgeKey),
+}
+
+/// Where the keys are and what each does. On top the device drawn upright
+/// with its three keys named; under it one table on one grid: a key per
+/// group, between thin rules, its name in the first column, then a row per
+/// gesture with the picture of the gesture and what it does. "Next" and
+/// "skip the setup" close the page like the others.
 fn draw_keys(display: &mut OrientedFrameBuffer<'_>, state: &AppState) -> Result<(), Infallible> {
     let locale = state.regional.locale;
     let preferences = state.display;
+    let body = preferences.body_style();
+    let heading = preferences.heading_style();
+    let body_step = i32::from(body.line_height()) + 2;
     draw_header(display, state, t(locale, "THE KEYS", "I TASTI"))?;
-    let keys: [(&str, &str); 5] = [
+
+    let names = KeyNames {
+        rocker: t(locale, "Rocker", "Rotella"),
+        power: "Power",
+        boot: "BOOT",
+    };
+    let rocker = [
         (
-            t(locale, "Rocker up / down", "Rotella su / gi\u{00F9}"),
+            KeyGesture::Turn,
             t(
                 locale,
-                "Moves through menus, turns pages",
-                "Scorre i menu, gira pagina",
+                "Up or down: menus and pages",
+                "Su o gi\u{00F9}: scorre menu e pagine",
             ),
         ),
         (
+            KeyGesture::PressRocker,
             t(
                 locale,
-                "Press the rocker (SELECT)",
-                "Premi la rotella (SELECT)",
-            ),
-            t(locale, "Opens or confirms", "Apre o conferma"),
-        ),
-        (
-            t(locale, "Hold the rocker down", "Tieni premuta la rotella"),
-            t(
-                locale,
-                "Options of what is selected",
-                "Opzioni di ci\u{00F2} che \u{00E8} selezionato",
+                "Press (SELECT): confirms",
+                "Premi (SELECT): conferma",
             ),
         ),
         (
-            t(locale, "BOOT key", "Tasto BOOT"),
-            t(locale, "Goes back", "Torna indietro"),
-        ),
-        (
-            t(locale, "Power key", "Tasto Power"),
+            KeyGesture::HoldRocker,
             t(
                 locale,
-                "Standby; held down, opens a menu",
-                "Standby; tenuto premuto apre un menu",
+                "Hold down: opens the options",
+                "Tieni premuto: apre le opzioni",
             ),
         ),
     ];
-    let mut top = FIRST_ROW_TOP;
-    for (title, detail) in keys {
-        draw_tall_row(display, preferences, top, title, detail, "", false)?;
-        top += TALL_ROW_STEP;
+    let power = [
+        (
+            KeyGesture::Press(EdgeKey::Power),
+            t(locale, "Press: standby", "Premi: standby"),
+        ),
+        (
+            KeyGesture::Hold(EdgeKey::Power),
+            t(locale, "Hold down: menu", "Tieni premuto: menu"),
+        ),
+    ];
+    let boot = [(
+        KeyGesture::Press(EdgeKey::Boot),
+        t(locale, "Press: goes back", "Premi: torna indietro"),
+    )];
+    let groups: [(&str, &[(KeyGesture, &str)]); 3] = [
+        (names.rocker, &rocker),
+        (names.power, &power),
+        (names.boot, &boot),
+    ];
+
+    // Three columns, the same for every row: the key's name, the picture
+    // of the gesture, the line that says what it does.
+    let name_width = groups
+        .iter()
+        .map(|(name, _)| heading.text_width(name))
+        .max()
+        .unwrap_or(0);
+    let icon_left = CONTENT_LEFT + name_width + KEYS_COLUMN_GAP;
+    let text_left = icon_left + GESTURE_ICON_WIDTH + KEYS_COLUMN_GAP;
+    let text_width = CONTENT_LEFT + CONTENT_WIDTH - text_left;
+    let row_height = |lines: usize| (lines as i32 * body_step).max(GESTURE_ICON_HEIGHT) + 6;
+    let wrapped: Vec<Vec<Vec<String>>> = groups
+        .iter()
+        .map(|(_, rows)| {
+            rows.iter()
+                .map(|(_, text)| wrap_to_width(body, text, text_width, 3))
+                .collect()
+        })
+        .collect();
+    let table_height: i32 = wrapped
+        .iter()
+        .map(|rows| {
+            1 + 2 * KEYS_GROUP_PAD
+                + rows
+                    .iter()
+                    .map(|lines| row_height(lines.len()))
+                    .sum::<i32>()
+        })
+        .sum::<i32>()
+        + 1;
+
+    // The picture takes the room the table and the two choices leave, so
+    // the page fits at every text size.
+    let choices_height = 2 * ROW_STEP - (ROW_STEP - ROW_HEIGHT);
+    let figure_top = FIRST_ROW_TOP + 4;
+    let figure_height = (CONTENT_BOTTOM
+        - figure_top
+        - KEYS_FIGURE_GAP
+        - table_height
+        - KEYS_FIGURE_GAP
+        - choices_height)
+        .clamp(KEYS_FIGURE_HEIGHTS.0, KEYS_FIGURE_HEIGHTS.1);
+    draw_device_figure(
+        display,
+        CONTENT_LEFT + CONTENT_WIDTH / 2,
+        figure_top,
+        figure_height,
+        names,
+        heading,
+    )?;
+
+    let rule = |display: &mut OrientedFrameBuffer<'_>, y: i32| {
+        Rectangle::new(
+            Point::new(CONTENT_LEFT, y),
+            Size::new(CONTENT_WIDTH as u32, 1),
+        )
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(display)
+    };
+    let mut top = figure_top + figure_height + KEYS_FIGURE_GAP;
+    for ((name, rows), wrapped_rows) in groups.iter().zip(&wrapped) {
+        rule(display, top)?;
+        top += 1 + KEYS_GROUP_PAD;
+        for (index, ((gesture, _), lines)) in rows.iter().zip(wrapped_rows).enumerate() {
+            let height = row_height(lines.len());
+            let center_y = top + height / 2;
+            if index == 0 {
+                // The name stands on the first row of its key.
+                Text::new(
+                    name,
+                    Point::new(CONTENT_LEFT, centered_baseline(heading, top, height)),
+                    heading,
+                )
+                .draw(display)?;
+            }
+            match *gesture {
+                KeyGesture::Turn => draw_turn_gesture(display, icon_left, center_y)?,
+                KeyGesture::PressRocker => {
+                    draw_press_gesture(display, icon_left, center_y, false)?;
+                }
+                KeyGesture::HoldRocker => draw_press_gesture(display, icon_left, center_y, true)?,
+                KeyGesture::Press(key) => {
+                    draw_edge_key_gesture(display, icon_left, center_y, key, false)?;
+                }
+                KeyGesture::Hold(key) => {
+                    draw_edge_key_gesture(display, icon_left, center_y, key, true)?;
+                }
+            }
+            let text_top = center_y - lines.len() as i32 * body_step / 2;
+            for (row, line) in lines.iter().enumerate() {
+                Text::new(
+                    line,
+                    Point::new(
+                        text_left,
+                        centered_baseline(body, text_top + row as i32 * body_step, body_step),
+                    ),
+                    body,
+                )
+                .draw(display)?;
+            }
+            top += height;
+        }
+        top += KEYS_GROUP_PAD;
     }
-    top += 8;
+    rule(display, top)?;
+    top += 1 + KEYS_FIGURE_GAP;
+
     let rows = [
         t(locale, "Next", "Avanti"),
         t(locale, "Skip the setup", "Salta la configurazione"),

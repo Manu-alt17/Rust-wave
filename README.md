@@ -11,7 +11,7 @@ A screen-by-screen guide is in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md), with 
 - **Reader** for TXT and reflowable EPUB: covers as first page, inline images, table of contents, bookmarks, per-book resume, Literata or Atkinson Hyperlegible in four sizes with Latin-1 and typographic characters, justification, landscape, high contrast, and word lookup in an offline dictionary pack.
 - **Library** as a grid of covers, prepared once per book; progressive JPEG covers included, through a luma-only decoder that fits in this board's memory.
 - **Audiobooks**: MP3 files or folders of tracks from the microSD, played on the board's speaker, with pause, 30 s skips, track changes, volume, and the position of every book saved.
-- **Reading statistics**: time today, this week and month, streak, speed, time left in the book.
+- **Reading statistics**: time by week or by month, day by day against a time axis, going back through the earlier ones; streak, speed, time left in the book.
 - **Wi-Fi transfer** from a browser, protected configuration files, and Wi-Fi setup from a phone through the device's own hotspot.
 - **Connect to PC**: the microSD as a USB disk, to copy books and audiobooks with a cable.
 - **Standby** through the AXP2101 PMIC, with a sleep image or the current book's cover on the glass, automatic after an idle time you choose.

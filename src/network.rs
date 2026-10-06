@@ -213,11 +213,25 @@ impl NetworkSnapshot {
     }
 }
 
+/// The hotspot's own address: gateway, DNS server and portal in one.
+///
+/// Deliberately outside the private ranges. The hotspot answers every DNS
+/// query with this address so that a phone's connectivity check lands on
+/// the portal; Android, and Samsung's One UI in particular, does not treat
+/// a network as "sign in required" when that answer is a private address
+/// (192.168.x.x, as ESP-IDF's default 192.168.71.1 was): it files the
+/// network under "no Internet" and never offers the page. 4.3.2.1 is the
+/// address ESP32 captive portals commonly use for this reason. Nothing is
+/// routed beyond the hotspot, so the address only has to look public.
+pub const PROVISIONING_AP_IP: &str = "4.3.2.1";
+/// The hotspot's subnet mask (a /24 around [`PROVISIONING_AP_IP`]).
+pub const PROVISIONING_AP_NETMASK: &str = "255.255.255.0";
+
 /// The device's own hotspot, brought up by [`espidf::NetworkRuntime::start_provisioning`]
 /// so a phone can join it and reach the provisioning portal. Freshly generated
-/// every time provisioning starts. `ip` is the fixed gateway address of
-/// ESP-IDF's default SoftAP netif and is always reachable once the AP is
-/// broadcasting, so it never needs to be polled for.
+/// every time provisioning starts. `portal_ip` is [`PROVISIONING_AP_IP`],
+/// set on the SoftAP netif before the hotspot starts, so it never needs to
+/// be polled for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProvisioningApInfo {
     pub ap_ssid: String,
@@ -275,12 +289,8 @@ pub mod espidf {
     /// `connect()` attempt, so several saved networks that are all
     /// unreachable don't hammer the radio with back-to-back connect calls.
     const CANDIDATE_RETRY_COOLDOWN: Duration = Duration::from_millis(300);
-    /// The AP netif's fixed gateway address under ESP-IDF's default SoftAP
-    /// `NetifConfiguration::wifi_default_router()`. `EspWifi` applies this
-    /// automatically whenever `Configuration::Mixed`/`AccessPoint` is set
-    /// without an explicit netif override (never done here), so it can be
-    /// reported synchronously instead of polled for.
-    const PROVISIONING_AP_IP: &str = "192.168.71.1";
+    use super::{PROVISIONING_AP_IP, PROVISIONING_AP_NETMASK};
+
     /// Bound how many stations may join the provisioning hotspot at once.
     const PROVISIONING_AP_MAX_CONNECTIONS: u16 = 4;
 
@@ -722,68 +732,75 @@ pub mod espidf {
             let wifi = self.wifi.as_mut().context("Wi-Fi driver is unavailable")?;
             let _ = wifi.disconnect();
 
-            // embedded-svc's default AP router config hands DHCP clients
-            // Google's public DNS (8.8.8.8), which this isolated hotspot has
-            // no route to. A joining phone would then have every DNS query
-            // -- including the captive-portal probe the single-QR-code join
-            // flow depends on -- time out silently instead of ever reaching
-            // `crate::dns_captive_portal`'s wildcard responder. Point the
-            // AP's advertised DNS server at itself instead, by mutating the
-            // existing AP netif's DNS record in place rather than replacing
-            // the netif: a replacement built from
+            // Three things about the hotspot's own netif are not ESP-IDF's
+            // SoftAP defaults, and all three are set here on the existing AP
+            // netif rather than on a replacement: one built from
             // `NetifConfiguration::wifi_default_router()` would carry the
             // same fixed "WIFI_AP_DEF" key already registered by the AP
             // netif `EspWifi` set up at startup, and `esp_netif_new` rejects
             // a duplicate key with `ESP_ERR_INVALID_ARG`.
+            //
+            // 1. Its address: see `PROVISIONING_AP_IP` for why it is not the
+            //    default 192.168.71.1.
+            // 2. The DNS server its DHCP leases name. embedded-svc's default
+            //    router config hands clients Google's public DNS (8.8.8.8),
+            //    which this isolated hotspot has no route to: every query
+            //    of a joining phone -- including the captive-portal probe
+            //    the single-QR-code join flow depends on -- would time out
+            //    instead of reaching `crate::dns_captive_portal`'s wildcard
+            //    responder. The hotspot names itself instead.
+            // 3. DHCP Option 114 (RFC 8910), the captive-portal signal
+            //    ESP-IDF's own `captive_portal` example sets alongside the
+            //    DNS/HTTP trick: a client that supports it reads the portal
+            //    URI from its lease.
             let ap_ip: std::net::Ipv4Addr = PROVISIONING_AP_IP
                 .parse()
                 .context("provisioning AP IP is not a valid IPv4 address")?;
+            let ap_netmask: std::net::Ipv4Addr = PROVISIONING_AP_NETMASK
+                .parse()
+                .context("provisioning AP netmask is not a valid IPv4 address")?;
+            let as_esp_ip = |ip: std::net::Ipv4Addr| sys::esp_ip4_addr_t {
+                addr: u32::to_be(u32::from_be_bytes(ip.octets())),
+            };
+            let captive_portal_uri = std::ffi::CString::new(format!("http://{PROVISIONING_AP_IP}"))
+                .context("provisioning captive-portal URI contains an interior NUL byte")?;
+            let ap_netif = wifi.wifi_mut().ap_netif().handle();
+
+            // ESP-IDF takes a new address only while the netif's DHCP server
+            // is *stopped* -- not while it runs, and not in the "never
+            // started" state it has before the hotspot first comes up
+            // (`ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED` in both) -- and DHCP
+            // options only while it is not running. So: stop, set, start,
+            // whatever state it was in. Started again before the hotspot is
+            // up, the server just waits for it; it then leases addresses
+            // from the new /24.
+            let status = unsafe { sys::esp_netif_dhcps_stop(ap_netif) };
+            if status != sys::ESP_OK
+                && status != sys::ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED as sys::esp_err_t
+            {
+                return Err(anyhow!(
+                    "esp_netif_dhcps_stop before configuring the provisioning hotspot failed: {status}"
+                ));
+            }
+
+            let ip_info = sys::esp_netif_ip_info_t {
+                ip: as_esp_ip(ap_ip),
+                netmask: as_esp_ip(ap_netmask),
+                gw: as_esp_ip(ap_ip),
+            };
+            let ip_status = unsafe { sys::esp_netif_set_ip_info(ap_netif, &ip_info) };
+
             let mut dns_info = unsafe { core::mem::zeroed::<sys::esp_netif_dns_info_t>() };
-            let status = unsafe {
-                dns_info.ip.u_addr.ip4 = sys::esp_ip4_addr_t {
-                    addr: u32::to_be(u32::from_be_bytes(ap_ip.octets())),
-                };
+            let dns_status = unsafe {
+                dns_info.ip.u_addr.ip4 = as_esp_ip(ap_ip);
                 sys::esp_netif_set_dns_info(
-                    wifi.wifi_mut().ap_netif().handle(),
+                    ap_netif,
                     sys::esp_netif_dns_type_t_ESP_NETIF_DNS_MAIN,
                     &mut dns_info,
                 )
             };
-            if status != sys::ESP_OK {
-                return Err(anyhow!(
-                    "esp_netif_set_dns_info failed to point the provisioning hotspot's DNS at itself: {status}"
-                ));
-            }
 
-            // Also advertise the portal via DHCP Option 114 (RFC 8910), the
-            // modern captive-portal signal ESP-IDF's own `captive_portal`
-            // example sets alongside the DNS/HTTP trick above: a client that
-            // supports it reads the portal URI directly from its DHCP lease,
-            // without depending on a DNS hijack or an HTTP probe/redirect
-            // landing correctly at all.
-            let captive_portal_uri = std::ffi::CString::new(format!("http://{PROVISIONING_AP_IP}"))
-                .context("provisioning captive-portal URI contains an interior NUL byte")?;
-            // ESP-IDF rejects DHCP server option changes while the server is
-            // running (`ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED`), which it
-            // already is whenever the driver was started earlier (e.g. by a
-            // failed boot-time connect attempt). Stop it around the change
-            // and restart it only if it was running, as ESP-IDF's
-            // `captive_portal` example does.
-            let ap_netif = wifi.wifi_mut().ap_netif().handle();
-            let mut dhcps_status = sys::esp_netif_dhcp_status_t_ESP_NETIF_DHCP_INIT;
-            let dhcps_was_started = unsafe {
-                sys::esp_netif_dhcps_get_status(ap_netif, &mut dhcps_status) == sys::ESP_OK
-                    && dhcps_status == sys::esp_netif_dhcp_status_t_ESP_NETIF_DHCP_STARTED
-            };
-            if dhcps_was_started {
-                let status = unsafe { sys::esp_netif_dhcps_stop(ap_netif) };
-                if status != sys::ESP_OK {
-                    return Err(anyhow!(
-                        "esp_netif_dhcps_stop before setting CAPTIVEPORTAL_URI failed: {status}"
-                    ));
-                }
-            }
-            let status = unsafe {
+            let option_status = unsafe {
                 sys::esp_netif_dhcps_option(
                     ap_netif,
                     sys::esp_netif_dhcp_option_mode_t_ESP_NETIF_OP_SET,
@@ -792,23 +809,44 @@ pub mod espidf {
                     captive_portal_uri.as_bytes().len() as u32,
                 )
             };
-            if dhcps_was_started {
-                let restart_status = unsafe { sys::esp_netif_dhcps_start(ap_netif) };
-                if restart_status != sys::ESP_OK {
-                    return Err(anyhow!(
-                        "esp_netif_dhcps_start after setting CAPTIVEPORTAL_URI failed: {restart_status}"
-                    ));
-                }
+
+            // The server goes back on whatever happened above: a hotspot
+            // that hands out no addresses is worse than any of the three
+            // settings missing.
+            let restart_status = unsafe { sys::esp_netif_dhcps_start(ap_netif) };
+            if restart_status != sys::ESP_OK
+                && restart_status != sys::ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED as sys::esp_err_t
+            {
+                return Err(anyhow!(
+                    "esp_netif_dhcps_start after configuring the provisioning hotspot failed: {restart_status}"
+                ));
+            }
+            if ip_status != sys::ESP_OK {
+                return Err(anyhow!(
+                    "esp_netif_set_ip_info failed to give the provisioning hotspot its address: {ip_status}"
+                ));
+            }
+            if dns_status != sys::ESP_OK {
+                return Err(anyhow!(
+                    "esp_netif_set_dns_info failed to point the provisioning hotspot's DNS at itself: {dns_status}"
+                ));
             }
             // Option 114 is an extra signal on top of the DNS/HTTP redirect,
             // not a requirement: a failure here must not take the portal down.
-            if status == sys::ESP_OK {
+            if option_status == sys::ESP_OK {
                 // `esp_netif_dhcps_option` stored the raw pointer above, not
                 // a copy; keep the backing `CString` alive for as long as the
                 // hotspot might still be up.
                 self.captive_portal_uri = Some(captive_portal_uri);
             } else {
-                warn!("rustmix-wave=provisioning-captive-uri status=failed error-code={status}");
+                warn!(
+                    "rustmix-wave=provisioning-captive-uri status=failed error-code={option_status}"
+                );
+            }
+            if crate::dns_captive_portal::DIAGNOSTIC_LOG {
+                warn!(
+                    "rustmix-wave=provisioning-hotspot status=configured ip={PROVISIONING_AP_IP} netmask={PROVISIONING_AP_NETMASK} ip-status={ip_status} dns-status={dns_status} option114-status={option_status} dhcps-start={restart_status}"
+                );
             }
 
             wifi.set_configuration(&Configuration::Mixed(
@@ -1465,7 +1503,24 @@ pub mod espidf {
 
 #[cfg(test)]
 mod tests {
-    use super::{NetworkSnapshot, NtpSyncState, WifiConnectionState};
+    use super::{
+        NetworkSnapshot, NtpSyncState, WifiConnectionState, PROVISIONING_AP_IP,
+        PROVISIONING_AP_NETMASK,
+    };
+
+    #[test]
+    fn the_hotspot_address_is_not_one_a_phone_takes_for_a_home_network() {
+        // Android does not offer the sign-in page when the hotspot's DNS
+        // answers with a private address.
+        let ip: std::net::Ipv4Addr = PROVISIONING_AP_IP.parse().unwrap();
+        assert!(!ip.is_private(), "{ip}");
+        assert!(!ip.is_loopback() && !ip.is_link_local() && !ip.is_multicast());
+        assert!(!ip.is_unspecified() && !ip.is_broadcast() && !ip.is_documentation());
+        // The gateway is the first host of its own /24.
+        assert_eq!(ip.octets()[3], 1);
+        let mask: std::net::Ipv4Addr = PROVISIONING_AP_NETMASK.parse().unwrap();
+        assert_eq!(mask.octets(), [255, 255, 255, 0]);
+    }
 
     #[test]
     fn configuration_missing_snapshot_is_safe_for_home() {

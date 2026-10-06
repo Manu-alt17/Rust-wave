@@ -15,7 +15,12 @@ use embedded_graphics::{
 };
 
 use crate::{
-    app::{i18n::t, state::AppState, typography::Text, widgets::text::truncate_to_width},
+    app::{
+        i18n::t,
+        state::AppState,
+        typography::{Text, UiTextStyle},
+        widgets::text::truncate_to_width,
+    },
     orientation::OrientedFrameBuffer,
     regional::Locale,
 };
@@ -28,6 +33,8 @@ const FOOTER_RIGHT: i32 = 462;
 const FOOTER_BASELINE: i32 = 782;
 /// Gap kept between the hint and the page indicator.
 const FOOTER_PAGE_GAP: i32 = 16;
+/// What joins a hint's actions.
+const FOOTER_SEPARATOR: &str = " \u{00B7} ";
 
 /// A physical control a footer hint can name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,7 +68,7 @@ pub fn footer_hints(locale: Locale, parts: &[(FooterKey, &str)]) -> String {
         .iter()
         .map(|(key, action)| format!("{} {action}", key.label(locale)))
         .collect::<Vec<_>>()
-        .join(" \u{00B7} ")
+        .join(FOOTER_SEPARATOR)
 }
 
 /// The hint every screen below Home ends with.
@@ -97,9 +104,22 @@ pub fn draw_footer(
     draw_footer_paged(display, state, hint, None)
 }
 
+/// `hint` as it fits in `available` pixels. A hint is its actions in order
+/// of use, joined by [`FOOTER_SEPARATOR`], with the way back last; one too
+/// wide for the line loses whole actions from the end (never the first, the
+/// one this screen is for), and only a single action that is still too wide
+/// is cut. There is no smaller text to fall back on.
+fn fit_hint(style: UiTextStyle, hint: &str, available: i32) -> String {
+    let mut parts: Vec<&str> = hint.split(FOOTER_SEPARATOR).collect();
+    while parts.len() > 1 && style.text_width(&parts.join(FOOTER_SEPARATOR)) > available {
+        parts.pop();
+    }
+    truncate_to_width(style, &parts.join(FOOTER_SEPARATOR), available)
+}
+
 /// Draw the footer with `page / pages` on the right. The indicator is left
-/// out for a single page. A hint too wide for the line is drawn one text
-/// size smaller, then cut.
+/// out for a single page. A hint too wide for the line is shortened by
+/// [`fit_hint`].
 pub fn draw_footer_paged(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
@@ -122,13 +142,9 @@ pub fn draw_footer_paged(
     }
 
     let available = hint_right - FOOTER_LEFT;
-    let style = if preferences.footer_style().text_width(hint) <= available {
-        preferences.footer_style()
-    } else {
-        preferences.detail_style()
-    };
+    let style = preferences.footer_style();
     Text::new(
-        &truncate_to_width(style, hint, available),
+        &fit_hint(style, hint, available),
         Point::new(FOOTER_LEFT, FOOTER_BASELINE),
         style,
     )
@@ -138,8 +154,38 @@ pub fn draw_footer_paged(
 
 #[cfg(test)]
 mod tests {
-    use super::{back_only, footer_hints, select_and_back, FooterKey};
-    use crate::regional::Locale;
+    use super::{back_only, fit_hint, footer_hints, select_and_back, FooterKey};
+    use crate::{
+        app::display::{DisplayPreferences, UiFontSize},
+        regional::Locale,
+    };
+
+    #[test]
+    fn a_hint_too_wide_loses_whole_actions_from_the_end() {
+        let style = DisplayPreferences {
+            font_size: UiFontSize::Large,
+            ..Default::default()
+        }
+        .footer_style();
+        let hint = "SU/GI\u{00D9} CAMBIA \u{00B7} SELECT AVANTI \u{00B7} BOOT INDIETRO";
+        let full = style.text_width(hint);
+        // Wide enough: untouched.
+        assert_eq!(fit_hint(style, hint, full), hint);
+        // One pixel short: the way back goes, whole, and nothing is cut.
+        assert_eq!(
+            fit_hint(style, hint, full - 1),
+            "SU/GI\u{00D9} CAMBIA \u{00B7} SELECT AVANTI"
+        );
+        // The first action always stays, cut if it must be.
+        let first = style.text_width("SU/GI\u{00D9} CAMBIA");
+        assert_eq!(fit_hint(style, hint, first), "SU/GI\u{00D9} CAMBIA");
+        let cut = fit_hint(style, hint, first - 1);
+        assert!(
+            cut.starts_with("SU/GI") && cut.ends_with('\u{2026}'),
+            "{cut}"
+        );
+        assert!(style.text_width(&cut) < first);
+    }
 
     #[test]
     fn hints_use_one_wording_and_one_separator() {

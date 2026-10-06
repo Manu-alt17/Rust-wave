@@ -7,25 +7,8 @@ use core::convert::Infallible;
 use embedded_graphics::{
     image::{Image, ImageDrawable},
     pixelcolor::BinaryColor,
-    prelude::{DrawTarget, Drawable, OriginDimensions, Pixel, Point, Primitive, Size},
+    prelude::{Drawable, Point, Primitive, Size},
     primitives::{CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle},
-};
-use embedded_iconoir::{
-    icons::size48px::{
-        actions::{
-            HelpCircle as CompactHelpCircle, InfoEmpty as CompactInfoEmpty,
-            RefreshDouble as CompactRefreshDouble,
-        },
-        activities::{BookStack as CompactBookStack, StatsReport as CompactStatsReport},
-        audio::SoundLow as CompactSoundLow,
-        connectivity::Wifi as CompactWifi,
-        docs::Folder as CompactFolder,
-        editor::TextSize as CompactTextSize,
-        music::Headset as CompactHeadset,
-        other::{Clock as CompactClock, Import as CompactImport, Language as CompactLanguage},
-        system::Settings as CompactSettingsIcon,
-    },
-    prelude::IconoirNewIcon,
 };
 
 use crate::{
@@ -34,6 +17,7 @@ use crate::{
         menu::MenuEntry,
         router::ScreenRoute,
         typography::{Text, UiTextRole},
+        widgets::tile_icons::{TileIcon, TILE_ICON_SIZE},
     },
     orientation::OrientedFrameBuffer,
     regional::Locale,
@@ -61,29 +45,14 @@ const SELECTION_DOT_INSET: i32 = 18;
 /// three tiles plus two `TILE_GAP_X` gaps fill the shared 436px content
 /// width exactly: `(436 - 2*16) / 3 = 134`.
 pub const COMPACT_TILE_SIZE: Size = Size::new(134, 150);
-/// Native square size of the `size48px` glyph used on compact tiles. Kept
-/// unchanged as the layout anchor -- the tile box and title position below
-/// are measured from this, not from the larger drawn size -- so only the
-/// glyph itself grows (see `COMPACT_ICON_DRAW_SIZE`).
-const COMPACT_ICON_SIZE: i32 = 48;
-/// Distance from the tile's top edge to the *native* 48px icon box's top
-/// edge (the upscaled glyph drawn from it extends further upward -- see
-/// `COMPACT_ICON_DRAW_SIZE` -- so its actual visual top sits 16px above
-/// this). Set so the icon+title group's visual ink -- the upscaled icon's
-/// top edge down to the title's descenders (g/p/y and friends), not just
-/// its baseline -- sits centered as a whole within `COMPACT_TILE_SIZE`.
-const COMPACT_ICON_TOP_INSET: i32 = 46;
-const COMPACT_LABEL_BASELINE_INSET: i32 = COMPACT_ICON_TOP_INSET + COMPACT_ICON_SIZE + 22;
-
-/// The `size48px` icon pack has no in-between preset size, so compact-tile
-/// glyphs are drawn nearest-neighbor upscaled by this ratio (48 -> 64px, a
-/// clean integer ratio close to a 30% increase) rather than switching to the
-/// much larger `size96px` pack. Drawn centered on the same point the native
-/// 48px glyph would have occupied, so the tile box and title stay put.
-const COMPACT_ICON_SCALE_NUM: i32 = 4;
-const COMPACT_ICON_SCALE_DEN: i32 = 3;
-const COMPACT_ICON_DRAW_SIZE: i32 =
-    COMPACT_ICON_SIZE * COMPACT_ICON_SCALE_NUM / COMPACT_ICON_SCALE_DEN;
+/// Distance from the tile's top edge to the top of the glyph's
+/// [`TILE_ICON_SIZE`] box. Set so the icon and title together -- from the
+/// glyph's top edge down to the title's descenders (g/p/y and friends), not
+/// just its baseline -- sit centered as a whole within `COMPACT_TILE_SIZE`.
+const TILE_ICON_TOP_INSET: i32 = 30;
+/// Distance from the tile's top edge to the title's baseline: 22 px under
+/// the glyph's box.
+const TILE_LABEL_BASELINE_INSET: i32 = TILE_ICON_TOP_INSET + TILE_ICON_SIZE as i32 + 22;
 
 /// Compact icon + title tile shared by the Home dashboard's grid (which also
 /// carries a Continue Reading card and an Oggi/Streak row above it, hence the
@@ -104,27 +73,24 @@ pub fn draw_home_tile_compact(
         entry.label(locale),
         selected,
         preferences,
-        |display, icon_top_left| draw_route_icon_compact(display, entry.route, icon_top_left),
+        route_icon(entry.route),
     )
 }
 
 /// Same card, icon and title layout as [`draw_home_tile_compact`], for menus
-/// that are not router categories (e.g. Reader Options): any `size48px`
-/// iconoir glyph, any label, any footprint at least as tall as
-/// [`COMPACT_TILE_SIZE`] (icon and title stay centered horizontally and keep
-/// their vertical insets from the top edge).
-pub fn draw_icon_tile<I>(
+/// that are not router categories (e.g. Reader Options): any [`TileIcon`],
+/// any label, any footprint at least as tall as [`COMPACT_TILE_SIZE`] (icon
+/// and title stay centered horizontally and keep their vertical insets from
+/// the top edge).
+pub fn draw_icon_tile(
     display: &mut OrientedFrameBuffer<'_>,
     top_left: Point,
     tile_size: Size,
     label: &str,
-    icon: &I,
+    icon: TileIcon,
     selected: bool,
     preferences: DisplayPreferences,
-) -> Result<(), Infallible>
-where
-    I: ImageDrawable<Color = BinaryColor>,
-{
+) -> Result<(), Infallible> {
     draw_tile_with(
         display,
         top_left,
@@ -132,7 +98,7 @@ where
         label,
         selected,
         preferences,
-        |display, icon_top_left| draw_iconoir_icon_scaled(display, icon_top_left, icon),
+        Some(icon),
     )
 }
 
@@ -143,22 +109,21 @@ fn draw_tile_with(
     label: &str,
     selected: bool,
     preferences: DisplayPreferences,
-    draw_icon: impl FnOnce(&mut OrientedFrameBuffer<'_>, Point) -> Result<(), Infallible>,
+    icon: Option<TileIcon>,
 ) -> Result<(), Infallible> {
     draw_tile_frame(display, top_left, tile_size, selected)?;
 
     let center_x = top_left.x + tile_size.width as i32 / 2;
-    // Anchored on the native glyph's bottom edge (`COMPACT_ICON_TOP_INSET +
-    // COMPACT_ICON_SIZE`), not its center: the title's position is untouched,
-    // so keeping the gap between icon and title at the original 22px means
-    // the extra height the larger glyph needs can only come from growing
-    // upward, not from eating into that gap.
-    let icon_bottom_y = top_left.y + COMPACT_ICON_TOP_INSET + COMPACT_ICON_SIZE;
-    let icon_top_left = Point::new(
-        center_x - COMPACT_ICON_DRAW_SIZE / 2,
-        icon_bottom_y - COMPACT_ICON_DRAW_SIZE,
-    );
-    draw_icon(display, icon_top_left)?;
+    if let Some(icon) = icon {
+        draw_tile_icon(
+            display,
+            Point::new(
+                center_x - i32::from(TILE_ICON_SIZE) / 2,
+                top_left.y + TILE_ICON_TOP_INSET,
+            ),
+            icon,
+        );
+    }
 
     let heading = preferences.text_style(UiTextRole::Heading, BinaryColor::On);
     let label_width = heading.text_width(label);
@@ -166,7 +131,7 @@ fn draw_tile_with(
         label,
         Point::new(
             center_x - label_width / 2,
-            top_left.y + COMPACT_LABEL_BASELINE_INSET,
+            top_left.y + TILE_LABEL_BASELINE_INSET,
         ),
         heading,
     )
@@ -210,71 +175,42 @@ fn draw_tile_frame(
     Ok(())
 }
 
-/// Dispatch to the category glyph, drawn as a `size48px` `embedded-iconoir`
-/// outline glyph nearest-neighbor upscaled to [`COMPACT_ICON_DRAW_SIZE`] (see
-/// [`draw_iconoir_icon_scaled`]): BookStack/StatsReport/Import/
-/// Folder/Settings on the Home grid (Continue Reading draws its own cover art
-/// instead of a glyph — see
+/// The glyph of a router category's tile: Library, Audiobooks, Statistics,
+/// Upload, Files and Settings on the Home grid (Continue Reading draws its
+/// own cover art instead of a glyph -- see
 /// `screens::category::draw_continue_reading_tile`; Bookmarks has no tile of
 /// its own, reached instead by holding SELECT on a cover in the Library
 /// grid), and one glyph per entry on the Settings grid.
-fn draw_route_icon_compact(
-    display: &mut OrientedFrameBuffer<'_>,
-    route: ScreenRoute,
-    top_left: Point,
-) -> Result<(), Infallible> {
+fn route_icon(route: ScreenRoute) -> Option<TileIcon> {
     match route {
-        ScreenRoute::Library => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactBookStack::new(BinaryColor::On))
-        }
-        ScreenRoute::AudiobookLibrary => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactHeadset::new(BinaryColor::On))
-        }
-        ScreenRoute::ReadingStats => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactStatsReport::new(BinaryColor::On))
-        }
-        ScreenRoute::Upload => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactImport::new(BinaryColor::On))
-        }
-        ScreenRoute::Settings => draw_iconoir_icon_scaled(
-            display,
-            top_left,
-            &CompactSettingsIcon::new(BinaryColor::On),
-        ),
-        ScreenRoute::Audio => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactSoundLow::new(BinaryColor::On))
-        }
-        ScreenRoute::Clock => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactClock::new(BinaryColor::On))
-        }
-        ScreenRoute::Display => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactTextSize::new(BinaryColor::On))
-        }
-        ScreenRoute::Language => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactLanguage::new(BinaryColor::On))
-        }
-        ScreenRoute::DeviceInfo => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactInfoEmpty::new(BinaryColor::On))
-        }
-        ScreenRoute::Network => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactWifi::new(BinaryColor::On))
-        }
-        ScreenRoute::OtaUpdate => draw_iconoir_icon_scaled(
-            display,
-            top_left,
-            &CompactRefreshDouble::new(BinaryColor::On),
-        ),
-        ScreenRoute::Files => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactFolder::new(BinaryColor::On))
-        }
-        ScreenRoute::Setup => {
-            draw_iconoir_icon_scaled(display, top_left, &CompactHelpCircle::new(BinaryColor::On))
-        }
-        _ => Ok(()),
+        ScreenRoute::Library => Some(TileIcon::BookStack),
+        ScreenRoute::AudiobookLibrary => Some(TileIcon::Headset),
+        ScreenRoute::ReadingStats => Some(TileIcon::StatsReport),
+        ScreenRoute::Upload => Some(TileIcon::Import),
+        ScreenRoute::Settings => Some(TileIcon::Settings),
+        ScreenRoute::Audio => Some(TileIcon::SoundLow),
+        ScreenRoute::Clock => Some(TileIcon::Clock),
+        ScreenRoute::Display => Some(TileIcon::TextSize),
+        ScreenRoute::Language => Some(TileIcon::Language),
+        ScreenRoute::DeviceInfo => Some(TileIcon::InfoEmpty),
+        ScreenRoute::Network => Some(TileIcon::Wifi),
+        ScreenRoute::OtaUpdate => Some(TileIcon::RefreshDouble),
+        ScreenRoute::Files => Some(TileIcon::Folder),
+        ScreenRoute::Setup => Some(TileIcon::HelpCircle),
+        _ => None,
     }
 }
 
-/// Draw an `embedded-iconoir` glyph at `top_left`.
+/// Draw a tile glyph with its box's top-left corner at `top_left`. The
+/// glyphs are stored at the size they are shown (see
+/// [`crate::app::widgets::tile_icons`]), so this is a plain copy of their
+/// ink: nothing is scaled, and nothing white is painted.
+fn draw_tile_icon(display: &mut OrientedFrameBuffer<'_>, top_left: Point, icon: TileIcon) {
+    display.blit_packed_bitmap(top_left, TILE_ICON_SIZE, TILE_ICON_SIZE, icon.bits());
+}
+
+/// Draw an `embedded-iconoir` glyph at `top_left`, at the size of its own
+/// strike (the 24 px and 96 px glyphs outside the tiles).
 pub(crate) fn draw_iconoir_icon<I>(
     display: &mut OrientedFrameBuffer<'_>,
     top_left: Point,
@@ -286,109 +222,165 @@ where
     Image::new(icon, top_left).draw(display)
 }
 
-/// Draw a `size48px` `embedded-iconoir` glyph at `top_left`, nearest-neighbor
-/// upscaled from [`COMPACT_ICON_SIZE`] to [`COMPACT_ICON_DRAW_SIZE`]. Calls
-/// `ImageDrawable::draw` directly instead of going through `Image`, since
-/// `Image` would apply the screen-position offset before this code ever sees
-/// the pixels -- here the glyph must still be scaled about its own local
-/// origin first.
-fn draw_iconoir_icon_scaled<I>(
-    display: &mut OrientedFrameBuffer<'_>,
-    top_left: Point,
-    icon: &I,
-) -> Result<(), Infallible>
-where
-    I: ImageDrawable<Color = BinaryColor>,
-{
-    let mut target = UpscalingTarget {
-        inner: display,
-        dest_top_left: top_left,
-    };
-    icon.draw(&mut target)
-}
-
-/// `DrawTarget` that expands every source pixel an `ImageDrawable` emits, in
-/// its own native `COMPACT_ICON_SIZE`-square local coordinates, into the
-/// block of destination pixels a standard integer-ratio nearest-neighbor
-/// scale-up maps it to -- so the non-integer 4/3 ratio
-/// ([`COMPACT_ICON_SCALE_NUM`]/[`COMPACT_ICON_SCALE_DEN`]) tiles cleanly with
-/// no gaps or overlaps, the same result a bitmap image scaler would produce.
-/// Only used for the compact Home-grid glyphs (see
-/// [`draw_iconoir_icon_scaled`]) -- iconoir icons only ever emit foreground
-/// (ink) pixels, so there is no background to fill.
-struct UpscalingTarget<'a, 'b> {
-    inner: &'a mut OrientedFrameBuffer<'b>,
-    dest_top_left: Point,
-}
-
-impl DrawTarget for UpscalingTarget<'_, '_> {
-    type Color = BinaryColor;
-    type Error = Infallible;
-
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(point, color) in pixels {
-            let (x_start, x_end) = scaled_block_range(point.x);
-            let (y_start, y_end) = scaled_block_range(point.y);
-            for y in y_start..=y_end {
-                for x in x_start..=x_end {
-                    self.inner.draw_iter(core::iter::once(Pixel(
-                        Point::new(self.dest_top_left.x + x, self.dest_top_left.y + y),
-                        color,
-                    )))?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl OriginDimensions for UpscalingTarget<'_, '_> {
-    fn size(&self) -> Size {
-        Size::new(COMPACT_ICON_DRAW_SIZE as u32, COMPACT_ICON_DRAW_SIZE as u32)
-    }
-}
-
-/// Destination pixel range (inclusive) that source pixel `index` (0-based,
-/// along one axis of a [`COMPACT_ICON_SIZE`]-square source) expands into
-/// when scaled up to [`COMPACT_ICON_DRAW_SIZE`], matching the standard
-/// `floor(dst * native_size / scaled_size) == src` nearest-neighbor mapping
-/// used by common image scalers.
-fn scaled_block_range(index: i32) -> (i32, i32) {
-    let native_size = COMPACT_ICON_SIZE;
-    let scaled_size = COMPACT_ICON_DRAW_SIZE;
-    let start = (index * scaled_size + native_size - 1) / native_size;
-    let end = ((index + 1) * scaled_size + native_size - 1) / native_size - 1;
-    (start, end)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{scaled_block_range, COMPACT_ICON_DRAW_SIZE, COMPACT_ICON_SIZE};
+    use embedded_graphics::prelude::{Point, Size};
 
-    #[test]
-    fn compact_icon_draw_size_is_the_expected_thirty_percent_class_bump() {
-        assert_eq!(COMPACT_ICON_SIZE, 48);
-        assert_eq!(COMPACT_ICON_DRAW_SIZE, 64);
+    use super::{
+        draw_icon_tile, route_icon, COMPACT_TILE_SIZE, TILE_ICON_TOP_INSET,
+        TILE_LABEL_BASELINE_INSET,
+    };
+    use crate::{
+        app::{
+            display::DisplayPreferences,
+            router::ScreenRoute,
+            widgets::tile_icons::{TileIcon, TILE_ICON_BYTES, TILE_ICON_SIZE},
+        },
+        framebuffer::FrameBuffer,
+        orientation::{DisplayOrientation, OrientedFrameBuffer},
+    };
+
+    fn ink(icon: TileIcon, x: usize, y: usize) -> bool {
+        let row_bytes = usize::from(TILE_ICON_SIZE) / 8;
+        icon.bits()[y * row_bytes + x / 8] & (0x80 >> (x % 8)) != 0
     }
 
     #[test]
-    fn scaled_block_ranges_tile_the_destination_with_no_gaps_or_overlaps() {
-        let mut next_expected_start = 0;
-        for index in 0..COMPACT_ICON_SIZE {
-            let (start, end) = scaled_block_range(index);
-            assert_eq!(
-                start, next_expected_start,
-                "gap/overlap before index {index}"
-            );
-            assert!(end >= start, "empty block at index {index}");
-            next_expected_start = end + 1;
+    fn the_glyph_and_the_title_stay_where_the_tiles_were_laid_out_for() {
+        // The 64 px box the upscaled 48 px glyph used to fill, and the
+        // title 22 px under it.
+        assert_eq!(TILE_ICON_SIZE, 64);
+        assert_eq!(TILE_ICON_TOP_INSET, 30);
+        assert_eq!(TILE_LABEL_BASELINE_INSET, 116);
+    }
+
+    #[test]
+    fn every_glyph_is_a_whole_drawing_with_a_margin() {
+        let size = usize::from(TILE_ICON_SIZE);
+        assert_eq!(TILE_ICON_BYTES, size * size / 8);
+        for icon in TileIcon::ALL {
+            let count = (0..size)
+                .flat_map(|y| (0..size).map(move |x| (x, y)))
+                .filter(|&(x, y)| ink(icon, x, y))
+                .count();
+            // An outline drawing: neither empty nor a filled block.
+            assert!((250..2000).contains(&count), "{icon:?}: {count} ink pixels");
+            // Nothing on the edge of the box, so nothing was clipped.
+            for i in 0..size {
+                assert!(!ink(icon, i, 0) && !ink(icon, i, size - 1), "{icon:?}");
+                assert!(!ink(icon, 0, i) && !ink(icon, size - 1, i), "{icon:?}");
+            }
         }
-        assert_eq!(
-            next_expected_start, COMPACT_ICON_DRAW_SIZE,
-            "blocks must exactly cover the destination size"
-        );
+    }
+
+    #[test]
+    fn horizontal_and_vertical_strokes_are_five_pixels_thick() {
+        // Straight strokes are the long runs of equal columns (or rows):
+        // where a column of ink repeats unchanged for 12 px or more, it is
+        // a horizontal stroke seen edge on, and its thickness is the run.
+        // The 4/3 upscaling this replaced gave 5 and 6 px side by side.
+        let size = usize::from(TILE_ICON_SIZE);
+        let mut measured = 0;
+        for icon in TileIcon::ALL {
+            for vertical in [false, true] {
+                let at = |a: usize, b: usize| {
+                    if vertical {
+                        ink(icon, a, b)
+                    } else {
+                        ink(icon, b, a)
+                    }
+                };
+                let mut thick = Vec::new();
+                for a in 0..size {
+                    let mut b = 0;
+                    while b < size {
+                        if !at(a, b) {
+                            b += 1;
+                            continue;
+                        }
+                        let start = b;
+                        while b < size && at(a, b) {
+                            b += 1;
+                        }
+                        let run = b - start;
+                        // The same run in the 11 lines that follow.
+                        let straight = a + 12 <= size
+                            && (a..a + 12).all(|line| {
+                                (start == 0 || !at(line, start - 1))
+                                    && (start..b).all(|p| at(line, p))
+                                    && (b == size || !at(line, b))
+                            });
+                        if straight && run <= 8 {
+                            thick.push(run);
+                        }
+                    }
+                }
+                measured += thick.len();
+                assert!(
+                    thick.iter().all(|&run| run == 5),
+                    "{icon:?} ({}): straight strokes of {thick:?} px",
+                    if vertical { "vertical" } else { "horizontal" }
+                );
+            }
+        }
+        // Not an empty check: the glyphs do have straight strokes.
+        assert!(measured > 500, "{measured} straight strokes measured");
+    }
+
+    #[test]
+    fn every_category_tile_has_a_glyph() {
+        for route in [
+            ScreenRoute::Library,
+            ScreenRoute::AudiobookLibrary,
+            ScreenRoute::ReadingStats,
+            ScreenRoute::Upload,
+            ScreenRoute::Files,
+            ScreenRoute::Settings,
+            ScreenRoute::Network,
+            ScreenRoute::OtaUpdate,
+            ScreenRoute::Audio,
+            ScreenRoute::Clock,
+            ScreenRoute::Display,
+            ScreenRoute::Language,
+            ScreenRoute::DeviceInfo,
+            ScreenRoute::Setup,
+        ] {
+            assert!(route_icon(route).is_some(), "{route:?}");
+        }
+        assert_eq!(route_icon(ScreenRoute::Home), None);
+    }
+
+    #[test]
+    fn a_tile_shows_its_glyph_pixel_for_pixel() {
+        let mut frame = FrameBuffer::new_white();
+        let top_left = Point::new(40, 100);
+        let tile = Size::new(COMPACT_TILE_SIZE.width, COMPACT_TILE_SIZE.height);
+        {
+            let mut display = OrientedFrameBuffer::new(&mut frame, DisplayOrientation::Portrait);
+            draw_icon_tile(
+                &mut display,
+                top_left,
+                tile,
+                "",
+                TileIcon::Clock,
+                false,
+                DisplayPreferences::default(),
+            )
+            .unwrap();
+        }
+        let left = top_left.x + tile.width as i32 / 2 - i32::from(TILE_ICON_SIZE) / 2;
+        let top = top_left.y + TILE_ICON_TOP_INSET;
+        for y in 0..usize::from(TILE_ICON_SIZE) {
+            for x in 0..usize::from(TILE_ICON_SIZE) {
+                let native = DisplayOrientation::Portrait
+                    .map_logical_to_native(Point::new(left + x as i32, top + y as i32))
+                    .unwrap();
+                assert_eq!(
+                    frame.is_black(native),
+                    Some(ink(TileIcon::Clock, x, y)),
+                    "({x}, {y})"
+                );
+            }
+        }
     }
 }

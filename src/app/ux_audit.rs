@@ -575,10 +575,11 @@ fn scenarios() -> Vec<(String, Arrange)> {
         "stats-unavailable",
         Box::new(|state| state.router.navigate_to(ScreenRoute::ReadingStats)),
     );
-    add(
-        "stats-data",
-        Box::new(|state| {
-            use crate::reading_stats::{BookMonthStats, DayBar, ReadingStatsSnapshot};
+    // The week of Monday 5 October 2026 seen on its Wednesday, with long
+    // days so every figure is at its widest.
+    let stats = |period: crate::reading_stats::PeriodStats| -> Arrange {
+        Box::new(move |state| {
+            use crate::reading_stats::{BookPeriodStats, ReadingStatsSnapshot};
             state.reader.recent = vec![
                 location("B.EPUB", LONG_TITLE, 62, 10),
                 location("C.EPUB", "Project Hail Mary", 100, 10),
@@ -591,62 +592,139 @@ fn scenarios() -> Vec<(String, Arrange)> {
                     crate::reading_stats::book_id_for(&l.path, l.size_bytes, l.modified_seconds)
                 })
                 .collect();
+            let mut period = period.clone();
+            if !period.books.is_empty() {
+                period.books = [
+                    (ids[0], 82_800),
+                    (ids[1], 5_040),
+                    (7, 600),
+                    (8, 300),
+                    (9, 200),
+                ]
+                .into_iter()
+                .map(|(book_id, total_seconds)| BookPeriodStats {
+                    book_id,
+                    total_seconds,
+                })
+                .collect();
+            }
+            state.stats_view = period.view;
             state.update_reading_stats_snapshot(ReadingStatsSnapshot {
                 available: true,
                 today_seconds: 7_800,
                 sessions_today: 3,
-                week_seconds: 133_200,
-                month_seconds: 372_000,
                 streak_days: 125,
                 chars_per_minute: Some(1_180),
                 remaining_chapter_seconds: Some(600),
                 remaining_book_seconds: Some(72_000),
-                last_7_days: [1_800, 3_600, 0, 2_700, 900, 2_400, 1_920]
-                    .iter()
-                    .enumerate()
-                    .map(|(index, seconds)| DayBar {
-                        weekday: index as u8,
-                        total_seconds: *seconds,
-                    })
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap(),
-                books_this_month: vec![
-                    BookMonthStats {
-                        book_id: ids[0],
-                        total_seconds: 82_800,
-                    },
-                    BookMonthStats {
-                        book_id: ids[1],
-                        total_seconds: 5_040,
-                    },
-                    BookMonthStats {
-                        book_id: 7,
-                        total_seconds: 600,
-                    },
-                    BookMonthStats {
-                        book_id: 8,
-                        total_seconds: 300,
-                    },
-                    BookMonthStats {
-                        book_id: 9,
-                        total_seconds: 200,
-                    },
-                ],
+                period,
             });
             state.router.navigate_to(ScreenRoute::ReadingStats);
-        }),
-    );
-    add(
-        "stats-no-books",
-        Box::new(|state| {
-            state.update_reading_stats_snapshot(crate::reading_stats::ReadingStatsSnapshot {
-                available: true,
-                ..Default::default()
-            });
-            state.router.navigate_to(ScreenRoute::ReadingStats);
-        }),
-    );
+        })
+    };
+    {
+        use crate::reading_stats::{
+            BookPeriodStats, CalendarDay, PeriodStats, StatsPeriod, StatsView,
+        };
+        let weeks = |back| StatsView {
+            period: StatsPeriod::Week,
+            back,
+        };
+        let months = |back| StatsView {
+            period: StatsPeriod::Month,
+            back,
+        };
+        let day = |year, month, day| CalendarDay { year, month, day };
+        let some_book = || {
+            vec![BookPeriodStats {
+                book_id: 1,
+                total_seconds: 1,
+            }]
+        };
+        add(
+            "stats-week",
+            stats(PeriodStats::sample(
+                weeks(0),
+                day(2026, 10, 5),
+                &[1_800, 5_400, 2_700, 0, 0, 0, 0],
+                Some(2),
+                some_book(),
+                true,
+            )),
+        );
+        // Whole days of reading, across two months: the widest dates, the
+        // widest totals and the tallest axis.
+        add(
+            "stats-week-last",
+            stats(PeriodStats::sample(
+                weeks(1),
+                day(2026, 9, 28),
+                &[72_000, 86_000, 0, 43_000, 3_600, 61_200, 50_400],
+                None,
+                some_book(),
+                true,
+            )),
+        );
+        add(
+            "stats-week-earlier",
+            stats(PeriodStats::sample(
+                weeks(3),
+                day(2026, 9, 14),
+                &[0, 0, 240, 0, 420, 0, 0],
+                None,
+                some_book(),
+                false,
+            )),
+        );
+        let mut october = [0_u32; 31];
+        october[..7].copy_from_slice(&[600, 0, 3_000, 4_200, 1_800, 5_400, 2_700]);
+        add(
+            "stats-month",
+            stats(PeriodStats::sample(
+                months(0),
+                day(2026, 10, 1),
+                &october,
+                Some(6),
+                some_book(),
+                true,
+            )),
+        );
+        let september: Vec<u32> = (0..30).map(|index| (index * 37 % 11) * 1_260).collect();
+        add(
+            "stats-month-last",
+            stats(PeriodStats::sample(
+                months(1),
+                day(2026, 9, 1),
+                &september,
+                None,
+                some_book(),
+                true,
+            )),
+        );
+        let february: Vec<u32> = (0..28).map(|index| (index * 53 % 7) * 2_100).collect();
+        add(
+            "stats-month-earlier",
+            stats(PeriodStats::sample(
+                months(8),
+                day(2026, 2, 1),
+                &february,
+                None,
+                some_book(),
+                false,
+            )),
+        );
+        add(
+            "stats-no-books",
+            stats(PeriodStats::sample(
+                weeks(0),
+                day(2026, 10, 5),
+                &[0; 7],
+                Some(2),
+                Vec::new(),
+                false,
+            )),
+        );
+    }
 
     // --- Audiobooks -----------------------------------------------------------
     add(
@@ -982,9 +1060,21 @@ fn scenarios() -> Vec<(String, Arrange)> {
             "hotspot-idle",
             WifiTransferSnapshot {
                 state: WifiTransferState::Ready,
-                url: Some("http://192.168.71.1/".into()),
+                url: Some("http://4.3.2.1/".into()),
                 ap_ssid: Some("RUSTMIX-5609".into()),
                 ap_password: Some("SN72D48N9NNA".into()),
+                join: JoinAttemptState::Idle,
+                ..Default::default()
+            },
+        ),
+        (
+            "hotspot-phone-joined",
+            WifiTransferSnapshot {
+                state: WifiTransferState::Ready,
+                url: Some("http://4.3.2.1/".into()),
+                ap_ssid: Some("RUSTMIX-5609".into()),
+                ap_password: Some("SN72D48N9NNA".into()),
+                hotspot_clients: 1,
                 join: JoinAttemptState::Idle,
                 ..Default::default()
             },
@@ -993,7 +1083,7 @@ fn scenarios() -> Vec<(String, Arrange)> {
             "hotspot-testing",
             WifiTransferSnapshot {
                 state: WifiTransferState::Ready,
-                url: Some("http://192.168.71.1/".into()),
+                url: Some("http://4.3.2.1/".into()),
                 ap_ssid: Some("RUSTMIX-5609".into()),
                 ap_password: Some("SN72D48N9NNA".into()),
                 join: JoinAttemptState::Testing {
@@ -1006,7 +1096,7 @@ fn scenarios() -> Vec<(String, Arrange)> {
             "hotspot-failed",
             WifiTransferSnapshot {
                 state: WifiTransferState::Ready,
-                url: Some("http://192.168.71.1/".into()),
+                url: Some("http://4.3.2.1/".into()),
                 ap_ssid: Some("RUSTMIX-5609".into()),
                 ap_password: Some("SN72D48N9NNA".into()),
                 join: JoinAttemptState::Failed {
@@ -1186,6 +1276,76 @@ fn scenarios() -> Vec<(String, Arrange)> {
             }),
         );
     }
+    add(
+        "upload-wifi-page-closed",
+        Box::new(|state| {
+            state.network.wifi_state = crate::network::WifiConnectionState::Connected;
+            state.network.ipv4_address = Some("192.168.178.123".into());
+            state.network.ssid = Some("Casa".into());
+            state.wifi_page_closed_notice = true;
+            state.router.navigate_to(ScreenRoute::Upload);
+        }),
+    );
+    add(
+        "display-fixed-wallpaper-row",
+        Box::new(|state| {
+            state.display.sleep_screen = SleepScreenMode::Fixed;
+            state.display_action_selected = crate::app::state::DISPLAY_FIXED_WALLPAPER_ROW;
+            state.router.navigate_to(ScreenRoute::Display);
+        }),
+    );
+    // The fixed-wallpaper chooser: a wallpaper on show, the one standby
+    // already shows, an empty folder, a file that cannot be read.
+    let wallpaper = || {
+        crate::sleep_images::decode_sleep_bmp(include_bytes!(
+            "../../examples/sd-card/RUSTMIX/SLEEP/SLEEP.BMP"
+        ))
+        .expect("the example wallpaper decodes")
+    };
+    for (name, fixed, current, readable) in [
+        ("sleep-picker", false, false, true),
+        ("sleep-picker-current", true, true, true),
+        ("sleep-picker-unreadable", false, false, false),
+    ] {
+        add(
+            name,
+            Box::new(move |state| {
+                if fixed {
+                    state.display.sleep_screen = SleepScreenMode::Fixed;
+                }
+                state.sleep_picker.set_listing(
+                    (1..=7).map(|n| format!("SLEEP{n:03}.BMP")).collect(),
+                    Some(
+                        if current {
+                            "SLEEP001.BMP"
+                        } else {
+                            "SLEEP004.BMP"
+                        }
+                        .into(),
+                    ),
+                );
+                if !current {
+                    state.sleep_picker.step(true);
+                }
+                let shown = state
+                    .sleep_picker
+                    .selected_name()
+                    .expect("a wallpaper is selected")
+                    .to_string();
+                state
+                    .sleep_picker
+                    .set_preview(&shown, readable.then(wallpaper));
+                state.router.navigate_to(ScreenRoute::SleepPicker);
+            }),
+        );
+    }
+    add(
+        "sleep-picker-empty",
+        Box::new(|state| {
+            state.sleep_picker.set_listing(Vec::new(), None);
+            state.router.navigate_to(ScreenRoute::SleepPicker);
+        }),
+    );
     add(
         "language",
         Box::new(|state| state.router.navigate_to(ScreenRoute::Language)),

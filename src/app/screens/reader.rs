@@ -13,17 +13,9 @@ use embedded_graphics::{
 };
 
 use embedded_iconoir::{
-    icons::{
-        size24px::{
-            editor::{AlignCenter, AlignJustify, AlignLeft, AlignRight},
-            navigation::{FastArrowDownBox, FastArrowRightBox},
-        },
-        size48px::{
-            activities::{BookmarkBook, Percentage},
-            editor::List,
-            organization::BookmarkEmpty,
-            system::Settings as SettingsIcon,
-        },
+    icons::size24px::{
+        editor::{AlignCenter, AlignJustify, AlignLeft, AlignRight},
+        navigation::{FastArrowDownBox, FastArrowRightBox},
     },
     prelude::IconoirNewIcon,
 };
@@ -56,6 +48,7 @@ use crate::{
                 draw_paragraph, draw_text_centered, draw_text_fit, truncate_to_width,
                 wrap_to_width, ELLIPSIS,
             },
+            tile_icons::TileIcon,
         },
     },
     cover_cache::{CachedThumbnail, THUMB_HEIGHT, THUMB_WIDTH},
@@ -321,7 +314,7 @@ fn push_library_rows(blocks: &mut Vec<LibraryBlock>, start: usize, end: usize) {
 
 fn library_metrics(state: &AppState) -> LibraryMetrics {
     let heading_line = i32::from(state.display.heading_style().line_height());
-    let label_line = i32::from(state.display.detail_style().line_height());
+    let label_line = i32::from(state.display.body_style().line_height());
     // The bar and its label share one line; that line's height is whichever
     // of the two is taller (in practice the label's line pitch, since
     // `LIBRARY_BAR_HEIGHT` is deliberately shorter than a line of text).
@@ -363,8 +356,9 @@ fn library_window(
         .iter()
         .map(|block| library_block_height(block, metrics))
         .collect();
-    let total: i32 = heights.iter().sum();
-    if total <= available {
+    let fits =
+        |first: usize, end: usize| library_span_height(blocks, &heights, first, end) <= available;
+    if fits(0, blocks.len()) {
         return (0, blocks.len());
     }
     let selected_block = blocks
@@ -376,20 +370,16 @@ fn library_window(
 
     let mut first = 0usize;
     let mut end = 0usize;
-    let mut height = 0i32;
     for index in 0..blocks.len() {
-        height += heights[index];
         end = index + 1;
-        while height > available && first < index {
-            height -= heights[first];
+        while !fits(first, end) && first < index {
             first += 1;
         }
         if index >= selected_block {
             break;
         }
     }
-    while end < blocks.len() && height + heights[end] <= available {
-        height += heights[end];
+    while end < blocks.len() && fits(first, end + 1) {
         end += 1;
     }
 
@@ -408,13 +398,10 @@ fn library_window(
             .iter()
             .rposition(|block| matches!(block, LibraryBlock::Header { .. }))
         {
-            let min_height: i32 = heights[header..=selected_block].iter().sum();
-            if min_height <= available {
+            if fits(header, selected_block + 1) {
                 let mut trimmed_end = end;
-                let mut trimmed_height: i32 = heights[header..trimmed_end].iter().sum();
-                while trimmed_height > available && trimmed_end > selected_block + 1 {
+                while !fits(header, trimmed_end) && trimmed_end > selected_block + 1 {
                     trimmed_end -= 1;
-                    trimmed_height -= heights[trimmed_end];
                 }
                 first = header;
                 end = trimmed_end;
@@ -422,7 +409,25 @@ fn library_window(
         }
     }
 
+    // A caption with no row under it says nothing ("RECENTI" and then the
+    // footer): it is left for the screen its books are on.
+    if end > first + 1 && matches!(blocks[end - 1], LibraryBlock::Header { .. }) {
+        end -= 1;
+    }
+
     (first, end)
+}
+
+/// Height the blocks `first..end` take on the panel. Every row's height
+/// includes the gap kept below it (`LIBRARY_GRID_GAP_Y`), which the last
+/// thing shown does not need: counting it there cost the "Recent" row its
+/// place under "Reading Now" at the large text size, for six pixels.
+fn library_span_height(blocks: &[LibraryBlock], heights: &[i32], first: usize, end: usize) -> i32 {
+    let total: i32 = heights[first..end].iter().sum();
+    match end.checked_sub(1).and_then(|last| blocks.get(last)) {
+        Some(LibraryBlock::Row { .. }) if end > first => total - LIBRARY_GRID_GAP_Y,
+        _ => total,
+    }
 }
 
 /// Books currently on-panel in the Library grid, in the same order
@@ -506,7 +511,7 @@ pub fn render_library(
                 error,
                 CONTENT_LEFT,
                 after + 10,
-                preferences.detail_style(),
+                preferences.body_style(),
                 CONTENT_WIDTH,
                 3,
                 4,
@@ -807,7 +812,7 @@ fn draw_library_status_row(
     status: LibraryCellStatus,
     locale: Locale,
 ) -> Result<(), Infallible> {
-    let label_style = state.display.detail_style();
+    let label_style = state.display.body_style();
     let label = match status {
         LibraryCellStatus::InProgress(percent) => format!("{}%", percent.min(100)),
         LibraryCellStatus::Completed => t(locale, "DONE", "COMPLETATO").to_string(),
@@ -1202,7 +1207,7 @@ pub fn render_library_book_actions(
             display,
             &info,
             Point::new(CONTENT_LEFT, info_baseline),
-            preferences.detail_style(),
+            preferences.body_style(),
             CONTENT_WIDTH,
         )?;
     }
@@ -1873,7 +1878,7 @@ fn draw_dictionary_definition_panel(
 ) -> Result<(), Infallible> {
     let layout = definition_panel_layout(
         state.display.heading_style(),
-        [state.display.body_style(), state.display.detail_style()],
+        state.display.body_style(),
         body,
         word,
         message,
@@ -1921,14 +1926,13 @@ struct DefinitionPanelLayout {
     height: i32,
 }
 
-/// Picks the largest of `text_styles` (largest first) whose fully wrapped
-/// definition fits the reading body; the last style is used regardless, and
-/// its panel may then cover the whole body. A definition of the length the
-/// dictionary produces always fits whole; only a text longer than the body
-/// can hold is cut, with an ellipsis.
+/// Lays the definition out in `text` (the interface's body size: there is
+/// no smaller one to fall back on). A definition of the length the
+/// dictionary produces fits whole; only a text longer than the body can
+/// hold is cut, with an ellipsis, and its panel then covers the whole body.
 fn definition_panel_layout(
     heading: UiTextStyle,
-    text_styles: [UiTextStyle; 2],
+    text: UiTextStyle,
     body: &ReaderBodyGeometry,
     word: &str,
     message: &str,
@@ -1937,22 +1941,9 @@ fn definition_panel_layout(
     let max_height = body.text.bottom - body.frame.top;
     let heading_lines = wrap_definition_to_width(heading, word, max_width);
     let heading_step = i32::from(heading.line_height());
-    let mut chosen = None;
-    for text in text_styles {
-        let lines = wrap_definition_to_width(text, message, max_width);
-        let line_step = i32::from(text.line_height()) + DEFINITION_PANEL_LINE_GAP;
-        let height = 2 * DEFINITION_PANEL_PADDING
-            + heading_lines.len() as i32 * heading_step
-            + DEFINITION_PANEL_HEADING_GAP
-            + lines.len() as i32 * line_step;
-        let fits = height <= max_height;
-        chosen = Some((text, lines, line_step, height));
-        if fits {
-            break;
-        }
-    }
-    let (text, mut lines, line_step, _) = chosen.expect("two candidate styles");
-    // A text too long for the whole body even in the smaller style is cut
+    let mut lines = wrap_definition_to_width(text, message, max_width);
+    let line_step = i32::from(text.line_height()) + DEFINITION_PANEL_LINE_GAP;
+    // A text too long for the whole body is cut
     // short there, never drawn through the footer and off the panel.
     let fixed_height = 2 * DEFINITION_PANEL_PADDING
         + heading_lines.len() as i32 * heading_step
@@ -2117,7 +2108,7 @@ fn draw_hold_pill(
     baseline: i32,
     color: BinaryColor,
 ) -> Result<i32, Infallible> {
-    let style = state.display.detail_style();
+    let style = state.display.body_style();
     let label_width = style.text_width(HOLD_PILL_LABEL);
     let width = (label_width + 2 * HOLD_PILL_PAD_X).max(DOT_SIZE);
     let top = baseline - DOT_SIZE;
@@ -2245,7 +2236,6 @@ pub fn render_options(
         );
         let label = option.tile_label_i18n(locale, bookmarked);
         let selected = state.reader.options_selected == index;
-        let color = BinaryColor::On;
         let preferences = state.display;
         match option {
             ReaderOption::TableOfContents => draw_icon_tile(
@@ -2253,7 +2243,7 @@ pub fn render_options(
                 top_left,
                 OPTIONS_TILE_SIZE,
                 label,
-                &List::new(color),
+                TileIcon::List,
                 selected,
                 preferences,
             )?,
@@ -2262,7 +2252,7 @@ pub fn render_options(
                 top_left,
                 OPTIONS_TILE_SIZE,
                 label,
-                &BookmarkBook::new(color),
+                TileIcon::BookmarkBook,
                 selected,
                 preferences,
             )?,
@@ -2271,7 +2261,7 @@ pub fn render_options(
                 top_left,
                 OPTIONS_TILE_SIZE,
                 label,
-                &BookmarkEmpty::new(color),
+                TileIcon::BookmarkEmpty,
                 selected,
                 preferences,
             )?,
@@ -2280,7 +2270,7 @@ pub fn render_options(
                 top_left,
                 OPTIONS_TILE_SIZE,
                 label,
-                &Percentage::new(color),
+                TileIcon::Percentage,
                 selected,
                 preferences,
             )?,
@@ -2289,7 +2279,7 @@ pub fn render_options(
                 top_left,
                 OPTIONS_TILE_SIZE,
                 label,
-                &SettingsIcon::new(color),
+                TileIcon::Settings,
                 selected,
                 preferences,
             )?,
@@ -2980,7 +2970,7 @@ mod tests {
                 let body_text = style(UiTextRole::Body);
                 let layout = definition_panel_layout(
                     style(UiTextRole::Heading),
-                    [body_text, style(UiTextRole::Detail)],
+                    body_text,
                     &body,
                     "ACCIGLIASSERO",
                     message,
@@ -3134,6 +3124,71 @@ mod tests {
         let visible_at_end = library_visible_books(&state);
         assert!(visible_at_end.iter().any(|book| book.path == "book19.epub"));
         assert!(visible_at_end.len() < state.reader.books.len());
+    }
+
+    #[test]
+    fn two_sections_of_one_row_each_fit_at_every_text_size() {
+        use crate::{app::display::UiFontSize, reader::ReaderLocation};
+
+        for size in [UiFontSize::Compact, UiFontSize::Standard, UiFontSize::Large] {
+            let mut state = AppState::default();
+            state.display.font_size = size;
+            state.reader.books = (0..4).map(epub_book).collect();
+            // Two being read, two never opened: "Reading Now" and "Recent".
+            state.reader.recent = (0..2)
+                .map(|index| {
+                    let book = epub_book(index);
+                    ReaderLocation {
+                        path: book.path,
+                        title: book.title,
+                        format: book.format,
+                        size_bytes: book.size_bytes,
+                        modified_seconds: book.modified_seconds,
+                        page_index: 3,
+                        byte_offset: 3,
+                        epub_chapter: None,
+                        reading_percent: Some(30),
+                    }
+                })
+                .collect();
+            assert_eq!(
+                library_visible_books(&state).len(),
+                4,
+                "the Recent row is off the first screen at {size:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_section_caption_is_never_the_last_thing_on_the_screen() {
+        use super::{library_window, LibraryBlock, LibraryMetrics};
+
+        let metrics = LibraryMetrics {
+            header_height: 40,
+            row_height: 300,
+        };
+        let row = |start| LibraryBlock::Row { start, count: 2 };
+        // Two rows being read fill the screen; the caption of what follows
+        // would fit under them, its row would not.
+        let blocks = [
+            LibraryBlock::Header { in_progress: true },
+            row(0),
+            row(2),
+            LibraryBlock::Header { in_progress: false },
+            row(4),
+        ];
+        assert_eq!(library_window(&blocks, 0, &metrics, 690), (0, 3));
+        // On its own screen, with its row, it is shown.
+        assert_eq!(library_window(&blocks, 4, &metrics, 690), (2, 5));
+        // The gap under the last row is not asked of the screen.
+        let two = [
+            LibraryBlock::Header { in_progress: true },
+            row(0),
+            LibraryBlock::Header { in_progress: false },
+            row(2),
+        ];
+        assert_eq!(library_window(&two, 0, &metrics, 672), (0, 4));
+        assert_eq!(library_window(&two, 0, &metrics, 671), (0, 2));
     }
 
     #[test]

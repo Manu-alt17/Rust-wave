@@ -15,7 +15,7 @@ use crate::{
         LibraryBookAction, ReaderDictionaryMode, ReaderGoToOutcome, ReaderLocation, ReaderOption,
         ReaderOrientation, ReaderSession, ReaderTickOutcome, ReaderUiState,
     },
-    reading_stats::ReadingStatsSnapshot,
+    reading_stats::{ReadingStatsSnapshot, StatsView},
     regional::RegionalPreferences,
     storage::StorageSnapshot,
     usb_disk::UsbDiskPhase,
@@ -24,16 +24,19 @@ use crate::{
 
 use super::{
     audiobooks::AudiobookUiState,
-    display::DisplayPreferences,
+    display::{DisplayPreferences, SleepScreenMode},
     menu::{category_index, home_entries, CategoryUsage, CATEGORY_COUNT, MAIN_CATEGORY_COUNT},
     router::{ScreenRoute, ScreenRouter},
     setup::{SetupOutcome, SetupUiState},
+    sleep_picker::SleepPickerState,
 };
 
 /// Number of selectable rows in the playback overview screen.
 pub const AUDIO_ACTION_COUNT: usize = 6;
 /// Number of selectable rows in the Display settings screen.
-pub const DISPLAY_ACTION_COUNT: usize = 3;
+pub const DISPLAY_ACTION_COUNT: usize = 4;
+/// The Display row that opens the fixed-wallpaper chooser.
+pub const DISPLAY_FIXED_WALLPAPER_ROW: usize = 2;
 /// Set date & time or open RTC details rows on the Clock overview screen.
 pub const CLOCK_ACTION_COUNT: usize = 2;
 /// Configure via phone, saved networks, retry connection and details rows
@@ -70,6 +73,9 @@ pub struct AppState {
     /// persisted by the runtime owner in main.rs whenever it changes.
     pub category_usage: CategoryUsage,
     pub display_action_selected: usize,
+    /// Display's chooser of the fixed sleep wallpaper; the runtime owner in
+    /// main.rs feeds it from the card.
+    pub sleep_picker: SleepPickerState,
     pub display: DisplayPreferences,
     /// TXT / reflowable EPUB Reader library, staged opening, RAM cache and options.
     pub reader: ReaderUiState,
@@ -109,6 +115,11 @@ pub struct AppState {
     /// editor.
     pub wifi_transfer: WifiTransferSnapshot,
     wifi_transfer_request: Option<WifiTransferUiRequest>,
+    /// The Wi-Fi page was serving when its screen was left for the Upload
+    /// chooser: Upload says so, until its selection moves or it is left.
+    /// The page on the phone only says "Not connected", and people do not
+    /// tie that to having left a screen on the device.
+    pub wifi_page_closed_notice: bool,
     /// Read-only saved-network list and rotary selection for the "Saved
     /// networks" screen. Adding or changing a password only happens through
     /// the phone portal.
@@ -173,6 +184,10 @@ pub struct AppState {
     /// (see [`Self::take_reading_stats_refresh_request`]).
     pub reading_stats: ReadingStatsSnapshot,
     reading_stats_refresh_requested: bool,
+    /// The week or month the Reading Stats screen asks for. What it draws
+    /// is the period in [`Self::reading_stats`], which follows this one as
+    /// soon as main.rs has read it from the card.
+    pub stats_view: StatsView,
     /// Set whenever a Reader page turn actually moves the current position,
     /// regardless of source (every one of them funnels through
     /// [`Self::apply_reader`]). Taken by
@@ -202,6 +217,7 @@ impl Default for AppState {
             category_selected: [0; CATEGORY_COUNT],
             category_usage: CategoryUsage::default(),
             display_action_selected: 0,
+            sleep_picker: SleepPickerState::default(),
             display: DisplayPreferences::default(),
             reader: ReaderUiState::default(),
             partial_refreshes: 0,
@@ -222,6 +238,7 @@ impl Default for AppState {
             network_action_selected: 0,
             wifi_transfer: WifiTransferSnapshot::default(),
             wifi_transfer_request: None,
+            wifi_page_closed_notice: false,
             network_saved: NetworkSavedUiState::default(),
             network_saved_forget_request: None,
             network_join_request: None,
@@ -248,6 +265,7 @@ impl Default for AppState {
             ota_request: None,
             reading_stats: ReadingStatsSnapshot::default(),
             reading_stats_refresh_requested: false,
+            stats_view: StatsView::default(),
             reader_page_turn_event: None,
             setup: SetupUiState::default(),
             card_warning_selected: 0,
@@ -318,6 +336,8 @@ impl AppState {
             self.apply_category(route, event);
         } else if route == ScreenRoute::Display {
             self.apply_display(event);
+        } else if route == ScreenRoute::SleepPicker {
+            self.apply_sleep_picker(event);
         } else if route == ScreenRoute::Language {
             self.apply_language(event);
         } else if route == ScreenRoute::PowerKeyMenu {
@@ -341,6 +361,8 @@ impl AppState {
             self.audiobooks.apply_player(event);
         } else if route == ScreenRoute::Upload {
             self.apply_upload(event);
+        } else if route == ScreenRoute::ReadingStats {
+            self.apply_reading_stats(event);
         } else if route == ScreenRoute::UsbDisk {
             if event == ButtonEvent::Select && self.usb_disk == UsbDiskPhase::Idle {
                 self.note_select_press();
@@ -439,8 +461,7 @@ impl AppState {
                 }
                 (ScreenRoute::WifiTransfer, ButtonEvent::Select) => {
                     self.note_select_press();
-                    self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
-                    self.router.navigate_to(self.wifi_transfer_return_route);
+                    self.leave_wifi_transfer();
                 }
                 (ScreenRoute::DeviceInfo, _) => self.apply_device_info(event),
                 (ScreenRoute::OtaUpdate, ButtonEvent::Select) if self.ota_action_selected == 1 => {
@@ -548,6 +569,9 @@ impl AppState {
                 self.note_select_press();
                 if let Some(entry) = home_entries().get(self.home_selected) {
                     if entry.route == ScreenRoute::ReadingStats {
+                        // Opens on the current week or month, whichever of
+                        // the two was looked at last.
+                        self.stats_view.back = 0;
                         self.reading_stats_refresh_requested = true;
                     }
                     if entry.route == ScreenRoute::Library {
@@ -566,7 +590,49 @@ impl AppState {
     /// Upload: the rocker moves between the two ways of copying files,
     /// SELECT opens the chosen one. The Wi-Fi portal starts only here, once
     /// it was chosen, and comes back to this screen when it is closed.
+    /// Stop the Wi-Fi page and go back to where it was opened from. Leaving
+    /// a page that was serving closes it for whoever has it open: Upload,
+    /// when that is where this goes back to, says so.
+    fn leave_wifi_transfer(&mut self) {
+        self.wifi_page_closed_notice = self.wifi_transfer.state == WifiTransferState::Ready
+            && self.wifi_transfer_return_route == ScreenRoute::Upload;
+        self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
+        self.router.navigate_to(self.wifi_transfer_return_route);
+    }
+
+    /// Statistics: SELECT changes between the week and the month, the rocker
+    /// goes to the period before (up) and back towards today (down). The
+    /// figures are read from the card, so every change asks the runtime
+    /// owner in main.rs for them again; until they arrive the screen keeps
+    /// the period it has, and a second step back waits for them.
+    fn apply_reading_stats(&mut self, event: ButtonEvent) {
+        if !self.reading_stats.available {
+            return;
+        }
+        let view = self.stats_view;
+        match event {
+            ButtonEvent::Select => {
+                self.note_select_press();
+                self.stats_view = StatsView {
+                    period: view.period.toggled(),
+                    back: 0,
+                };
+            }
+            ButtonEvent::Up => {
+                let shown = &self.reading_stats.period;
+                if shown.view == view && shown.has_older {
+                    self.stats_view.back = view.back + 1;
+                }
+            }
+            ButtonEvent::Down => self.stats_view.back = view.back.saturating_sub(1),
+        }
+        if self.stats_view != view {
+            self.reading_stats_refresh_requested = true;
+        }
+    }
+
     fn apply_upload(&mut self, event: ButtonEvent) {
+        self.wifi_page_closed_notice = false;
         match event {
             ButtonEvent::Up => {
                 self.upload_selected = self
@@ -1309,7 +1375,29 @@ impl AppState {
                 match self.display_action_selected {
                     0 => self.display.cycle_font_size(),
                     1 => self.display.cycle_sleep_screen(),
+                    DISPLAY_FIXED_WALLPAPER_ROW => {
+                        self.sleep_picker.open();
+                        self.router.navigate_to(ScreenRoute::SleepPicker);
+                    }
                     _ => self.display.cycle_auto_sleep(),
+                }
+            }
+        }
+    }
+
+    /// Apply one event to the fixed-wallpaper chooser: the rocker steps
+    /// through the wallpapers, SELECT keeps the one on screen as the sleep
+    /// screen and goes back to Display, which now reads "Fixed".
+    fn apply_sleep_picker(&mut self, event: ButtonEvent) {
+        match event {
+            ButtonEvent::Up => self.sleep_picker.step(false),
+            ButtonEvent::Down => self.sleep_picker.step(true),
+            ButtonEvent::Select => {
+                self.note_select_press();
+                if self.sleep_picker.choose() {
+                    self.display.sleep_screen = SleepScreenMode::Fixed;
+                    self.sleep_picker.close();
+                    self.router.navigate_to(ScreenRoute::Display);
                 }
             }
         }
@@ -1407,9 +1495,11 @@ impl AppState {
             self.sync_orientation_for_active_route();
             return;
         }
+        if self.router.current() == ScreenRoute::Upload {
+            self.wifi_page_closed_notice = false;
+        }
         if self.router.current() == ScreenRoute::WifiTransfer {
-            self.wifi_transfer_request = Some(WifiTransferUiRequest::Stop);
-            self.router.navigate_to(self.wifi_transfer_return_route);
+            self.leave_wifi_transfer();
             if self.router.current() == ScreenRoute::Home {
                 self.reading_stats_refresh_requested = true;
             }
@@ -1418,6 +1508,9 @@ impl AppState {
         }
         if self.router.current() == ScreenRoute::OtaUpdate {
             self.ota_install_armed = false;
+        }
+        if self.router.current() == ScreenRoute::SleepPicker {
+            self.sleep_picker.close();
         }
         if self.router.current() == ScreenRoute::DeviceInfo {
             // BOOT on a restore waiting for its confirmation only cancels it.
@@ -1681,7 +1774,10 @@ fn bootloader_power_refusal(locale: crate::regional::Locale, battery: Option<u8>
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_local_date, AppState, ClockEditField, SettingsResetStage};
+    use super::{
+        compact_local_date, AppState, ClockEditField, SettingsResetStage,
+        DISPLAY_FIXED_WALLPAPER_ROW,
+    };
     use crate::{
         app::{menu::home_entries, router::ScreenRoute},
         buttons::ButtonEvent,
@@ -2050,6 +2146,9 @@ mod tests {
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_ne!(state.display.sleep_screen, original.sleep_screen);
+        // The fixed-wallpaper row opens its chooser instead of changing a
+        // value.
+        state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_ne!(state.display.auto_sleep, original.auto_sleep);
@@ -2058,6 +2157,105 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::Display);
         state.back();
         assert_eq!(state.active_route(), ScreenRoute::Settings);
+    }
+
+    #[test]
+    fn leaving_a_working_wifi_page_is_said_on_upload_until_something_is_done() {
+        use crate::wifi_transfer::{WifiTransferSnapshot, WifiTransferState};
+
+        let serving = || WifiTransferSnapshot {
+            state: WifiTransferState::Ready,
+            url: Some("http://192.168.1.20/".into()),
+            ..WifiTransferSnapshot::default()
+        };
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Upload);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::WifiTransfer);
+        assert!(!state.wifi_page_closed_notice);
+        state.update_wifi_transfer_snapshot(serving());
+        // BOOT and the screen's own button both close the page.
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+        assert!(state.wifi_page_closed_notice);
+        // Opening it again takes the notice away...
+        state.apply(ButtonEvent::Select);
+        assert!(!state.wifi_page_closed_notice);
+        state.update_wifi_transfer_snapshot(serving());
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Upload);
+        assert!(state.wifi_page_closed_notice);
+        // ...and so does moving on, or leaving Upload.
+        state.apply(ButtonEvent::Down);
+        assert!(!state.wifi_page_closed_notice);
+        state.wifi_page_closed_notice = true;
+        state.back();
+        assert!(!state.wifi_page_closed_notice);
+
+        // A page that never got to serve was not closed for anyone.
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Upload);
+        state.apply(ButtonEvent::Select);
+        state.back();
+        assert!(!state.wifi_page_closed_notice);
+    }
+
+    #[test]
+    fn choosing_a_fixed_wallpaper_sets_the_sleep_screen_to_fixed() {
+        use crate::{app::display::SleepScreenMode, framebuffer::FrameBuffer};
+
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Display);
+        state.display_action_selected = DISPLAY_FIXED_WALLPAPER_ROW;
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::SleepPicker);
+        assert!(state.sleep_picker.needs_listing());
+        // What the runtime does from the card.
+        state.sleep_picker.set_listing(
+            vec!["SLEEP001.BMP".into(), "SLEEP002.BMP".into()],
+            Some("SLEEP001.BMP".into()),
+        );
+        // Nothing on screen yet: SELECT chooses nothing.
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::SleepPicker);
+        assert_eq!(state.display.sleep_screen, SleepScreenMode::Sequential);
+
+        state.apply(ButtonEvent::Down);
+        assert_eq!(state.sleep_picker.wanted_preview(), Some("SLEEP002.BMP"));
+        state
+            .sleep_picker
+            .set_preview("SLEEP002.BMP", Some(FrameBuffer::new_white()));
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Display);
+        assert_eq!(state.display.sleep_screen, SleepScreenMode::Fixed);
+        assert_eq!(state.display_action_selected, DISPLAY_FIXED_WALLPAPER_ROW);
+        assert_eq!(
+            state.sleep_picker.take_choice().as_deref(),
+            Some("SLEEP002.BMP")
+        );
+        // The decoded wallpaper does not stay in memory behind the screen.
+        assert!(state.sleep_picker.preview().is_none());
+    }
+
+    #[test]
+    fn boot_leaves_the_wallpaper_chooser_without_choosing() {
+        use crate::{app::display::SleepScreenMode, framebuffer::FrameBuffer};
+
+        let mut state = AppState::default();
+        state.router.navigate_to(ScreenRoute::Display);
+        state.display_action_selected = DISPLAY_FIXED_WALLPAPER_ROW;
+        state.apply(ButtonEvent::Select);
+        state
+            .sleep_picker
+            .set_listing(vec!["SLEEP001.BMP".into()], None);
+        state
+            .sleep_picker
+            .set_preview("SLEEP001.BMP", Some(FrameBuffer::new_white()));
+        state.back();
+        assert_eq!(state.active_route(), ScreenRoute::Display);
+        assert_eq!(state.display.sleep_screen, SleepScreenMode::Sequential);
+        assert_eq!(state.sleep_picker.take_choice(), None);
+        assert!(state.sleep_picker.needs_listing());
     }
 
     #[test]

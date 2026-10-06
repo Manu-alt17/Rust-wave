@@ -18,6 +18,7 @@ pub mod reader_typography;
 pub mod router;
 pub mod screens;
 pub mod setup;
+pub mod sleep_picker;
 pub mod state;
 pub mod typography;
 pub mod widgets;
@@ -411,7 +412,7 @@ mod tests {
             ("wifi-transfer-hotspot", |state| {
                 state.update_wifi_transfer_snapshot(crate::wifi_transfer::WifiTransferSnapshot {
                     state: crate::wifi_transfer::WifiTransferState::Ready,
-                    url: Some("http://192.168.71.1/".into()),
+                    url: Some("http://4.3.2.1/".into()),
                     ap_ssid: Some("RUSTMIX-5609".into()),
                     ap_password: Some("SN72D48N9NNA".into()),
                     join: crate::wifi_transfer::JoinAttemptState::Idle,
@@ -653,56 +654,42 @@ mod tests {
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("statistics-with-data", |state| {
+                use crate::reading_stats::{
+                    BookPeriodStats, CalendarDay, PeriodStats, StatsPeriod, StatsView,
+                };
                 state.update_reading_stats_snapshot(crate::reading_stats::ReadingStatsSnapshot {
                     available: true,
-                    today_seconds: 1_800,
+                    today_seconds: 2_700,
                     sessions_today: 3,
-                    week_seconds: 13_320,
-                    month_seconds: 72_000,
                     streak_days: 5,
                     chars_per_minute: Some(180),
                     remaining_chapter_seconds: Some(600),
                     remaining_book_seconds: Some(12_000),
-                    last_7_days: [
-                        crate::reading_stats::DayBar {
-                            weekday: 1,
-                            total_seconds: 1_800,
+                    period: PeriodStats::sample(
+                        StatsView {
+                            period: StatsPeriod::Week,
+                            back: 0,
                         },
-                        crate::reading_stats::DayBar {
-                            weekday: 2,
-                            total_seconds: 3_600,
+                        // The week of the preview's date, Thursday 13 August.
+                        CalendarDay {
+                            year: 2026,
+                            month: 8,
+                            day: 10,
                         },
-                        crate::reading_stats::DayBar {
-                            weekday: 3,
-                            total_seconds: 0,
-                        },
-                        crate::reading_stats::DayBar {
-                            weekday: 4,
-                            total_seconds: 2_700,
-                        },
-                        crate::reading_stats::DayBar {
-                            weekday: 5,
-                            total_seconds: 900,
-                        },
-                        crate::reading_stats::DayBar {
-                            weekday: 6,
-                            total_seconds: 2_400,
-                        },
-                        crate::reading_stats::DayBar {
-                            weekday: 0,
-                            total_seconds: 1_920,
-                        },
-                    ],
-                    books_this_month: vec![
-                        crate::reading_stats::BookMonthStats {
-                            book_id: 1,
-                            total_seconds: 8_280,
-                        },
-                        crate::reading_stats::BookMonthStats {
-                            book_id: 2,
-                            total_seconds: 5_040,
-                        },
-                    ],
+                        &[1_800, 3_600, 0, 2_700, 0, 0, 0],
+                        Some(3),
+                        vec![
+                            BookPeriodStats {
+                                book_id: 1,
+                                total_seconds: 4_500,
+                            },
+                            BookPeriodStats {
+                                book_id: 2,
+                                total_seconds: 3_600,
+                            },
+                        ],
+                        true,
+                    ),
                 });
                 state.reader.recent = vec![
                     crate::reader::ReaderLocation {
@@ -740,7 +727,7 @@ mod tests {
                         )
                     })
                     .collect();
-                if let Some(snapshot_books) = Some(&mut state.reading_stats.books_this_month) {
+                if let Some(snapshot_books) = Some(&mut state.reading_stats.period.books) {
                     for (entry, id) in snapshot_books.iter_mut().zip(ids) {
                         entry.book_id = id;
                     }

@@ -55,6 +55,11 @@ impl FrameBuffer {
         &self.bytes
     }
 
+    /// Take over another frame's pixels, all of them.
+    pub fn copy_from(&mut self, other: &Self) {
+        self.bytes.copy_from_slice(&other.bytes);
+    }
+
     /// Reset the full image to white.
     pub fn clear_white(&mut self) {
         self.bytes.fill(0xFF);

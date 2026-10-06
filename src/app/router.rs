@@ -29,6 +29,8 @@ pub enum ScreenRoute {
     ClockSetTime,
     ClockDetails,
     Display,
+    /// Display's chooser of the fixed sleep wallpaper.
+    SleepPicker,
     Language,
     PowerKeyMenu,
     DeviceInfo,
@@ -76,6 +78,7 @@ impl ScreenRoute {
             Self::ClockSetTime => "Set Date & Time",
             Self::ClockDetails => "RTC details",
             Self::Display => "Display",
+            Self::SleepPicker => "Fixed wallpaper",
             Self::Language => "Language",
             Self::PowerKeyMenu => "Power Key Menu",
             Self::DeviceInfo => "Device Info",
@@ -133,6 +136,7 @@ impl ScreenRoute {
                 Self::ClockSetTime => "Imposta data e ora",
                 Self::ClockDetails => "Dettagli RTC",
                 Self::Display => "Schermo",
+                Self::SleepPicker => "Sfondo fisso",
                 Self::Language => "Lingua",
                 Self::PowerKeyMenu => "Menu tasto accensione",
                 Self::DeviceInfo => "Info",
@@ -177,6 +181,7 @@ impl ScreenRoute {
             Self::ClockSetTime => "clock-set-time",
             Self::ClockDetails => "rtc-details",
             Self::Display => "display",
+            Self::SleepPicker => "sleep-picker",
             Self::Language => "language",
             Self::PowerKeyMenu => "power-key-menu",
             Self::DeviceInfo => "device-info",
@@ -246,6 +251,7 @@ impl ScreenRoute {
             | Self::Network => Some(Self::Settings),
             Self::AudioDetails => Some(Self::Audio),
             Self::ClockSetTime | Self::ClockDetails => Some(Self::Clock),
+            Self::SleepPicker => Some(Self::Display),
             Self::DeviceInfoBoard => Some(Self::DeviceInfo),
             Self::DeviceInfoRuntime => Some(Self::DeviceInfoBoard),
             Self::NetworkDetails | Self::NetworkSaved => Some(Self::Network),
@@ -304,6 +310,10 @@ mod tests {
     fn router_exposes_static_parent_hierarchy() {
         assert_eq!(ScreenRoute::Files.parent(), Some(ScreenRoute::Home));
         assert_eq!(ScreenRoute::Display.parent(), Some(ScreenRoute::Settings));
+        assert_eq!(
+            ScreenRoute::SleepPicker.parent(),
+            Some(ScreenRoute::Display)
+        );
         assert_eq!(ScreenRoute::Language.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::PowerKeyMenu.parent(), Some(ScreenRoute::Home));
         assert_eq!(ScreenRoute::ReadingStats.parent(), Some(ScreenRoute::Home));

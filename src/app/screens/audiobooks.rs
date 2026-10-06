@@ -45,7 +45,6 @@ pub fn render_audiobook_library(
     let locale = state.regional.locale;
     let heading = state.display.heading_style();
     let body = state.display.body_style();
-    let detail = state.display.detail_style();
     let audiobooks = &state.audiobooks;
     draw_header(display, state, t(locale, "AUDIOBOOKS", "AUDIOLIBRI"))?;
 
@@ -72,7 +71,7 @@ pub fn render_audiobook_library(
             .as_deref()
             .filter(|_| state.storage.mounted)
         {
-            draw_paragraph(display, error, LEFT, after + 10, detail, WIDTH, 3, 4)?;
+            draw_paragraph(display, error, LEFT, after + 10, body, WIDTH, 3, 4)?;
         }
         let hint = if unreadable {
             back_only(locale)
@@ -116,7 +115,7 @@ pub fn render_audiobook_library(
             Some(percent) => format!("{tracks} \u{00B7} {percent}%"),
             None => tracks,
         };
-        Text::new(&status, Point::new(LEFT + ROW_PAD_X, top + 66), detail).draw(display)?;
+        Text::new(&status, Point::new(LEFT + ROW_PAD_X, top + 66), body).draw(display)?;
         if let Some(percent) = progress {
             draw_progress_bar(display, LEFT + 230, top + 56, 188, 10, percent)?;
         }

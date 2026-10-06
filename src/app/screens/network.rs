@@ -20,7 +20,10 @@ use crate::{
                 select_and_back, FooterKey,
             },
             header::draw_header,
-            layout::{CONTENT_LEFT, CONTENT_RIGHT, CONTENT_WIDTH, FIRST_BASELINE, FIRST_ROW_TOP},
+            layout::{
+                CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_RIGHT, CONTENT_WIDTH, FIRST_BASELINE,
+                FIRST_ROW_TOP,
+            },
             list::{
                 centered_baseline, draw_field, draw_list_row, draw_row_frame, draw_section_title,
                 ROW_STEP,
@@ -94,12 +97,12 @@ pub fn render_network(
             &notice,
             CONTENT_LEFT,
             baseline,
-            preferences.detail_style(),
+            preferences.body_style(),
             CONTENT_WIDTH,
             2,
             2,
         )?;
-        rows_top = next - i32::from(preferences.detail_style().line_height()) + 8;
+        rows_top = next - i32::from(preferences.body_style().line_height()) + 8;
     }
     let saved = network.saved_network_count.to_string();
     let rows: [(&str, &str); 4] = [
@@ -128,11 +131,49 @@ pub fn render_network(
     )
 }
 
+/// The portal's URL as a person types it in a browser: no scheme, no
+/// trailing slash (`http://4.3.2.1/` -> `4.3.2.1`).
+fn portal_address_to_type(url: &str) -> &str {
+    url.strip_prefix("http://")
+        .unwrap_or(url)
+        .trim_end_matches('/')
+}
+
+/// What happens on the phone, under the hotspot's status line. An iPhone
+/// opens the page by itself; Android shows a "Sign in to network"
+/// notification that has to be tapped (it opens the page by itself only
+/// when the network is picked in its Wi-Fi settings), and that is the one
+/// step people miss. Typing the address is the last resort: with mobile
+/// data on, an Android browser may look for it on the cellular network.
+fn hotspot_next_step_hint(phone_joined: bool, address: &str, locale: Locale) -> String {
+    match (phone_joined, locale) {
+        (false, Locale::English) => {
+            "Scan the code with the phone. The page opens by itself, or the phone shows a \"Sign in to network\" notification: tap it.".to_string()
+        }
+        (false, Locale::Italian) => {
+            "Inquadra il codice con il telefono. La pagina si apre da sola, oppure il telefono mostra la notifica «Accedi alla rete»: toccala.".to_string()
+        }
+        (true, Locale::English) => format!(
+            "If the page has not opened, tap the \"Sign in to network\" notification on the phone. Or open the browser and type {address}"
+        ),
+        (true, Locale::Italian) => format!(
+            "Se la pagina non si è aperta, tocca la notifica «Accedi alla rete» sul telefono. Oppure apri il browser e scrivi {address}"
+        ),
+    }
+}
+
 /// Single-sentence phone Wi-Fi join status, matching the portal card's
 /// "waiting / connecting / connected" copy instead of the terser
 /// label-plus-SSID pair the old two-line layout used.
-fn provision_join_status_text(join: &JoinAttemptState, locale: Locale) -> String {
+fn provision_join_status_text(
+    join: &JoinAttemptState,
+    phone_joined: bool,
+    locale: Locale,
+) -> String {
     match join {
+        JoinAttemptState::Idle if phone_joined => {
+            t(locale, "Phone connected", "Telefono collegato").to_string()
+        }
         JoinAttemptState::Idle => t(
             locale,
             "Waiting for the phone to connect...",
@@ -258,7 +299,6 @@ pub fn render_wifi_transfer(
     let preferences = state.display;
     let heading = preferences.heading_style();
     let body = preferences.body_style();
-    let detail = preferences.detail_style();
     let transfer = &state.wifi_transfer;
     // No Wi-Fi joined yet: the portal was bootstrapped from the device's own
     // hotspot (see `NetworkRuntime::start_provisioning`) instead of the
@@ -308,15 +348,16 @@ pub fn render_wifi_transfer(
     // far wider than the screen.
     let mut baseline = cursor_top + i32::from(body.line_height()) + 4;
     if ready && via_hotspot {
+        let phone_joined = transfer.hotspot_clients > 0;
         draw_status_dot(
             display,
             CONTENT_LEFT,
             baseline,
-            matches!(transfer.join, JoinAttemptState::Succeeded { .. }),
+            phone_joined || matches!(transfer.join, JoinAttemptState::Succeeded { .. }),
         )?;
         baseline = draw_paragraph(
             display,
-            &provision_join_status_text(&transfer.join, locale),
+            &provision_join_status_text(&transfer.join, phone_joined, locale),
             CONTENT_LEFT + 26,
             baseline,
             body,
@@ -324,6 +365,20 @@ pub fn render_wifi_transfer(
             2,
             2,
         )?;
+        // What to do on the phone, and the address to type as a last resort:
+        // the hotspot has no other name.
+        if let Some(address) = transfer.url.as_deref().map(portal_address_to_type) {
+            baseline = draw_paragraph(
+                display,
+                &hotspot_next_step_hint(phone_joined, address, locale),
+                CONTENT_LEFT,
+                baseline + 4,
+                body,
+                CONTENT_WIDTH,
+                3,
+                2,
+            )?;
+        }
     } else if ready {
         baseline = draw_paragraph(
             display,
@@ -342,7 +397,7 @@ pub fn render_wifi_transfer(
             error,
             CONTENT_LEFT,
             baseline,
-            detail,
+            body,
             CONTENT_WIDTH,
             3,
             2,
@@ -364,6 +419,31 @@ pub fn render_wifi_transfer(
         centered_baseline(heading, button_top, PORTAL_BUTTON_HEIGHT),
         heading,
     )?;
+    // The one thing the page cannot say for itself: it lives as long as
+    // this screen. People leave to look at the book they just sent, and
+    // find the page "Not connected". Only as many lines as fit above the
+    // footer.
+    if ready {
+        let step = i32::from(body.line_height()) + 2;
+        let first_baseline = button_top + PORTAL_BUTTON_HEIGHT + i32::from(body.line_height()) + 12;
+        let lines = (CONTENT_BOTTOM - first_baseline).div_euclid(step) + 1;
+        if lines > 0 {
+            draw_paragraph(
+                display,
+                t(
+                    locale,
+                    "Stay on this screen while you use the page: if you leave it, the page disconnects.",
+                    "Resta su questa schermata mentre usi la pagina: se esci, la pagina si scollega.",
+                ),
+                CONTENT_LEFT,
+                first_baseline,
+                body,
+                CONTENT_WIDTH,
+                lines.min(3) as usize,
+                2,
+            )?;
+        }
+    }
     draw_footer(
         display,
         state,

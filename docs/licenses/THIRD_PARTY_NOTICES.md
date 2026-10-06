@@ -16,3 +16,7 @@ The decoder is Copyright (c) 1995-2004 RealNetworks, Inc., part of the Helix DNA
 ## Fonts
 
 The interface and book fonts are generated from fonts under the SIL Open Font License 1.1: see [`FONT_NOTICES.md`](FONT_NOTICES.md).
+
+## Icons
+
+The interface glyphs are [Iconoir](https://iconoir.com) drawings, MIT License, Copyright (c) 2021 Luca Burgio. The 24 px and 96 px ones come from the [`embedded-iconoir`](https://crates.io/crates/embedded-iconoir) crate (MIT); the 64 px ones on the icon tiles are rasterised from Iconoir 6.11.0 by `tools/icongen/gen_tile_icons.py` into `src/app/widgets/tile_icons.rs`. The SVG files themselves are not distributed with this repository.

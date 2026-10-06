@@ -146,10 +146,9 @@ pub(crate) fn draw_continue_reading_tile(
     let text_right = top_left.x + width - CONTINUE_TILE_PAD;
     let text_width = (text_right - text_left).max(0);
 
-    // One role larger than the equivalent text elsewhere in the shell
-    // (Body instead of Detail for the caption/status line, Large instead of
-    // Heading for the title): this tile is Home's one hero element, so its
-    // text reads a size up from ordinary tile labels.
+    // This tile is Home's one hero element: its title is Large where an
+    // ordinary tile label is Heading. The caption/status line is Body, the
+    // interface's smallest size.
     let caption_style = state.display.body_style();
     let title_style = state.display.text_style(UiTextRole::Large, BinaryColor::On);
     let status_style = state.display.body_style();

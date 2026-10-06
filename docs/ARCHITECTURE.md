@@ -30,7 +30,7 @@ ESP-IDF event loop and native hardware ownership
               audiobook.rs / audio/*
               usb_disk.rs (components/usbdisk)
               wifi_transfer.rs / network*.rs / dns_captive_portal.rs / ota.rs
-              power_key.rs / power_key_menu.rs / sleep_mode.rs / sleep_images.rs / sleep_cover.rs
+              power_key.rs / power_key_menu.rs / sleep_mode.rs / sleep_images.rs / sleep_cover.rs / sleep_tutorial.rs
               panel_refresh.rs / epaper.rs / storage.rs / sd_io.rs / sd_log.rs
 ```
 
@@ -69,7 +69,7 @@ Power long press  -> display maintenance menu (src/power_key_menu.rs)
 Power press while off -> boot, restoring the route in use
 ```
 
-Standby draws the sleep screen (`src/sleep_images.rs` for the BMPs in `RUSTMIX/SLEEP`, `src/sleep_cover.rs` for the current book's cover), saves state, writes a shutdown marker to the PMIC and powers the board off. Should the power-off not happen, a PMIC watchdog armed just before it cuts power 16 s later, and meanwhile the MCU is in deep sleep; either way the next boot finds the marker and resumes. Automatic standby follows the idle time in the Display settings; it is held off while an audiobook plays or the microSD is connected to a PC.
+Standby draws the sleep screen (`src/sleep_images.rs` for the BMPs in `RUSTMIX/SLEEP`, `src/sleep_cover.rs` for the current book's cover, `src/sleep_tutorial.rs` for the steps to add a wallpaper when the card has none), saves state, writes a shutdown marker to the PMIC and powers the board off. Should the power-off not happen, a PMIC watchdog armed just before it cuts power 16 s later, and meanwhile the MCU is in deep sleep; either way the next boot finds the marker and resumes. Automatic standby follows the idle time in the Display settings; it is held off while an audiobook plays or the microSD is connected to a PC.
 
 So every wake is a full boot, kept short: no PSRAM self-test, no check of the app image by the bootloader at power-on (see `sdkconfig.defaults`), warnings-only logs. Volume, positions and preferences are on the card and read back at boot.
 
@@ -91,7 +91,7 @@ The in-reader dictionary lookup (`src/dictionary.rs`) reads the bounded Rustmix 
   <8HEX>.THB .SLC .EPI   thumbnails, sleep covers, inline images
 ```
 
-`src/reading_stats.rs` appends one line per reading session to a monthly log in `RUSTMIX/STATS` and aggregates days, weeks, months and streaks in the device's time zone.
+`src/reading_stats.rs` appends one line per reading session to a monthly log in `RUSTMIX/STATS` and aggregates days, weeks, months and streaks in the device's time zone. The Statistics screen asks it for one week or one month at a time (`StatsView`, kept in `AppState`); a period older than the logs the streak already reads costs one to three more log reads, done before the paint that follows the key.
 
 ## Images
 

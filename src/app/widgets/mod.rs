@@ -1,9 +1,11 @@
 pub mod footer;
 pub mod header;
 pub mod home_tile;
+pub mod keys_figure;
 pub mod layout;
 pub mod list;
 pub mod progress;
 pub mod qr;
 pub mod status_glyphs;
 pub mod text;
+pub mod tile_icons;

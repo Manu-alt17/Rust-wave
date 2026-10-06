@@ -90,7 +90,7 @@ pub fn render_device_info(
             ),
             CONTENT_LEFT,
             baseline + 14,
-            preferences.detail_style(),
+            preferences.body_style(),
             CONTENT_WIDTH,
             5,
             4,

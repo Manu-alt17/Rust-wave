@@ -103,6 +103,7 @@ mod firmware {
         sleep_images::{SleepImageCatalog, SleepImageSelection, SLEEP_IMAGE_DIRECTORY},
         sleep_mode::{SleepModeState, SleepWakeCause},
         sleep_network::SleepNetworkState,
+        sleep_tutorial::compose_no_wallpaper_frame,
         storage::{
             StorageBrowser, StorageSnapshot, SDMMC_COMMAND_TIMEOUT_MS, SDMMC_STABLE_SPEED_KHZ,
             SD_MOUNT_POINT, STORAGE_IO_RETRY_ATTEMPTS,
@@ -1471,6 +1472,7 @@ mod firmware {
                 &mut portal_lan_recovering,
                 &mut storage_browser,
             );
+            maintain_portal_sleep_screen(&wifi_transfer_server, &mut state, &mut sleep_images);
             if state.panel_awake
                 && state.wifi_transfer != portal_snapshot_before
                 && matches!(
@@ -1993,6 +1995,7 @@ mod firmware {
                             now,
                             state.reader.continue_reading_progress(),
                             state.regional.timezone,
+                            state.stats_view,
                         )
                     });
                 state.update_reading_stats_snapshot(snapshot);
@@ -2826,6 +2829,7 @@ mod firmware {
                         apply_clock_set_timezone_ui_request(&mut network_config, &mut state);
                         apply_first_run_ui_request(&mut state);
                         log_reader_persistence_event(&mut state);
+                        sync_sleep_picker(&mut state, &mut sleep_images);
                         if state.display != previous_display {
                             match state.display.save_to_path(DISPLAY_CONFIG_PATH) {
                         Ok(()) => info!(
@@ -2910,6 +2914,15 @@ mod firmware {
                             // See the Back handler: have the Continue Reading
                             // cover in RAM before this paint, not a tick later.
                             sync_continue_reading_thumbnail(&mut state, &cover_cache);
+                        }
+                        if state.active_route() == ScreenRoute::ReadingStats
+                            && state.take_reading_stats_refresh_request()
+                        {
+                            // The screen was just opened, or this key asked
+                            // it for another week or month: read the figures
+                            // before the paint below, or it would draw the
+                            // period it had and stay on it.
+                            refresh_reading_stats_snapshot_now(&mut state);
                         }
                         let reader_clear_ghost = state.take_reader_clear_ghost_request();
                         let power_key_clear_ghost = state.take_power_key_manual_refresh_request();
@@ -3025,6 +3038,7 @@ mod firmware {
                 now,
                 state.reader.continue_reading_progress(),
                 state.regional.timezone,
+                state.stats_view,
             )
         });
         state.update_reading_stats_snapshot(snapshot);
@@ -3455,7 +3469,12 @@ mod firmware {
             let _ = runtime.start_scan();
         }
 
-        let latest = active_server.snapshot();
+        let mut latest = active_server.snapshot();
+        // The server does not know who is on the hotspot; the driver does.
+        // The screen changes its instructions once a phone has joined.
+        if via_hotspot {
+            latest.hotspot_clients = runtime.provisioning_client_count();
+        }
         if latest != state.wifi_transfer {
             state.update_wifi_transfer_snapshot(latest);
         }
@@ -4331,12 +4350,23 @@ mod firmware {
             RefreshRequest::ForceGlobalManual => PanelRefreshRequest::ManualGhostCleanup,
             RefreshRequest::ForceGlobalSafetyFallback => PanelRefreshRequest::SafetyFallback,
         };
-        let full_page_image = state.active_route() == ScreenRoute::ReaderPage
-            && state
-                .reader
-                .session
-                .as_ref()
-                .is_some_and(|session| session.current_page_is_full_page_image());
+        // A sleep wallpaper in Display's chooser is a full-page image like
+        // an EPUB cover, and each different one is planned as a transition:
+        // a partial refresh from one dithered picture to the next would
+        // show the first through the second, and the chooser is there to
+        // show how the wallpaper will look.
+        let picker_image = state.active_route() == ScreenRoute::SleepPicker
+            && state.sleep_picker.preview().is_some();
+        if picker_image && state.sleep_picker.take_preview_changed() {
+            coordinator.expect_another_full_page_image();
+        }
+        let full_page_image = picker_image
+            || state.active_route() == ScreenRoute::ReaderPage
+                && state
+                    .reader
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.current_page_is_full_page_image());
         // Must match the inversion `reader::render_page` applies.
         let inverted = state.active_route() == ScreenRoute::ReaderPage
             && state.reader.session.is_some()
@@ -4440,11 +4470,83 @@ mod firmware {
         }
     }
 
+    /// Feed Display's fixed-wallpaper chooser from the card, before the
+    /// paint that follows a key: store a wallpaper just chosen, list the
+    /// folder when the screen opens, decode the wallpaper under the cursor.
+    /// One file is read per step (48 KB); nothing is kept once the screen is
+    /// left (see `SleepPickerState::close`).
+    fn sync_sleep_picker(state: &mut AppState, sleep_images: &mut SleepImageCatalog) {
+        if let Some(name) = state.sleep_picker.take_choice() {
+            sleep_images.set_current(&name);
+            info!("rustmix-wave=sleep-fixed status=chosen source=device file={name}");
+        }
+        if state.active_route() != ScreenRoute::SleepPicker {
+            return;
+        }
+        if state.sleep_picker.needs_listing() {
+            let names = sleep_images.image_names();
+            let current = sleep_images.current_name();
+            info!(
+                "rustmix-wave=sleep-picker status=listed wallpapers={} current={}",
+                names.len(),
+                current.as_deref().unwrap_or("none")
+            );
+            state.sleep_picker.set_listing(names, current);
+        }
+        let wanted = state.sleep_picker.wanted_preview().map(str::to_string);
+        if let Some(name) = wanted {
+            let frame = match sleep_images.decode_image(&name) {
+                Ok(frame) => Some(frame),
+                Err(error) => {
+                    warn!(
+                        "rustmix-wave=sleep-picker status=unreadable file={name} error={error:#}"
+                    );
+                    None
+                }
+            };
+            state.sleep_picker.set_preview(&name, frame);
+        }
+    }
+
+    /// Carry out the sleep screen the Wi-Fi page asked for, and tell the
+    /// page the sleep screen as it is now. The page's server only takes the
+    /// request: the display settings and the catalog are the main loop's.
+    fn maintain_portal_sleep_screen(
+        server: &Option<WifiTransferServer>,
+        state: &mut AppState,
+        sleep_images: &mut SleepImageCatalog,
+    ) {
+        let Some(server) = server.as_ref() else {
+            return;
+        };
+        if let Some(request) = server.take_pending_sleep_screen() {
+            let previous = state.display;
+            if let Some(name) = request.fixed.as_deref() {
+                sleep_images.set_current(name);
+            }
+            state.display.sleep_screen = request.mode;
+            info!(
+                "rustmix-wave=sleep-screen status=set source=portal mode={} fixed={}",
+                request.mode.marker(),
+                request.fixed.as_deref().unwrap_or("unchanged")
+            );
+            if state.display != previous {
+                if let Err(error) = state.display.save_to_path(DISPLAY_CONFIG_PATH) {
+                    warn!(
+                        "rustmix-wave=display-config-write status=failed path={DISPLAY_CONFIG_PATH} error={error:#}"
+                    );
+                }
+            }
+        }
+        server.set_sleep_screen(state.display.sleep_screen, sleep_images.current_name());
+    }
+
     /// Pick the deep-sleep frame per the Display setting. Book cover mode
     /// shows the cover only when sleep interrupts reading (`reading`); from
     /// any other screen, or when the cover is unusable, it falls back to the
-    /// in-order SD images. Returns the frame and a label for sleep-mode
-    /// diagnostics.
+    /// in-order SD images. With no wallpaper on the card to show, the frame
+    /// is the page that tells how to add one. Returns the frame and a label
+    /// for sleep-mode diagnostics.
     fn select_sleep_frame(
         state: &AppState,
         sleep_images: &mut SleepImageCatalog,
@@ -4484,12 +4586,19 @@ mod firmware {
                 info!("rustmix-wave=sleep-cover status=fallback reason=no-book");
             }
         }
-        let selection = if mode == SleepScreenMode::Random {
-            sleep_images.select_random(unsafe { sys::esp_random() })
-        } else {
-            sleep_images.select_next()
+        let selection = match mode {
+            SleepScreenMode::Random => sleep_images.select_random(unsafe { sys::esp_random() }),
+            SleepScreenMode::Fixed => sleep_images.select_fixed(),
+            SleepScreenMode::Sequential | SleepScreenMode::BookCover => sleep_images.select_next(),
         };
         log_sleep_image_selection(&selection);
+        if selection.fallback {
+            info!("rustmix-wave=sleep-image-tutorial status=shown reason=no-wallpaper");
+            return (
+                compose_no_wallpaper_frame(state.regional.locale, state.display.font_size, mode),
+                selection.file_name,
+            );
+        }
         (selection.frame, selection.file_name)
     }
 

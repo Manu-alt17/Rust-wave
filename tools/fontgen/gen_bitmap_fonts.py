@@ -94,15 +94,12 @@ SEMIBOLD = 600
 
 # (name, font file, pixel size, variation axes, line height)
 UI_STRIKES = [
-    ("INTER_COMPACT_DETAIL", 11, MEDIUM, 16),
     ("INTER_COMPACT_BODY", 13, MEDIUM, 18),
     ("INTER_COMPACT_HEADING", 18, SEMIBOLD, 24),
     ("INTER_COMPACT_LARGE", 22, SEMIBOLD, 29),
-    ("INTER_STANDARD_DETAIL", 12, MEDIUM, 17),
     ("INTER_STANDARD_BODY", 15, MEDIUM, 20),
     ("INTER_STANDARD_HEADING", 20, SEMIBOLD, 26),
     ("INTER_STANDARD_LARGE", 24, SEMIBOLD, 31),
-    ("INTER_LARGE_DETAIL", 13, MEDIUM, 18),
     ("INTER_LARGE_BODY", 17, MEDIUM, 23),
     ("INTER_LARGE_HEADING", 22, SEMIBOLD, 29),
     ("INTER_LARGE_LARGE", 26, SEMIBOLD, 34),
@@ -128,21 +125,11 @@ ATKINSON_STRIKES = [
 # box's left and top relative to the pen position on the baseline, then its
 # rows ('#' is ink). Keyed by strike name and character. The advance stays
 # the font's own.
-GLYPH_OVERRIDES = {
-    # Inter Medium 12 px: hinting collapses both rings of the percent sign
-    # and drops its slash, leaving two smudges that do not read as '%'.
-    ("INTER_STANDARD_DETAIL", "%"): (2, -9, [
-        ".##....#.",
-        "#..#..#..",
-        "#..#..#..",
-        ".##..#...",
-        "....#....",
-        "...#..##.",
-        "..#..#..#",
-        "..#..#..#",
-        ".#....##.",
-    ]),
-}
+# None at present: the one there was (the percent sign of Inter Medium 12 px,
+# whose rings and slash the hinting collapsed) went with the 11 to 13 px
+# "detail" strikes, which were too small to read on the panel and are no
+# longer generated.
+GLYPH_OVERRIDES = {}
 
 
 class Strike:

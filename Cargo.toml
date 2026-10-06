@@ -48,7 +48,7 @@ opt-level = 3
 anyhow = "1"
 embedded-graphics = "0.8.1"
 embedded-hal = "1.0"
-embedded-iconoir = { version = "0.2.3", features = ["96px", "48px", "24px"] }
+embedded-iconoir = { version = "0.2.3", features = ["96px", "24px"] }
 log = "0.4"
 miniz_oxide = "0.8"
 # EPUB cover thumbnails: JPEG uses native scaled decoding (1/8..1) so covers

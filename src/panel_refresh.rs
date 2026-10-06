@@ -112,6 +112,15 @@ impl PanelRefreshCoordinator {
         self.partial_count = 0;
     }
 
+    /// The next full-page image replaces another one (a different sleep
+    /// wallpaper in the chooser, say): plan it as a transition, so it gets
+    /// the same fast global refresh as an image appearing over text. A
+    /// partial refresh from one dithered picture to another leaves the first
+    /// showing through the second.
+    pub fn expect_another_full_page_image(&mut self) {
+        self.showing_full_page_image = false;
+    }
+
     #[must_use]
     pub fn plan(&mut self, request: PanelRefreshRequest) -> PanelRefreshPlan {
         self.plan_for_frame(request, self.showing_full_page_image, self.showing_inverted)
@@ -307,6 +316,34 @@ mod tests {
             transition
         );
         assert!(PanelGlobalReason::FullPageImageTransition.uses_fast_waveform());
+    }
+
+    #[test]
+    fn one_full_page_image_replacing_another_can_be_planned_as_a_transition() {
+        let mut coordinator = PanelRefreshCoordinator::default();
+        let fast = PanelRefreshPlan::GlobalBase {
+            reason: PanelGlobalReason::FullPageImageTransition,
+        };
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, true, false),
+            fast
+        );
+        // By itself, a second image is an ordinary partial refresh.
+        assert!(matches!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, true, false),
+            PanelRefreshPlan::PartialFullscreen { .. }
+        ));
+        coordinator.expect_another_full_page_image();
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, true, false),
+            fast
+        );
+        assert_eq!(coordinator.partial_count(), 0);
+        // Leaving the image is still a transition.
+        assert_eq!(
+            coordinator.plan_for_frame(PanelRefreshRequest::Normal, false, false),
+            fast
+        );
     }
 
     #[test]

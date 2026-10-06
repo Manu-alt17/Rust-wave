@@ -58,6 +58,7 @@ pub fn render_active_screen(
         ScreenRoute::AudioDetails => audio::render_audio_details(display, state),
         ScreenRoute::Files => files::render_files(display, state),
         ScreenRoute::Display => display::render_display(display, state),
+        ScreenRoute::SleepPicker => display::render_sleep_picker(display, state),
         ScreenRoute::Language => language::render_language(display, state),
         ScreenRoute::PowerKeyMenu => power_key::render_power_key_menu(display, state),
         ScreenRoute::DeviceInfo => device_info::render_device_info(display, state),

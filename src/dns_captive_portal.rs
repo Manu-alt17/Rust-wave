@@ -24,6 +24,13 @@
 //! Answering every hostname trades that theoretical detection risk for a
 //! fallback that reliably works.
 
+/// Print every DNS question and every probed address on the serial log (at
+/// `warn`, the level release builds keep), to see what a phone that does
+/// not open the portal is asking for. Off in a tree that can be released:
+/// a phone asks dozens of names a minute and each line is milliseconds of
+/// UART. A test fails while this is on.
+pub const DIAGNOSTIC_LOG: bool = false;
+
 /// Byte span `[12, end)` of `query`'s first question (QNAME + QTYPE +
 /// QCLASS) plus its QTYPE, or `None` if `query` is too short to contain a
 /// DNS header, declares zero questions, or has a truncated/malformed QNAME.
@@ -56,10 +63,14 @@ fn parse_question(query: &[u8]) -> Option<(&[u8], u16)> {
 
 /// Build a DNS response for `query`: a wildcard `A` answer pointing at
 /// `answer_ip` for any hostname the query asks an `A` record for, otherwise
-/// (a `PTR`/`AAAA`/other query type, which a real answer at `answer_ip`
-/// wouldn't be valid for) a real NXDOMAIN. Returns `None` only if `query` is
-/// too malformed to answer at all (too short, zero questions, or a
-/// truncated QNAME).
+/// (an `AAAA`/`HTTPS`/`PTR`/other query type, which an answer at `answer_ip`
+/// wouldn't be valid for) "no data": NOERROR with no answer, which says the
+/// name exists and has no record of that type. It used to be NXDOMAIN, "no
+/// such name", for the very names the `A` answer says do exist -- and a
+/// resolver that asks `AAAA` or `HTTPS` alongside `A`, as phones do, may
+/// take the name for nonexistent and drop the `A` answer with it. Returns
+/// `None` only if `query` is too malformed to answer at all (too short,
+/// zero questions, or a truncated QNAME).
 #[must_use]
 pub fn build_response(query: &[u8], answer_ip: [u8; 4]) -> Option<Vec<u8>> {
     let (question, qtype) = parse_question(query)?;
@@ -68,17 +79,11 @@ pub fn build_response(query: &[u8], answer_ip: [u8; 4]) -> Option<Vec<u8>> {
 
     let mut response = Vec::with_capacity(question.len() + 28);
     response.extend_from_slice(&query[0..2]); // ID, unchanged
-    if resolve {
-        // QR=1 (response), RD copied from the query, AA=1 (we are
-        // authoritative for the wildcard answer we're about to make up).
-        response.push(0x84 | (query[2] & 0x01));
-        response.push(0x80); // RA=1, RCODE=0 (no error)
-    } else {
-        // Not authoritative for record types we're refusing; RCODE=3
-        // (NXDOMAIN).
-        response.push(0x80 | (query[2] & 0x01));
-        response.push(0x83);
-    }
+                                              // QR=1 (response), RD copied from the query, AA=1 (we are authoritative
+                                              // for the wildcard zone we make up: both for the `A` answer and for
+                                              // saying there is nothing else).
+    response.push(0x84 | (query[2] & 0x01));
+    response.push(0x80); // RA=1, RCODE=0 (no error)
     response.extend_from_slice(&[0, 1]); // QDCOUNT=1
     response.extend_from_slice(if resolve { &[0, 1] } else { &[0, 0] }); // ANCOUNT
     response.extend_from_slice(&[0, 0]); // NSCOUNT=0
@@ -93,6 +98,13 @@ pub fn build_response(query: &[u8], answer_ip: [u8; 4]) -> Option<Vec<u8>> {
         response.extend_from_slice(&answer_ip);
     }
     Some(response)
+}
+
+/// The QTYPE of `query`'s first question (1 = A, 28 = AAAA, 65 = HTTPS...),
+/// for diagnostic logging.
+#[must_use]
+pub fn query_type(query: &[u8]) -> Option<u16> {
+    parse_question(query).map(|(_, qtype)| qtype)
 }
 
 /// Decode the QNAME of `query`'s first question into a dotted hostname, for
@@ -205,6 +217,11 @@ pub mod espidf {
                         warn!(
                             "rustmix-wave=captive-portal-dns status=send-error name={name} from={source} error={error}"
                         );
+                    } else if super::DIAGNOSTIC_LOG {
+                        warn!(
+                            "rustmix-wave=captive-portal-dns status=answered name={name} type={} from={source}",
+                            super::query_type(&buffer[..len]).unwrap_or(0)
+                        );
                     } else {
                         info!(
                             "rustmix-wave=captive-portal-dns status=answered name={name} from={source}"
@@ -221,7 +238,15 @@ pub mod espidf {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_response, query_name};
+    use super::{build_response, query_name, query_type, DIAGNOSTIC_LOG};
+
+    #[test]
+    fn the_diagnostic_log_is_off_in_a_tree_that_can_be_released() {
+        assert!(
+            !DIAGNOSTIC_LOG,
+            "dns_captive_portal::DIAGNOSTIC_LOG is on: set it back to false before releasing"
+        );
+    }
 
     /// A minimal single-question `A` query for `name`, as a phone's
     /// captive-portal probe would send.
@@ -247,7 +272,7 @@ mod tests {
     #[test]
     fn any_hostname_gets_a_wildcard_answer() {
         let query = a_query("example.com");
-        let response = build_response(&query, [192, 168, 71, 1]).unwrap();
+        let response = build_response(&query, [4, 3, 2, 1]).unwrap();
 
         assert_eq!(
             &response[0..2],
@@ -258,18 +283,32 @@ mod tests {
         assert_eq!(response[3], 0x80, "RCODE must be 0 (NOERROR)");
         assert_eq!(&response[4..6], &[0, 1], "QDCOUNT");
         assert_eq!(&response[6..8], &[0, 1], "ANCOUNT");
-        assert!(response.ends_with(&[192, 168, 71, 1]));
+        assert!(response.ends_with(&[4, 3, 2, 1]));
     }
 
     #[test]
-    fn non_a_query_gets_nxdomain_instead_of_a_bogus_a_record() {
-        let mut query = a_query("example.com");
-        let qtype_offset = query.len() - 4;
-        query[qtype_offset..qtype_offset + 2].copy_from_slice(&[0, 12]); // QTYPE=PTR
-        let response = build_response(&query, [192, 168, 71, 1]).unwrap();
+    fn other_record_types_get_no_data_not_no_such_name() {
+        // AAAA and HTTPS are what a phone asks next to A for the same name;
+        // PTR stands for everything else.
+        for qtype in [28_u16, 65, 12] {
+            let mut query = a_query("connectivitycheck.gstatic.com");
+            let qtype_offset = query.len() - 4;
+            query[qtype_offset..qtype_offset + 2].copy_from_slice(&qtype.to_be_bytes());
+            assert_eq!(query_type(&query), Some(qtype));
+            let response = build_response(&query, [4, 3, 2, 1]).unwrap();
 
-        assert_eq!(response[3] & 0x0F, 3, "RCODE must be 3 (NXDOMAIN)");
-        assert_eq!(&response[6..8], &[0, 0], "ANCOUNT must be 0");
+            assert_eq!(&response[0..2], &query[0..2], "ID");
+            assert_eq!(response[2] & 0x80, 0x80, "QR");
+            assert_eq!(
+                response[3] & 0x0F,
+                0,
+                "type {qtype}: RCODE must be 0, not NXDOMAIN"
+            );
+            assert_eq!(&response[4..6], &[0, 1], "QDCOUNT");
+            assert_eq!(&response[6..8], &[0, 0], "type {qtype}: ANCOUNT must be 0");
+            // The question is echoed and nothing follows it.
+            assert_eq!(&response[12..], &query[12..]);
+        }
     }
 
     #[test]

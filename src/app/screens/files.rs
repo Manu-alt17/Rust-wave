@@ -197,7 +197,6 @@ fn render_preview(
     let locale = state.regional.locale;
     let preferences = state.display;
     let body = preferences.body_style();
-    let detail = preferences.detail_style();
 
     draw_header(display, state, t(locale, "FILE PREVIEW", "ANTEPRIMA"))?;
     draw_text_fit(
@@ -209,7 +208,7 @@ fn render_preview(
     )?;
 
     let frame_top = LIST_TOP;
-    let line_step = i32::from(detail.line_height()) + 6;
+    let line_step = i32::from(body.line_height()) + 6;
     let frame_height = PREVIEW_LINES as i32 * line_step + 22;
     draw_row_frame(display, frame_top, frame_height, false)?;
     let text_left = CONTENT_LEFT + ROW_PAD_X;
@@ -236,9 +235,9 @@ fn render_preview(
             .enumerate()
         {
             Text::new(
-                &truncate_to_width(detail, line, text_width),
+                &truncate_to_width(body, line, text_width),
                 Point::new(text_left, frame_top + 28 + index as i32 * line_step),
-                detail,
+                body,
             )
             .draw(display)?;
         }

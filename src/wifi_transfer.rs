@@ -141,6 +141,10 @@ pub struct WifiTransferSnapshot {
     /// on-device screen and the portal's Wi-Fi tab show.
     pub ap_ssid: Option<String>,
     pub ap_password: Option<String>,
+    /// Phones on the hotspot right now (always 0 on the LAN path). Filled
+    /// in by the main loop, which owns the Wi-Fi driver; the screen uses it
+    /// to say what to do next on the phone once one has joined.
+    pub hotspot_clients: u16,
     pub join: JoinAttemptState,
     pub last_action: String,
     pub last_bytes: usize,
@@ -154,6 +158,7 @@ impl Default for WifiTransferSnapshot {
             url: None,
             ap_ssid: None,
             ap_password: None,
+            hotspot_clients: 0,
             join: JoinAttemptState::Idle,
             last_action: "Portal is off".into(),
             last_bytes: 0,
@@ -280,6 +285,51 @@ pub fn is_sd_safe_name(component: &str) -> bool {
         && !component
             .chars()
             .any(|character| character.is_control() || "\\/:*?\"<>|".contains(character))
+}
+
+/// The sleep screen as the page asks for it, for the runtime owner in
+/// main.rs to carry out: it owns the display settings and the catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SleepScreenRequest {
+    /// What standby is to show.
+    pub mode: crate::app::display::SleepScreenMode,
+    /// With [`SleepScreenMode::Fixed`], the wallpaper of `/SLEEP` to keep;
+    /// `None` keeps the one standby shows now.
+    ///
+    /// [`SleepScreenMode::Fixed`]: crate::app::display::SleepScreenMode::Fixed
+    pub fixed: Option<String>,
+}
+
+/// Whether `name` can be a sleep wallpaper's file name: one name, not a
+/// path, ending in `.bmp`.
+#[must_use]
+pub fn is_sleep_image_name(name: &str) -> bool {
+    is_sd_safe_name(name)
+        && name.rsplit_once('.').is_some_and(|(stem, extension)| {
+            !stem.is_empty() && extension.eq_ignore_ascii_case("bmp")
+        })
+}
+
+/// The sleep screen as `/api/status` tells it to the page: the Display
+/// setting's marker and the wallpaper standby shows now, which is the fixed
+/// one when the mode is `fixed`.
+#[must_use]
+pub fn sleep_status_json(mode: &str, fixed: Option<&str>) -> String {
+    let escape = |value: &str| -> String {
+        value
+            .chars()
+            .filter(|character| !character.is_control())
+            .flat_map(|character| match character {
+                '"' | '\\' => vec!['\\', character],
+                other => vec![other],
+            })
+            .collect()
+    };
+    format!(
+        "{{\"mode\":\"{}\",\"fixed\":\"{}\"}}",
+        escape(mode),
+        escape(fixed.unwrap_or(""))
+    )
 }
 
 /// Media type a downloaded file is declared as, from its extension. Without
@@ -424,6 +474,7 @@ pub mod espidf {
     };
     use log::{info, warn};
 
+    use crate::app::display::SleepScreenMode;
     use crate::cover_cache::{CachedThumbnail, CoverCache};
     use crate::dns_captive_portal::espidf::CaptivePortalDns;
     use crate::network_scan::WifiScanEntry;
@@ -434,9 +485,10 @@ pub mod espidf {
 
     use super::{
         download_content_disposition, download_content_type, is_portal_root,
-        is_protected_portal_path, is_same_origin_request, portal_locale_code, query_value,
-        resolve_portal_path, JoinAttemptState, PendingJoinRequest, WifiTransferSnapshot,
-        WifiTransferState, NETWORK_PROVISION_INACTIVITY_SECONDS, WIFI_TRANSFER_HTTP_PORT,
+        is_protected_portal_path, is_same_origin_request, is_sleep_image_name, portal_locale_code,
+        query_value, resolve_portal_path, sleep_status_json, JoinAttemptState, PendingJoinRequest,
+        SleepScreenRequest, WifiTransferSnapshot, WifiTransferState,
+        NETWORK_PROVISION_INACTIVITY_SECONDS, WIFI_TRANSFER_HTTP_PORT,
         WIFI_TRANSFER_INACTIVITY_SECONDS, WIFI_TRANSFER_MAX_DIRECTORY_ROWS,
         WIFI_TRANSFER_MAX_UPLOAD_BYTES, WIFI_TRANSFER_ROOT, WIFI_TRANSFER_SERVER_STACK_BYTES,
         WIFI_TRANSFER_STREAM_CHUNK_BYTES,
@@ -505,6 +557,11 @@ input[type=text],input[type=search],input[type=password]{background:transparent;
 .book-title{font-size:.85rem;font-weight:600;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .card-actions{margin-top:auto;display:flex;gap:.4rem;flex-wrap:wrap}
 .card-actions .btn{flex:1;min-height:40px;padding:0 .4rem;font-size:.8rem}
+.card-actions .btn.wide{flex-basis:100%}
+.book-card.fixed{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.fixed-badge{font-size:.8rem;font-weight:600;color:var(--accent)}
+.choice{display:flex;align-items:center;gap:.6rem;min-height:44px;cursor:pointer}
+.choice input{width:20px;height:20px;margin:0;flex:none;accent-color:var(--accent)}
 /* lists: files, audiobooks, wifi */
 .rows{border-top:1px solid var(--border)}
 .row{display:flex;align-items:center;gap:.7rem;padding:0 .4rem 0 .8rem;min-height:56px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;-webkit-user-select:none}
@@ -559,12 +616,6 @@ input[type=text],input[type=search],input[type=password]{background:transparent;
 .pick{border:1px solid var(--border);border-radius:8px;max-height:45vh;overflow:auto;margin:.5rem 0}
 .pick .row{min-height:48px}
 /* wallpapers */
-.search-row{display:flex;gap:.5rem}
-.search-row input{flex:1}
-.results{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin:.6rem 0 0}
-.results button{aspect-ratio:1;border-radius:8px;overflow:hidden;border:1px solid var(--border);padding:0;background:var(--bg);cursor:pointer}
-.results button.busy{outline:3px solid var(--accent);outline-offset:1px}
-.results img{width:100%;height:100%;object-fit:cover;display:block}
 .stage{display:none}
 .stage.show{display:block}
 .device-frame{width:min(100%,250px);margin:.8rem auto .4rem;border:2px solid var(--text);border-radius:14px;padding:9px;background:var(--bg)}
@@ -629,7 +680,7 @@ input[type=text],input[type=search],input[type=password]{background:transparent;
 <span class="pill" id="space"><span id="spaceNum">--</span><span class="only-wide" id="spaceWord"></span></span>
 <button class="btn icon small" id="reloadBtn" onclick="refreshActiveTab()" aria-label="Ricarica" data-en-label="Reload"></button>
 </header>
-<div class="banner" id="offline" hidden><span data-en="The device does not answer. Check that the Upload, Wi-Fi screen is still open on the device, then tap Retry.">Il dispositivo non risponde. Controlla che sul dispositivo sia ancora aperta la schermata Carica, Wi-Fi, poi tocca Riprova.</span><button class="btn small" onclick="retryLink()" data-en="Retry">Riprova</button></div>
+<div class="banner" id="offline" hidden><span data-en="The device does not answer: usually because its Upload, Wi-Fi screen was closed. This page works only while that screen is open. Open it again on the device, then tap Retry.">Il dispositivo non risponde: di solito &egrave; perch&eacute; la schermata Carica, Wi-Fi &egrave; stata chiusa. Questa pagina funziona solo mentre quella schermata &egrave; aperta. Riaprila sul dispositivo, poi tocca Riprova.</span><button class="btn small" onclick="retryLink()" data-en="Retry">Riprova</button></div>
 <nav class="tabs" id="tabs">
 <button class="tab" data-tab="books" onclick="showTab('books')" data-en="Books">Libri</button>
 <button class="tab" data-tab="audio" onclick="showTab('audio')" data-en="Audiobooks">Audiolibri</button>
@@ -669,19 +720,12 @@ input[type=text],input[type=search],input[type=password]{background:transparent;
 <h2 data-en="New wallpaper">Nuovo sfondo</h2>
 <div id="bgPick">
 <p class="hint" data-en="The picture that stays on the screen while the device is in standby. It is saved in black and white.">&Egrave; l&apos;immagine che resta sullo schermo quando il dispositivo &egrave; in standby. Viene salvata in bianco e nero.</p>
-<div id="imgSearch">
-<div class="search-row"><input id="imgQuery" type="search" placeholder="Cerca un&apos;immagine..." data-en-ph="Search for a picture..." enterkeyhint="search"><button class="btn primary icon" id="imgGo" onclick="searchImages(false)" aria-label="Cerca" data-en-label="Search"></button></div>
-<div class="results" id="imgResults"></div>
-<p class="hint" id="imgNote"></p>
-<button class="btn small" id="imgMore" onclick="searchImages(true)" hidden data-en="More results">Altri risultati</button>
-</div>
-<p class="hint" id="imgOffline" hidden data-en="Searching needs the Internet, and here you are on the device's own hotspot: choose a picture you already have.">La ricerca ha bisogno di Internet, e qui sei collegato all&apos;hotspot del dispositivo: scegli un&apos;immagine che hai gi&agrave;.</p>
 <div class="row-flex" style="margin-top:.6rem">
 <button class="btn grow" id="bgChoose" onclick="document.getElementById('fileBg').click()"></button>
 <button class="btn grow only-desktop" onclick="toast(L('Copia un\'immagine in un altro sito, poi premi Ctrl+V su questa pagina.','Copy a picture on another site, then press Ctrl+V on this page.'))" id="bgPaste"></button>
 </div>
 <input id="fileBg" type="file" accept="image/*" hidden>
-<p class="hint"><span data-en="Nothing suitable?">Non trovi quella giusta?</span> <a href="#" onclick="searchGoogleImages();return false" data-en="Search on Google">Cerca su Google</a><span data-en=" (opens another tab: copy the picture and paste it here, or save it and choose it)."> (si apre un&apos;altra scheda: copia l&apos;immagine e incollala qui, oppure salvala e sceglila).</span></p>
+<p class="hint" id="bgGoogle"><span data-en="No picture at hand? ">Non hai un&apos;immagine pronta? </span><a href="https://www.google.com/imghp" target="_blank" rel="noopener" data-en="Look for one on Google">Cercala su Google</a><span data-en=": it opens in another tab. Save the picture you like, then choose it here.">: si apre in un&apos;altra scheda. Salva l&apos;immagine che ti piace, poi sceglila qui.</span></p>
 </div>
 <div class="stage" id="cropStage">
 <p class="hint" style="text-align:center;margin:.4rem 0 0" data-en="Drag to move. Pinch or use the slider to zoom.">Trascina per spostare. Pizzica o usa il cursore per ingrandire.</p>
@@ -691,6 +735,11 @@ input[type=text],input[type=search],input[type=password]{background:transparent;
 <div class="stage-actions"><button class="btn" onclick="cancelCrop()" data-en="Cancel">Annulla</button><button class="btn primary" id="bgSave" onclick="uploadBackground()" data-en="Save wallpaper">Salva sfondo</button></div>
 </div>
 <p id="bgStatus" class="hint" role="status"></p>
+</div>
+<div class="card">
+<h2 data-en="In standby, show">In standby mostra</h2>
+<div id="sleepModes"></div>
+<p class="hint" id="sleepModeNote"></p>
 </div>
 <div class="card">
 <h2 data-en="Wallpapers on the device">Sfondi sul dispositivo</h2>
@@ -809,7 +858,7 @@ function tooBigText(){return L('Il file supera i 64 MB che si possono caricare d
 function explainError(e){
   let raw=String(e&&e.message!==undefined?e.message:e);
   const known=[
-    [/failed to fetch|networkerror|load failed|network error/i,L('Il dispositivo non risponde. Controlla che sul dispositivo sia ancora aperta la schermata Carica, Wi-Fi.','The device does not answer. Check that the Upload, Wi-Fi screen is still open on the device.')],
+    [/failed to fetch|networkerror|load failed|network error/i,L('Il dispositivo non risponde: di solito è perché la schermata Carica, Wi-Fi è stata chiusa. Riaprila sul dispositivo.','The device does not answer: usually because its Upload, Wi-Fi screen was closed. Open it again on the device.')],
     [/upload exceeds/i,tooBigText()],
     [/protected configuration file/i,L('È un file di impostazioni del dispositivo: da qui non si può toccare.','This is one of the device\'s settings files: it cannot be changed from here.')],
     [/name not allowed/i,L('Questo nome non si può usare sulla scheda: niente / : * ? " < > | né barre rovesciate, e niente punti o spazi alla fine.','This name cannot be used on the card: no / : * ? " < > | or backslashes, and no dots or spaces at the end.')],
@@ -862,6 +911,7 @@ async function readStatus(alive){
   if(!r.ok)throw new Error('HTTP '+r.status);
   let s=JSON.parse(await r.text());
   portalHotspot=!!s.hotspot;
+  if(s.sleep)sleepScreen=s.sleep;
   showSpace(s.free_bytes);
   showLink(true);
   return s;
@@ -1342,7 +1392,6 @@ function ditherFloydSteinberg(lum,width,height){
 // The device is held upright, 480 wide and 800 tall, so that is how the
 // image is framed here. The sleep file itself is the panel's native 800x480
 // (see `sleep_images.rs`): the turn is made when saving, never by the user.
-function searchGoogleImages(){let q=$('imgQuery').value.trim();window.open('https://www.google.com/search?tbm=isch'+(q?'&q='+encodeURIComponent(q):''),'_blank')}
 const BG_W=800,BG_H=480,BG_PW=480,BG_PH=800,BG_ZOOM_MAX=4;
 let bgObjectUrl=null,bgFinalView=false,bgPreviewTimer=null,bgBusy=false;
 let bgCrop={tx:0,ty:0,zoom:1,baseScale:1,frameW:240,frameH:400,natW:0,natH:0};
@@ -1554,59 +1603,11 @@ async function uploadBackground(){
 }
 
 // --- sfondi: da dove arriva l'immagine ---
-// The search runs in the user's browser against Wikimedia Commons, which
-// lets any page ask (`origin=*`) and serves its pictures readable by other
-// sites, so the one chosen can be turned to black and white here. Google's
-// results cannot be shown inside another page; it stays one link away.
-// Nothing of this reaches the device, and nothing works on the device's own
-// hotspot, where the phone has no Internet.
-const COMMONS='https://commons.wikimedia.org/w/api.php?format=json&origin=*&action=query&prop=imageinfo&iiprop=url%7Cmime%7Csize';
-let imgNext=0,imgQueryRun='';
-function imgNote(text){$('imgNote').textContent=text}
-async function searchImages(more){
-  let q=more?imgQueryRun:$('imgQuery').value.trim();
-  if(!q)return;
-  if(!more){imgNext=0;imgQueryRun=q;$('imgResults').innerHTML=''}
-  $('imgMore').hidden=true;
-  imgNote(L('Ricerca...','Searching...'));
-  try{
-    let r=await fetch(COMMONS+'&generator=search&gsrnamespace=6&gsrlimit=18&gsroffset='+imgNext+'&iiurlwidth=330&gsrsearch='+enc(q+' filetype:bitmap'));
-    if(!r.ok)throw new Error('HTTP '+r.status);
-    let j=await r.json();
-    let pages=Object.values((j.query||{}).pages||{}).sort((a,b)=>a.index-b.index);
-    let html='';
-    for(const p of pages){
-      let info=p.imageinfo&&p.imageinfo[0];
-      // Pictures only, and large enough for a 480x800 screen.
-      if(!info||!/^image\/(jpeg|png)$/.test(info.mime)||info.width<480||info.height<480||!info.thumburl)continue;
-      html+='<button data-t="'+escapeHtml(p.title)+'" onclick="pickSearchImage(this)" title="'+escapeHtml(p.title.replace(/^File:/,''))+'"><img src="'+escapeHtml(info.thumburl)+'" alt="" loading="lazy"></button>';
-    }
-    $('imgResults').insertAdjacentHTML('beforeend',html);
-    imgNext=j.continue&&j.continue.gsroffset?j.continue.gsroffset:0;
-    $('imgMore').hidden=!imgNext;
-    imgNote($('imgResults').children.length?L('Immagini libere da Wikimedia Commons. Tocca quella che vuoi.','Free pictures from Wikimedia Commons. Tap the one you want.'):L('Nessun risultato: prova con altre parole, anche in inglese.','No results: try other words.'));
-  }catch(e){
-    imgNote(L('La ricerca non riesce a raggiungere Internet. Puoi sempre scegliere un\'immagine che hai già.','The search cannot reach the Internet. You can still choose a picture you already have.'));
-  }
-}
-async function pickSearchImage(button){
-  if(document.querySelector('.results .busy'))return;
-  button.classList.add('busy');
-  imgNote(L('Scarico l\'immagine...','Getting the picture...'));
-  try{
-    // A rendition 1280 wide: plenty for the screen, a fraction of the original.
-    let j=await (await fetch(COMMONS+'&iiurlwidth=1280&titles='+enc(button.dataset.t))).json();
-    let info=Object.values(j.query.pages)[0].imageinfo[0];
-    let r=await fetch(info.thumburl||info.url);
-    if(!r.ok)throw new Error('HTTP '+r.status);
-    loadBackgroundFile(await r.blob());
-    imgNote(L('Immagini libere da Wikimedia Commons. Tocca quella che vuoi.','Free pictures from Wikimedia Commons. Tap the one you want.'));
-  }catch(e){
-    imgNote(L('Non riesco a scaricare questa immagine: provane un\'altra.','This picture could not be fetched: try another one.'));
-  }
-  button.classList.remove('busy');
-}
-$('imgQuery').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();searchImages(false)}});
+// The page has no picture search of its own: the free collections a page
+// may query hold photographs, not the artwork people want as a wallpaper,
+// and Google's results cannot be shown inside another page. A picture comes
+// from the phone or the computer, pasted or dragged in; Google is a plain
+// link to another tab.
 // A picture copied on any other site, pasted here. On this page (not served
 // encrypted) a button may not read the clipboard, so the paste itself is
 // what is listened for.
@@ -1637,12 +1638,11 @@ document.addEventListener('paste',e=>{
   });
 })();
 function showWallpaperSources(){
-  $('imgSearch').hidden=portalHotspot;
-  $('imgOffline').hidden=!portalHotspot;
+  // On the device's own hotspot the phone has no Internet to search with.
+  $('bgGoogle').hidden=portalHotspot;
   let phone=matchMedia('(pointer:coarse)').matches;
   $('bgChoose').innerHTML=ICON.img+(phone?L('Dal telefono','From the phone'):L('Dal computer','From the computer'));
   $('bgPaste').innerHTML=ICON.paste+L('Incolla','Paste');
-  $('imgGo').innerHTML=ICON.search;
 }
 
 // --- sfondi sul dispositivo ---
@@ -1664,9 +1664,53 @@ async function drawSleepThumb(canvas,url,key){
     ctx.drawImage(bitmap,0,0);
   }catch(e){if(canvas.parentElement)canvas.parentElement.classList.add('empty');canvas.remove()}
 }
+// What the device shows in standby: the Display setting ("sequential",
+// "random", "fixed", "book-cover") and, when fixed, which wallpaper. All of
+// it is set here as well as on the device, so it is read again with the
+// list.
+let sleepScreen={mode:'sequential',fixed:''};
+const SLEEP_MODES=[
+  ['sequential','Gli sfondi, uno dopo l\'altro','The wallpapers, one after the other'],
+  ['random','Gli sfondi, a caso','The wallpapers, at random'],
+  ['fixed','Sempre lo stesso sfondo','Always the same wallpaper'],
+  ['book-cover','La copertina del libro che stai leggendo','The cover of the book you are reading']
+];
+// The wallpaper standby shows now, when it is still on the card.
+function fixedName(){
+  let wanted=(sleepScreen.fixed||'').toUpperCase();
+  let entry=sleepEntries.find(e=>e.name.toUpperCase()===wanted);
+  return entry?entry.name:'';
+}
+function isFixedWallpaper(name){return sleepScreen.mode==='fixed'&&fixedName()===name}
+function sleepModeHint(){
+  if(sleepScreen.mode==='fixed')return fixedName()?L('Resta quello segnato «Sfondo fisso» qui sotto. Per cambiarlo tocca «Usa come fisso» su un altro.','The one marked "Fixed wallpaper" below stays. To change it, tap "Keep this one" on another.'):L('Carica uno sfondo, poi sceglilo con «Usa come fisso».','Add a wallpaper, then choose it with "Keep this one".');
+  if(sleepScreen.mode==='book-cover')return L('Quando lo standby arriva mentre leggi. Altrimenti gli sfondi, uno dopo l\'altro.','When standby comes while you are reading. Otherwise the wallpapers, one after the other.');
+  return L('Per tenerne sempre uno tocca «Usa come fisso» sullo sfondo che vuoi.','To keep one all the time, tap "Keep this one" on the wallpaper you want.');
+}
+function renderSleepModes(){
+  $('sleepModes').innerHTML=SLEEP_MODES.map(m=>'<label class="choice"><input type="radio" name="sleepMode" value="'+m[0]+'"'+(sleepScreen.mode===m[0]?' checked':'')+' onchange="setSleepMode(this.value)"><span>'+L(m[1],m[2])+'</span></label>').join('');
+  $('sleepModeNote').textContent=sleepModeHint();
+}
+// Set the sleep screen and, with `name`, the wallpaper that stays. "Always
+// the same" with none on show yet takes the first by name, as the device
+// would by itself, so the page can mark it.
+async function setSleepMode(mode,name){
+  if(mode==='fixed'&&!name){
+    name=fixedName();
+    if(!name&&sleepEntries.length)name=sleepEntries.map(e=>e.name).sort((a,b)=>a.toUpperCase()<b.toUpperCase()?-1:1)[0];
+  }
+  try{
+    await api('/api/sleep?mode='+enc(mode)+(name?'&name='+enc(name):''),{method:'POST'});
+    sleepScreen={mode:mode,fixed:name||sleepScreen.fixed};
+    toast(mode==='fixed'&&name?L('Questo sfondo resta fisso in standby.','This wallpaper now stays in standby.'):L('Schermata di standby salvata.','Sleep screen saved.'));
+  }catch(e){fail(e)}
+  // Also after a failure: the choice goes back to what the device has.
+  renderSleepGallery();
+}
 async function refreshSleepGallery(){
   try{
     await ensureDir('/SLEEP');
+    try{await readStatus(false)}catch(e){}
     sleepEntries=JSON.parse(await api('/api/list?path=/SLEEP')).filter(e=>e.kind==='file');
     renderSleepGallery();
   }catch(e){$('sleepGallery').innerHTML='<p class="hint">'+escapeHtml(explainError(e))+'</p>'}
@@ -1677,9 +1721,12 @@ async function renderSleepGallery(){
     let path='/SLEEP/'+e.name;
     if(isPendingDelete(path))continue;
     let p=escapeHtml(path);
-    html+='<div class="book-card"><div class="sleep-thumb" data-empty="'+L('Anteprima non disponibile','No preview')+'"><canvas width="240" height="400" data-p="'+p+'" data-k="'+escapeHtml(e.name+':'+e.size+':'+e.modified)+'"></canvas></div><div class="card-actions"><button class="btn" data-p="'+p+'" onclick="downloadPaths([this.dataset.p])">'+L('Scarica','Download')+'</button><button class="btn danger" data-p="'+p+'" onclick="deleteSleepImage(this.dataset.p)">'+L('Elimina','Delete')+'</button></div></div>';
+    let fixed=isFixedWallpaper(e.name),n=escapeHtml(e.name);
+    // The one that stays is marked, any other can take its place.
+    html+='<div class="book-card'+(fixed?' fixed':'')+'">'+(fixed?'<div class="fixed-badge">'+L('Sfondo fisso','Fixed wallpaper')+'</div>':'')+'<div class="sleep-thumb" data-empty="'+L('Anteprima non disponibile','No preview')+'"><canvas width="240" height="400" data-p="'+p+'" data-k="'+escapeHtml(e.name+':'+e.size+':'+e.modified)+'"></canvas></div><div class="card-actions">'+(fixed?'':'<button class="btn wide" data-n="'+n+'" onclick="setSleepMode(\'fixed\',this.dataset.n)">'+L('Usa come fisso','Keep this one')+'</button>')+'<button class="btn" data-p="'+p+'" onclick="downloadPaths([this.dataset.p])">'+L('Scarica','Download')+'</button><button class="btn danger" data-p="'+p+'" onclick="deleteSleepImage(this.dataset.p)">'+L('Elimina','Delete')+'</button></div></div>';
   }
   gallery.innerHTML=html||'<p class="hint">'+L('Nessuno sfondo caricato.','No wallpapers yet.')+'</p>';
+  renderSleepModes();
   // One at a time: the device serves a single file comfortably.
   for(const canvas of Array.from(gallery.querySelectorAll('canvas[data-p]'))){
     if(!canvas.isConnected)return;
@@ -2137,7 +2184,9 @@ async function initApp(){
   showLink(linkUp);
   // On the device's own hotspot the reason to be here is the Wi-Fi.
   showTab(portalHotspot?'wifi':'books');
-  setInterval(pollLink,15000);
+  // Often enough that leaving the device's screen shows here within a few
+  // seconds, before a tap finds the page disconnected.
+  setInterval(pollLink,5000);
   setInterval(()=>{if(activeTab==='wifi'&&portalHotspot&&document.visibilityState==='visible')wifiLoadScan()},12000);
 }
 
@@ -2163,6 +2212,13 @@ initApp();
         saved_ssids: Vec<String>,
         pending_join: Option<PendingJoinRequest>,
         pending_delete: Option<String>,
+        /// The Display setting's sleep screen and the wallpaper standby
+        /// shows now, as the runtime owner last told them (see
+        /// [`WifiTransferServer::set_sleep_screen`]); the page reads them
+        /// from `/api/status`.
+        sleep_mode: SleepScreenMode,
+        sleep_fixed: Option<String>,
+        pending_sleep_screen: Option<SleepScreenRequest>,
     }
 
     impl SharedStatus {
@@ -2173,6 +2229,7 @@ initApp();
                     url: Some(url),
                     ap_ssid,
                     ap_password,
+                    hotspot_clients: 0,
                     join: JoinAttemptState::Idle,
                     last_action: "Portal ready".into(),
                     last_bytes: 0,
@@ -2184,6 +2241,9 @@ initApp();
                 saved_ssids: Vec::new(),
                 pending_join: None,
                 pending_delete: None,
+                sleep_mode: SleepScreenMode::default(),
+                sleep_fixed: None,
+                pending_sleep_screen: None,
             }
         }
 
@@ -2200,6 +2260,19 @@ initApp();
         /// Wi-Fi scan/join/forget requests.
         fn touch_activity(&mut self) {
             self.last_activity = Instant::now();
+        }
+    }
+
+    /// One line per request the hotspot's catch-all redirects: the address
+    /// a phone asked for while deciding whether this network needs a
+    /// sign-in page. `warn` (the level release builds print) only while
+    /// [`crate::dns_captive_portal::DIAGNOSTIC_LOG`] is on.
+    fn log_captive_probe(method: &str, uri: &str, host: Option<&str>) {
+        let host = host.unwrap_or("-");
+        if crate::dns_captive_portal::DIAGNOSTIC_LOG {
+            warn!("rustmix-wave=wifi-transfer-server status=captive-probe method={method} host={host} uri={uri}");
+        } else {
+            info!("rustmix-wave=wifi-transfer-server status=captive-probe method={method} host={host} uri={uri}");
         }
     }
 
@@ -2274,7 +2347,11 @@ initApp();
                 task_caps: esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_8BIT,
                 max_open_sockets: 4,
                 max_sessions: 4,
-                max_uri_handlers: 16,
+                max_uri_handlers: 20,
+                // esp-idf-svc's default, spelled out because the hotspot
+                // depends on it: when all sockets are taken, the least
+                // recently used one makes room for a new connection.
+                lru_purge_enable: true,
                 session_timeout: Duration::from_secs(60),
                 // Lets the catch-all handler registered last, only when
                 // started via `start_ap`, use the glob pattern "*" instead of
@@ -2436,16 +2513,22 @@ initApp();
                 // else for minutes. A plain status read does not, so a page
                 // left open and forgotten still lets the portal close.
                 let alive = query_value(request.uri(), "alive").is_some();
-                let snapshot = {
+                let (snapshot, sleep) = {
                     let mut guard = lock(&status_shared);
                     if alive {
                         guard.touch_activity();
                     }
-                    guard.snapshot.clone()
+                    (
+                        guard.snapshot.clone(),
+                        sleep_status_json(
+                            guard.sleep_mode.marker(),
+                            guard.sleep_fixed.as_deref(),
+                        ),
+                    )
                 };
                 let (total_bytes, free_bytes) = sd_space_bytes().unwrap_or((0, 0));
                 let body = format!(
-                    "{{\"state\":\"{}\",\"last_action\":\"{}\",\"last_bytes\":{},\"total_bytes\":{total_bytes},\"free_bytes\":{free_bytes},\"hotspot\":{},\"lang\":\"{}\",\"wifi_join\":{}}}",
+                    "{{\"state\":\"{}\",\"last_action\":\"{}\",\"last_bytes\":{},\"total_bytes\":{total_bytes},\"free_bytes\":{free_bytes},\"hotspot\":{},\"lang\":\"{}\",\"wifi_join\":{},\"sleep\":{sleep}}}",
                     snapshot.state.label(),
                     json_escape(&snapshot.last_action),
                     snapshot.last_bytes,
@@ -2526,6 +2609,51 @@ initApp();
                 Ok::<(), anyhow::Error>(())
             })?;
 
+            // The sleep screen, set on the page: what standby shows and,
+            // when it is always the same wallpaper, which one. Only asked
+            // for here: the display settings and the wallpaper catalog
+            // belong to the main loop, which carries it out on its next turn
+            // (see `main.rs`'s `maintain_portal_sleep_screen`). What
+            // `/api/status` says changes at once, so the page that asked
+            // sees it done.
+            let sleep_shared = Arc::clone(&shared);
+            server.fn_handler("/api/sleep", Method::Post, move |request| {
+                ensure_same_origin(request.header("Origin"), request.header("Host"))?;
+                let marker = required_query(request.uri(), "mode")?;
+                let Some(mode) = SleepScreenMode::from_marker(&marker) else {
+                    bail!("unknown sleep screen");
+                };
+                let name = query_value(request.uri(), "name").unwrap_or_default();
+                let fixed = if mode == SleepScreenMode::Fixed && !name.is_empty() {
+                    if !is_sleep_image_name(&name) {
+                        bail!("not a wallpaper name");
+                    }
+                    let path = resolve_portal_path(&format!("/SLEEP/{name}"))
+                        .map_err(|error| anyhow!(error))?;
+                    if !path.is_file() {
+                        bail!("no such wallpaper");
+                    }
+                    Some(name)
+                } else {
+                    None
+                };
+                {
+                    let mut guard = lock(&sleep_shared);
+                    guard.touch_activity();
+                    guard.sleep_mode = mode;
+                    if let Some(name) = fixed.as_ref() {
+                        guard.sleep_fixed = Some(name.clone());
+                    }
+                    guard.pending_sleep_screen = Some(SleepScreenRequest { mode, fixed });
+                }
+                info!(
+                    "rustmix-wave=wifi-transfer-request method=POST route=sleep mode={} status=accepted",
+                    mode.marker()
+                );
+                request.into_ok_response()?.write_all(b"ok")?;
+                Ok::<(), anyhow::Error>(())
+            })?;
+
             let books_shared = Arc::clone(&shared);
             server.fn_handler("/api/books", Method::Get, move |request| {
                 let previous = lock(&books_shared).cached_books.clone();
@@ -2583,13 +2711,16 @@ initApp();
             // browser. A body is included because iOS's captive-portal
             // detector specifically requires one -- a redirect with an empty
             // body is not enough for it to recognize a portal.
+            //
+            // `Connection: close` because the hotspot answers every DNS name
+            // with its own address: the phone's background apps knock here
+            // too, and the server has four sockets. (It also drops the least
+            // recently used one for a newcomer, `lru_purge_enable`.) HEAD
+            // gets the same answer without a body.
             let dns_guard = if let Some(dns) = dns {
                 let redirect_url = url.clone();
                 server.fn_handler("*", Method::Get, move |request| {
-                    info!(
-                        "rustmix-wave=wifi-transfer-server status=captive-probe uri={}",
-                        request.uri()
-                    );
+                    log_captive_probe("GET", request.uri(), request.header("Host"));
                     request
                         .into_response(
                             302,
@@ -2597,9 +2728,24 @@ initApp();
                             &[
                                 ("Location", redirect_url.as_str()),
                                 ("Cache-Control", "no-store"),
+                                ("Connection", "close"),
                             ],
                         )?
                         .write_all(b"Redirecting to the Rustmix-Wave portal.")?;
+                    Ok::<(), anyhow::Error>(())
+                })?;
+                let redirect_url = url.clone();
+                server.fn_handler("*", Method::Head, move |request| {
+                    log_captive_probe("HEAD", request.uri(), request.header("Host"));
+                    request.into_response(
+                        302,
+                        Some("Found"),
+                        &[
+                            ("Location", redirect_url.as_str()),
+                            ("Cache-Control", "no-store"),
+                            ("Connection", "close"),
+                        ],
+                    )?;
                     Ok::<(), anyhow::Error>(())
                 })?;
                 Some(dns)
@@ -2634,6 +2780,26 @@ initApp();
 
         pub fn take_pending_delete(&self) -> Option<String> {
             lock(&self.shared).pending_delete.take()
+        }
+
+        /// The sleep screen the page asked for, once.
+        pub fn take_pending_sleep_screen(&self) -> Option<SleepScreenRequest> {
+            lock(&self.shared).pending_sleep_screen.take()
+        }
+
+        /// Tell the page the sleep screen as it is on the device: the
+        /// Display setting and the wallpaper standby shows now. Left alone
+        /// while a request from the page is still waiting, whose outcome
+        /// `/api/status` already tells.
+        pub fn set_sleep_screen(&self, mode: SleepScreenMode, fixed: Option<String>) {
+            let mut guard = lock(&self.shared);
+            if guard.pending_sleep_screen.is_some() {
+                return;
+            }
+            guard.sleep_mode = mode;
+            if guard.sleep_fixed != fixed {
+                guard.sleep_fixed = fixed;
+            }
         }
 
         pub fn record_join_succeeded(&self, ssid: String) {
@@ -2912,8 +3078,8 @@ initApp();
 #[cfg(test)]
 mod tests {
     use super::{
-        is_protected_portal_path, is_sd_safe_name, query_value, resolve_portal_path,
-        WifiTransferSnapshot, WifiTransferState,
+        is_protected_portal_path, is_sd_safe_name, is_sleep_image_name, query_value,
+        resolve_portal_path, sleep_status_json, WifiTransferSnapshot, WifiTransferState,
     };
 
     #[test]
@@ -2984,7 +3150,7 @@ mod tests {
         use super::is_same_origin_request as same;
         // The portal's own page, on the LAN address or the hotspot's.
         assert!(same(Some("http://192.168.1.10"), Some("192.168.1.10")));
-        assert!(same(Some("http://192.168.71.1"), Some("192.168.71.1")));
+        assert!(same(Some("http://4.3.2.1"), Some("4.3.2.1")));
         assert!(same(Some("http://Rustmix.local"), Some("rustmix.local")));
         // Not a page's script: a tool, or a browser that sends no Origin.
         assert!(same(None, Some("192.168.1.10")));
@@ -3051,8 +3217,73 @@ mod tests {
         assert!(!page.contains("contrastRange"));
         assert!(!page.contains("rotateImage"));
         assert!(!page.contains("id=\"bgName\""));
-        // Pictures are searched inside the page, never through the device.
-        assert!(page.contains("https://commons.wikimedia.org/w/api.php"));
+        // No picture search inside the page: a picture is chosen, pasted or
+        // dragged in, and Google is a plain link to another tab.
+        assert!(!page.contains("commons.wikimedia.org"));
+        assert!(!page.contains("searchImages"));
+        assert!(!page.contains("id=\"imgQuery\""));
+        assert!(page.contains(
+            "<a href=\"https://www.google.com/imghp\" target=\"_blank\" rel=\"noopener\""
+        ));
+    }
+
+    #[test]
+    fn a_fixed_wallpaper_is_named_by_a_bmp_file_name_and_told_as_json() {
+        assert!(is_sleep_image_name("SLEEP003.BMP"));
+        assert!(is_sleep_image_name("mare.bmp"));
+        for bad in [
+            "",
+            ".bmp",
+            "SLEEP003.TXT",
+            "../WIFI.TXT",
+            "a/b.bmp",
+            "SLEEP003.BMP.",
+        ] {
+            assert!(!is_sleep_image_name(bad), "{bad:?} accepted");
+        }
+        assert_eq!(
+            sleep_status_json("fixed", Some("SLEEP003.BMP")),
+            r#"{"mode":"fixed","fixed":"SLEEP003.BMP"}"#
+        );
+        assert_eq!(
+            sleep_status_json("sequential", None),
+            r#"{"mode":"sequential","fixed":""}"#
+        );
+        // Whatever the cursor file holds cannot break the answer.
+        assert_eq!(
+            sleep_status_json("fixed", Some("a\"b\\c\nd")),
+            r#"{"mode":"fixed","fixed":"a\"b\\cd"}"#
+        );
+    }
+
+    #[test]
+    fn the_page_sets_the_whole_sleep_screen() {
+        use crate::app::display::SleepScreenMode;
+
+        let page = portal_page();
+        assert!(page.contains("if(s.sleep)sleepScreen=s.sleep;"));
+        // Every sleep screen of the device can be chosen here, by the same
+        // names the device saves.
+        for mode in [
+            SleepScreenMode::Sequential,
+            SleepScreenMode::Random,
+            SleepScreenMode::Fixed,
+            SleepScreenMode::BookCover,
+        ] {
+            assert!(
+                page.contains(&format!("  ['{}','", mode.marker())),
+                "{} cannot be chosen on the page",
+                mode.marker()
+            );
+            assert_eq!(SleepScreenMode::from_marker(mode.marker()), Some(mode));
+        }
+        assert!(page.contains("'/api/sleep?mode='+enc(mode)+(name?'&name='+enc(name):'')"));
+        assert!(page.contains("onclick=\"setSleepMode(\\'fixed\\',this.dataset.n)\""));
+        assert!(page.contains("<div id=\"sleepModes\"></div>"));
+        // The handler exists under the same name the page calls.
+        let source = include_str!("wifi_transfer.rs");
+        assert!(source.contains("server.fn_handler(\"/api/sleep\", Method::Post"));
+        assert!(source.contains("\\\"sleep\\\":{sleep}"));
     }
 
     #[test]

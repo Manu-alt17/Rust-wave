@@ -6,14 +6,7 @@
 
 use core::convert::Infallible;
 
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Point, Size},
-};
-use embedded_iconoir::{
-    icons::size48px::{connectivity::Wifi, devices::Laptop},
-    prelude::IconoirNewIcon,
-};
+use embedded_graphics::prelude::{Point, Size};
 
 use crate::{
     app::{
@@ -26,6 +19,7 @@ use crate::{
             layout::{CONTENT_LEFT, CONTENT_WIDTH, FIRST_ROW_TOP},
             list::{draw_field, draw_section_title},
             text::draw_paragraph,
+            tile_icons::TileIcon,
         },
     },
     network::WifiConnectionState,
@@ -55,7 +49,7 @@ pub fn render_upload(
         Point::new(CONTENT_LEFT, FIRST_ROW_TOP),
         TILE_SIZE,
         "Wi-Fi",
-        &Wifi::new(BinaryColor::On),
+        TileIcon::Wifi,
         wifi_selected,
         preferences,
     )?;
@@ -67,7 +61,7 @@ pub fn render_upload(
         ),
         TILE_SIZE,
         t(locale, "USB cable", "Cavo USB"),
-        &Laptop::new(BinaryColor::On),
+        TileIcon::Laptop,
         !wifi_selected,
         preferences,
     )?;
@@ -79,6 +73,17 @@ pub fn render_upload(
                 locale,
                 "Connect the device to a computer with its USB cable: the microSD shows up as a disk, and you copy books into BOOKS and audiobooks into AUDIO. The quickest way for many or large files. The device cannot be used meanwhile, and restarts when done.",
                 "Collega il dispositivo al computer col cavo USB: la microSD compare come un disco e copi i libri in BOOKS e gli audiolibri in AUDIO. \u{00C8} il modo pi\u{00F9} rapido per tanti file o file grandi. Nel frattempo il dispositivo non si usa, e alla fine si riavvia.",
+            ),
+        )
+    } else if state.wifi_page_closed_notice {
+        // Just back from the Wi-Fi page: whoever has it open now reads "Not
+        // connected" there, and does not know it is because of this.
+        (
+            t(locale, "Wi-Fi page closed", "Pagina Wi-Fi chiusa"),
+            t(
+                locale,
+                "On the phone or computer the page now says \"Not connected\": it works only while the Wi-Fi screen is open here. To use it again press SELECT, then tap \"Retry\" in the page.",
+                "Sul telefono o sul computer la pagina ora dice \u{00AB}Non collegato\u{00BB}: funziona solo mentre la schermata Wi-Fi \u{00E8} aperta qui. Per usarla ancora premi SELECT, poi tocca \u{00AB}Riprova\u{00BB} nella pagina.",
             ),
         )
     } else if connected {

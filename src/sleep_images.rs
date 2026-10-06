@@ -20,6 +20,8 @@ pub const SLEEP_IMAGE_DIRECTORY: &str = "/sdcard/RUSTMIX/SLEEP";
 /// Name of the last sleep image shown. Deep sleep is a full MCU reboot, so
 /// the in-order rotation (and random anti-repeat) must survive on SD rather
 /// than in RAM. Kept outside the SLEEP directory so it is never a candidate.
+/// It is also the image the "fixed" sleep screen keeps showing: choosing a
+/// fixed wallpaper writes its name here, and nothing advances it.
 pub const SLEEP_IMAGE_CURSOR_PATH: &str = "/sdcard/RUSTMIX/SLEEPIDX.TXT";
 /// Bounded number of files examined on each entry to sleep mode.
 pub const MAX_SLEEP_IMAGE_CANDIDATES: usize = 32;
@@ -71,6 +73,9 @@ pub struct SleepImageCatalog {
     directory: PathBuf,
     cursor_path: Option<PathBuf>,
     last_selected_file_name: Option<String>,
+    /// Whether the cursor file was already looked for: a card without one is
+    /// asked once, not at every call.
+    cursor_loaded: bool,
 }
 
 impl Default for SleepImageCatalog {
@@ -86,6 +91,7 @@ impl SleepImageCatalog {
             directory: directory.into(),
             cursor_path: None,
             last_selected_file_name: None,
+            cursor_loaded: false,
         }
     }
 
@@ -99,7 +105,8 @@ impl SleepImageCatalog {
     }
 
     fn previous_file_name(&mut self) -> Option<String> {
-        if self.last_selected_file_name.is_none() {
+        if self.last_selected_file_name.is_none() && !self.cursor_loaded {
+            self.cursor_loaded = true;
             self.last_selected_file_name = self
                 .cursor_path
                 .as_ref()
@@ -119,6 +126,79 @@ impl SleepImageCatalog {
                     path.display()
                 );
             }
+        }
+    }
+
+    /// The valid images in the order the rotation shows them, by file name.
+    /// Empty when the folder is missing or holds none.
+    #[must_use]
+    pub fn image_names(&self) -> Vec<String> {
+        self.scan_valid_images()
+            .map(|(valid, _)| valid.iter().map(|path| file_name_label(path)).collect())
+            .unwrap_or_default()
+    }
+
+    /// The image shown at the last standby, which is also the one the fixed
+    /// sleep screen keeps showing.
+    pub fn current_name(&mut self) -> Option<String> {
+        self.previous_file_name()
+    }
+
+    /// Make `file_name` the image the fixed sleep screen shows, and the one
+    /// the rotation continues from.
+    pub fn set_current(&mut self, file_name: &str) {
+        self.remember_selected(file_name);
+    }
+
+    /// Decode one image of the folder by name, for a preview.
+    pub fn decode_image(&self, file_name: &str) -> Result<FrameBuffer> {
+        decode_sleep_bmp_file(&self.directory.join(file_name))
+    }
+
+    /// Scan read-only assets and select the image shown last time, again:
+    /// the fixed sleep screen. With no image shown yet, or with that one
+    /// gone from the folder, the first in file-name order is taken and
+    /// becomes the fixed one. Same built-in fallback as
+    /// [`Self::select_random`].
+    pub fn select_fixed(&mut self) -> SleepImageSelection {
+        match self.scan_valid_images() {
+            Ok((valid, mut stats)) if !valid.is_empty() => {
+                let previous = self.previous_file_name();
+                let previous_index = previous.as_deref().and_then(|previous| {
+                    valid
+                        .iter()
+                        .position(|path| file_name_label(path).eq_ignore_ascii_case(previous))
+                });
+                let index = previous_index.unwrap_or(0);
+                let path = &valid[index];
+                let file_name = file_name_label(path);
+                if previous.as_deref() != Some(file_name.as_str()) {
+                    self.remember_selected(&file_name);
+                }
+                let choice = Some(SleepImageChoice {
+                    random_word: 0,
+                    previous_index,
+                    selected_index: index,
+                    anti_repeat: false,
+                });
+                match decode_sleep_bmp_file(path) {
+                    Ok(frame) => {
+                        self.selection(file_name, frame, valid.len(), stats, None, choice, false)
+                    }
+                    Err(error) => {
+                        stats.rejected_entries = stats.rejected_entries.saturating_add(1);
+                        self.fallback(
+                            stats,
+                            Some(format!("selected BMP decode failed: {error:#}")),
+                        )
+                    }
+                }
+            }
+            Ok((_valid, stats)) => self.fallback(stats, None),
+            Err(error) => self.fallback(
+                SleepImageScanStats::default(),
+                Some(format!("directory scan failed: {error}")),
+            ),
         }
     }
 
@@ -441,6 +521,9 @@ pub fn decode_sleep_bmp(bytes: &[u8]) -> Result<FrameBuffer> {
     FrameBuffer::from_native_bytes(native).map_err(|message| anyhow!(message))
 }
 
+/// Plain frame of a catalog with nothing to show. Standby does not draw it:
+/// a selection marked `fallback` gets the page that tells how to add a
+/// wallpaper instead (see [`crate::sleep_tutorial`]).
 fn built_in_sleep_frame() -> FrameBuffer {
     let mut frame = FrameBuffer::new_white();
     let width = WIDTH as i32;
@@ -614,6 +697,60 @@ mod tests {
         // Removing the last-shown image still advances to its successor.
         fs::remove_file(root.join("A.BMP")).unwrap();
         assert_eq!(rebooted.select_next().file_name, "B.BMP");
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(cursor);
+    }
+
+    #[test]
+    fn fixed_selection_keeps_showing_the_chosen_image() {
+        let root = unique_temp_dir("fixed");
+        fs::create_dir_all(&root).unwrap();
+        for name in ["B.BMP", "A.BMP", "C.BMP"] {
+            fs::write(root.join(name), fixture()).unwrap();
+        }
+        let cursor = root.with_extension("idx");
+        let mut catalog = SleepImageCatalog::new(&root).with_cursor_file(&cursor);
+        assert_eq!(catalog.image_names(), ["A.BMP", "B.BMP", "C.BMP"]);
+        // Nothing shown yet: the first image, which then stays.
+        assert_eq!(catalog.current_name(), None);
+        assert_eq!(catalog.select_fixed().file_name, "A.BMP");
+        assert_eq!(catalog.select_fixed().file_name, "A.BMP");
+        // The one chosen stays, standby after standby and across the reboot
+        // a deep sleep is.
+        catalog.set_current("C.BMP");
+        assert_eq!(catalog.select_fixed().file_name, "C.BMP");
+        let mut rebooted = SleepImageCatalog::new(&root).with_cursor_file(&cursor);
+        assert_eq!(rebooted.current_name().as_deref(), Some("C.BMP"));
+        assert_eq!(rebooted.select_fixed().file_name, "C.BMP");
+        assert_eq!(rebooted.select_fixed().file_name, "C.BMP");
+        // The image the rotation stopped on is the one that stays.
+        assert_eq!(rebooted.select_next().file_name, "A.BMP");
+        assert_eq!(rebooted.select_fixed().file_name, "A.BMP");
+        // Deleted from the card: the first one takes its place, and stays.
+        fs::remove_file(root.join("A.BMP")).unwrap();
+        assert_eq!(rebooted.select_fixed().file_name, "B.BMP");
+        assert_eq!(rebooted.current_name().as_deref(), Some("B.BMP"));
+        assert!(rebooted.decode_image("B.BMP").is_ok());
+        assert!(rebooted.decode_image("A.BMP").is_err());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(cursor);
+    }
+
+    #[test]
+    fn a_card_without_a_cursor_is_asked_for_it_once() {
+        let root = unique_temp_dir("cursor-once");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("A.BMP"), fixture()).unwrap();
+        let cursor = root.with_extension("idx");
+        let mut catalog = SleepImageCatalog::new(&root).with_cursor_file(&cursor);
+        assert_eq!(catalog.current_name(), None);
+        // Written behind the catalog's back: not seen, the file was already
+        // looked for.
+        fs::write(&cursor, "A.BMP").unwrap();
+        assert_eq!(catalog.current_name(), None);
+        assert!(SleepImageCatalog::new(unique_temp_dir("no-folder"))
+            .image_names()
+            .is_empty());
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(cursor);
     }

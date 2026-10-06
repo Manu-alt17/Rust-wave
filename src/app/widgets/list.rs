@@ -130,7 +130,7 @@ pub fn draw_list_row(
     )
 }
 
-/// A tall row: `title` over a smaller `detail` line, with an optional short
+/// A tall row: `title` over a `detail` line in the body size, with an optional short
 /// `trailing` note at the right of the title line.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tall_row(
@@ -144,19 +144,19 @@ pub fn draw_tall_row(
 ) -> Result<(), Infallible> {
     draw_row_frame(display, top, TALL_ROW_HEIGHT, selected)?;
     let title_style = preferences.heading_style();
-    let detail_style = preferences.detail_style();
+    let detail_text = preferences.body_style();
     let inner_left = CONTENT_LEFT + ROW_PAD_X;
     let inner_right = CONTENT_RIGHT - ROW_PAD_X;
     let inner_width = inner_right - inner_left;
     let title_baseline = top + 30;
     let mut title_width = inner_width;
     if !trailing.is_empty() {
-        let fitted = truncate_to_width(detail_style, trailing, inner_width / 2);
-        let trailing_width = detail_style.text_width(&fitted);
+        let fitted = truncate_to_width(detail_text, trailing, inner_width / 2);
+        let trailing_width = detail_text.text_width(&fitted);
         Text::new(
             &fitted,
             Point::new(inner_right - trailing_width, title_baseline),
-            detail_style,
+            detail_text,
         )
         .draw(display)?;
         title_width = inner_width - trailing_width - VALUE_GAP;
@@ -173,7 +173,7 @@ pub fn draw_tall_row(
             display,
             detail,
             Point::new(inner_left, top + 56),
-            detail_style,
+            detail_text,
             inner_width,
         )?;
     }

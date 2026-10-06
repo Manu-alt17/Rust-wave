@@ -84,6 +84,9 @@ pub enum SleepScreenMode {
     /// A random `/sdcard/RUSTMIX/SLEEP` image, never the same one twice in a
     /// row.
     Random,
+    /// Always the same `/sdcard/RUSTMIX/SLEEP` image: the one chosen in
+    /// Settings or from the Wi-Fi page, otherwise the last one shown.
+    Fixed,
     /// Full-screen cover of the book being read, with a progress tab. Falls
     /// back to [`Self::Sequential`] when there is no book or no usable cover.
     BookCover,
@@ -96,11 +99,13 @@ impl SleepScreenMode {
             Locale::English => match self {
                 Self::Sequential => "In order",
                 Self::Random => "Random",
+                Self::Fixed => "Fixed",
                 Self::BookCover => "Book cover",
             },
             Locale::Italian => match self {
                 Self::Sequential => "In sequenza",
                 Self::Random => "Casuale",
+                Self::Fixed => "Fissa",
                 Self::BookCover => "Copertina",
             },
         }
@@ -111,6 +116,7 @@ impl SleepScreenMode {
         match self {
             Self::Sequential => "sequential",
             Self::Random => "random",
+            Self::Fixed => "fixed",
             Self::BookCover => "book-cover",
         }
     }
@@ -119,15 +125,25 @@ impl SleepScreenMode {
     pub const fn next(self) -> Self {
         match self {
             Self::Sequential => Self::Random,
-            Self::Random => Self::BookCover,
+            Self::Random => Self::Fixed,
+            Self::Fixed => Self::BookCover,
             Self::BookCover => Self::Sequential,
         }
+    }
+
+    /// The mode a [`Self::marker`] names, as the Wi-Fi page sends it.
+    #[must_use]
+    pub fn from_marker(marker: &str) -> Option<Self> {
+        [Self::Sequential, Self::Random, Self::Fixed, Self::BookCover]
+            .into_iter()
+            .find(|mode| mode.marker() == marker)
     }
 
     fn parse(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "sequential" => Ok(Self::Sequential),
             "random" => Ok(Self::Random),
+            "fixed" => Ok(Self::Fixed),
             "book-cover" | "book_cover" | "cover" => Ok(Self::BookCover),
             other => bail!("unsupported sleep_screen value {other:?}"),
         }
@@ -371,6 +387,7 @@ mod tests {
         for mode in [
             SleepScreenMode::Sequential,
             SleepScreenMode::Random,
+            SleepScreenMode::Fixed,
             SleepScreenMode::BookCover,
         ] {
             let preferences = DisplayPreferences {
@@ -382,6 +399,13 @@ mod tests {
                 preferences
             );
         }
+        assert_eq!(SleepScreenMode::Random.next(), SleepScreenMode::Fixed);
+        assert_eq!(
+            SleepScreenMode::from_marker("book-cover"),
+            Some(SleepScreenMode::BookCover)
+        );
+        assert_eq!(SleepScreenMode::from_marker("Fixed"), None);
+        assert_eq!(SleepScreenMode::Fixed.next(), SleepScreenMode::BookCover);
         assert_eq!(
             SleepScreenMode::BookCover.next(),
             SleepScreenMode::Sequential

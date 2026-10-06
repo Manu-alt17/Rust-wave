@@ -1,0 +1,206 @@
+"""Generate the 1-bpp glyphs drawn on the firmware's icon tiles.
+
+Writes one Rust file:
+
+  src/app/widgets/tile_icons.rs    the TileIcon enum and one 64 x 64 bitmap
+                                   per glyph
+
+The tiles of Home, Settings, Upload, the reader's options and the first-run
+language page show a 64 px glyph. `embedded-iconoir`, which the rest of the
+interface draws its 24 px and 96 px glyphs from, has no 64 px strike (only
+12, 16, 18, 24, 32, 48, 96 and 144), and its 48 px strike copied up by 4/3
+gave strokes that were 5 px in one place and 6 in another and curves with
+uneven steps. These are the same Iconoir drawings rasterised once, straight
+at the size they are shown.
+
+Usage (CairoSVG and Pillow required; the SVG files are Iconoir's, MIT
+License, see docs/licenses/THIRD_PARTY_NOTICES.md, and are not distributed
+with this repository):
+
+    npm pack iconoir@6.11.0 && tar xzf iconoir-6.11.0.tgz
+    python tools/icongen/gen_tile_icons.py --icons package/icons [--preview out.png]
+
+Run rustfmt on the output afterwards (cargo fmt does it).
+
+RASTER NOTES
+- Iconoir draws on a 24-unit grid with a 1.5-unit stroke. At 64 px that
+  stroke is 4 px; the tiles use 5 px (1.875 units), which sits better next
+  to their semibold titles and is close to the weight the upscaled glyphs
+  had (5 to 6 px).
+- A 5 px stroke centred on a whole pixel boundary covers half a pixel on
+  each side, and the threshold then makes it 4 or 6 px at random. The whole
+  drawing is therefore moved by half a pixel, so the many strokes Iconoir
+  centres on whole grid units cover five whole pixels.
+- Anti-aliased by cairo, then thresholded at 128: a pixel is ink when the
+  stroke covers at least half of it.
+- Rows are packed MSB first, 8 bytes per row, the format
+  `OrientedFrameBuffer::blit_packed_bitmap` draws.
+"""
+import argparse
+import io
+import os
+import re
+
+import cairosvg
+from PIL import Image
+
+SIZE = 64
+STROKE_UNITS = 1.875  # 5 px at 64 px over Iconoir's 24-unit grid
+SHIFT_PX = 0.5
+THRESHOLD = 128
+
+# (Rust variant, Iconoir file name, where the tile is)
+ICONS = [
+    ("BookStack", "book-stack", "Home: Library"),
+    ("Headset", "headset", "Home: Audiobooks"),
+    ("StatsReport", "stats-report", "Home: Statistics"),
+    ("Import", "import", "Home: Upload"),
+    ("Settings", "settings", "Home: Settings; reader options: reading preferences"),
+    ("Folder", "folder", "Home: Files"),
+    ("Wifi", "wifi", "Settings: Network; Upload: Wi-Fi"),
+    ("RefreshDouble", "refresh-double", "Settings: Update"),
+    ("SoundLow", "sound-low", "Settings: Audio"),
+    ("Clock", "clock", "Settings: Clock"),
+    ("TextSize", "text-size", "Settings: Display"),
+    ("Language", "language", "Settings: Language; first-run language page"),
+    ("InfoEmpty", "info-empty", "Settings: Info"),
+    ("HelpCircle", "help-circle", "Settings: First steps"),
+    ("Laptop", "laptop", "Upload: USB cable"),
+    ("List", "list", "Reader options: table of contents"),
+    ("BookmarkBook", "bookmark-book", "Reader options: bookmarks"),
+    ("BookmarkEmpty", "bookmark-empty", "Reader options: bookmark this page"),
+    ("Percentage", "percentage", "Reader options: go to"),
+]
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+OUTPUT = os.path.join(ROOT, "src", "app", "widgets", "tile_icons.rs")
+
+
+def rasterise(path):
+    """One Iconoir SVG -> SIZE rows of SIZE booleans (True = ink)."""
+    svg = open(path, encoding="utf-8").read()
+    if 'stroke-width="1.5"' not in svg or 'viewBox="0 0 24 24"' not in svg:
+        raise SystemExit(f"{path}: not the 24-unit, 1.5-stroke drawing this tool expects")
+    svg = svg.replace("currentColor", "#000").replace(
+        'stroke-width="1.5"', f'stroke-width="{STROKE_UNITS}"'
+    )
+    shift = SHIFT_PX * 24 / SIZE
+    head, body, tail = re.match(r"(<svg[^>]*>)(.*)(</svg>)\s*$", svg, re.S).groups()
+    svg = f'{head}<g transform="translate({shift},{shift})">{body}</g>{tail}'
+    png = cairosvg.svg2png(
+        bytestring=svg.encode(), output_width=SIZE, output_height=SIZE, background_color="white"
+    )
+    image = Image.open(io.BytesIO(png)).convert("L")
+    rows = [[image.getpixel((x, y)) < THRESHOLD for x in range(SIZE)] for y in range(SIZE)]
+    edge = rows[0] + rows[-1] + [row[0] for row in rows] + [row[-1] for row in rows]
+    if any(edge):
+        raise SystemExit(f"{path}: ink on the bitmap's edge, the drawing is clipped")
+    return rows
+
+
+def pack(rows):
+    data = bytearray()
+    for row in rows:
+        for start in range(0, SIZE, 8):
+            byte = 0
+            for bit in range(8):
+                if row[start + bit]:
+                    byte |= 0x80 >> bit
+            data.append(byte)
+    return bytes(data)
+
+
+def const_name(variant):
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", variant).upper()
+
+
+def render_rust(glyphs):
+    out = [
+        "//! Generated by tools/icongen/gen_tile_icons.py; do not edit by hand.",
+        "//!",
+        "//! The glyphs of the icon tiles (Home, Settings, Upload, the reader's",
+        "//! options, the first-run language page), 64 x 64, one bit per pixel.",
+        "//! Rasterised from Iconoir (MIT License, see",
+        "//! docs/licenses/THIRD_PARTY_NOTICES.md) straight at the size they are",
+        "//! drawn, with a 5 px stroke; the SVG files themselves are not",
+        "//! distributed.",
+        "",
+        "/// Width and height of a tile glyph, in pixels.",
+        f"pub const TILE_ICON_SIZE: u16 = {SIZE};",
+        "/// Bytes of one glyph: rows packed MSB first, 8 bytes per row.",
+        f"pub const TILE_ICON_BYTES: usize = {SIZE * SIZE // 8};",
+        "",
+        "/// A glyph an icon tile can show.",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]",
+        "pub enum TileIcon {",
+    ]
+    for variant, name, where in glyphs_meta(glyphs):
+        out.append(f"    /// Iconoir `{name}`. {where}.")
+        out.append(f"    {variant},")
+    out += [
+        "}",
+        "",
+        "impl TileIcon {",
+        "    /// Every glyph, in declaration order.",
+        f"    pub const ALL: [TileIcon; {len(glyphs)}] = [",
+    ]
+    out += [f"        TileIcon::{variant}," for variant, _, _ in glyphs_meta(glyphs)]
+    out += [
+        "    ];",
+        "",
+        "    /// The glyph's bitmap, in the format",
+        "    /// `OrientedFrameBuffer::blit_packed_bitmap` draws.",
+        "    #[must_use]",
+        "    pub const fn bits(self) -> &'static [u8; TILE_ICON_BYTES] {",
+        "        match self {",
+    ]
+    out += [
+        f"            TileIcon::{variant} => &{const_name(variant)},"
+        for variant, _, _ in glyphs_meta(glyphs)
+    ]
+    out += ["        }", "    }", "}", ""]
+    for variant, name, data in glyphs:
+        out.append(f"// {name}")
+        out.append(f"const {const_name(variant)}: [u8; TILE_ICON_BYTES] = [")
+        for start in range(0, len(data), 8):
+            out.append("    " + " ".join(f"0x{b:02x}," for b in data[start : start + 8]))
+        out += ["];", ""]
+    return "\n".join(out)
+
+
+def glyphs_meta(glyphs):
+    where = {variant: text for variant, _, text in ICONS}
+    return [(variant, name, where[variant]) for variant, name, _ in glyphs]
+
+
+def save_preview(glyphs, path, zoom=4, per_row=7, pad=12):
+    lines = (len(glyphs) + per_row - 1) // per_row
+    cell = SIZE * zoom + pad
+    sheet = Image.new("L", (pad + per_row * cell, pad + lines * cell), 255)
+    for index, (_, _, data) in enumerate(glyphs):
+        glyph = Image.frombytes("1", (SIZE, SIZE), bytes(b ^ 0xFF for b in data)).convert("L")
+        glyph = glyph.resize((SIZE * zoom, SIZE * zoom), Image.NEAREST)
+        sheet.paste(glyph, (pad + (index % per_row) * cell, pad + (index // per_row) * cell))
+    sheet.save(path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--icons", required=True, help="folder with Iconoir's SVG files")
+    parser.add_argument("--preview", help="write a PNG sheet of the glyphs, 4x")
+    args = parser.parse_args()
+
+    glyphs = []
+    for variant, name, _ in ICONS:
+        glyphs.append((variant, name, pack(rasterise(os.path.join(args.icons, name + ".svg")))))
+    with open(OUTPUT, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(render_rust(glyphs))
+    print(f"wrote {os.path.relpath(OUTPUT, ROOT)}: {len(glyphs)} glyphs, "
+          f"{len(glyphs) * SIZE * SIZE // 8} bytes")
+    if args.preview:
+        save_preview(glyphs, args.preview)
+        print(f"wrote {args.preview}")
+
+
+if __name__ == "__main__":
+    main()

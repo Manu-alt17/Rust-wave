@@ -25,7 +25,7 @@ On a microSD that was never used the device makes its folders (`RUSTMIX/BOOKS`, 
 
 | Page | What it is for | Rows |
 | --- | --- | --- |
-| 1. I tasti (The keys) | What the rocker, BOOT and Power do | Avanti (Next) · Salta la configurazione (Skip the setup) |
+| 1. I tasti (The keys) | Where the rocker, Power and BOOT are, on a drawing of the device held upright, and what each does, with a small picture for each gesture (turn, press, hold) | Avanti (Next) · Salta la configurazione (Skip the setup) |
 | 2. Wi-Fi | Opens the phone portal to add a network | Configura dal telefono (Set up from a phone) · Salta (Skip) |
 | 3. Data e ora (Date and time) | Shows date, time and time zone | Vanno bene (They are right) · Cambia (Change) |
 | 4. Primo libro (First book) | The two ways of copying books | Dal telefono, via Wi-Fi · Dal computer, con il cavo USB · Più tardi (Later) |
@@ -120,7 +120,11 @@ The position of every audiobook is saved in `RUSTMIX/AUDIOPOS.TXT`, and the volu
 
 <img src="../screenshots/rendered-statistics.png" width="360" alt="Statistics">
 
-Reading time today, this week and this month, the streak of consecutive days, the reading speed and the last seven days, and the books read most this month. Days follow the time zone set in Settings → Orologio. The time left shown on Home and in the Reader comes from the same reading speed.
+Reading time one period at a time, a week (**Settimana**, Monday to Sunday) or a month (**Mese**): SELECT changes between the two, Up goes to the period before and Down comes back towards today. The screen opens on the current period of the kind looked at last and goes back as far as there is reading logged, a year at most.
+
+For the period on show: its total, the average per day (over the days gone by, for the current one), a chart with a bar per day, and the books read most in it. The chart has a time axis, so a bar says how long as well as which day: a dotted line at the top of the scale and one half way up, each with its time on the left (`2h` and `1h`, `30m` and `15m`); the scale is the smallest round time the longest day fits under. A day without reading has no bar, nor has a day still to come, and today's column has a mark under the base line. A week is labelled with the days' initials, a month with the day of the month every fifth day.
+
+Below the chart, whatever the period: the time read today, the streak of consecutive days, the reading speed and the time left in the current book. Days follow the time zone set in Settings → Orologio. The time left shown on Home and in the Reader comes from the same reading speed.
 
 ## 6. Upload
 
@@ -133,7 +137,7 @@ Reading time today, this week and this month, the streak of consecutive days, th
 
 <img src="../screenshots/rendered-wifi-transfer.png" width="360" alt="Wi-Fi transfer">
 
-With a Wi-Fi network configured, the screen shows the address to open in a browser on the same network (or a QR code that opens it). The page asks for no code: it is reachable by anyone on that network while the Upload screen is open, and closes when you leave it or after ten minutes in which nobody uses it. It speaks the device's language. The header says whether the device still answers and how much space is free. Configuration files (`WIFI.TXT`, `CLOCK.TXT`, `DISPLAY.TXT`) are protected.
+With a Wi-Fi network configured, the screen shows the address to open in a browser on the same network (or a QR code that opens it). The page asks for no code: it is reachable by anyone on that network while the Upload screen is open, and closes when you leave it or after ten minutes in which nobody uses it. It speaks the device's language. The header says whether the device still answers and how much space is free: **Non collegato** (Not connected) almost always means that the Wi-Fi screen was left on the device. The screen says so under its button, and Upload reads **Pagina Wi-Fi chiusa** when you come back to it; open Wi-Fi again and tap **Riprova** in the page. Configuration files (`WIFI.TXT`, `CLOCK.TXT`, `DISPLAY.TXT`) are protected.
 
 | Tab | What it does |
 | --- | --- |
@@ -145,7 +149,7 @@ With a Wi-Fi network configured, the screen shows the address to open in a brows
 
 **Files.** A tap opens a folder, or previews a text or a picture; the three dots open a row's actions: download, rename, move to another folder, delete. A long press starts a selection, with a bar to download, move or delete several things at once. On a computer: click to select, double click to open, right click for the menu, F2 to rename, Del to delete, and drag a row onto a folder to move it or files from the computer to upload them. Deleting shows **Annulla** (Undo) for six seconds. The device's own files and folders are hidden until you ask to see them. A file over 64 MB is refused before it is sent: use the USB cable for those.
 
-**Wallpapers.** Search for a picture (the results are free pictures from Wikimedia Commons), choose one from the phone or computer, or paste one copied elsewhere. Then drag it and zoom (two fingers, the mouse wheel or the slider) inside the upright frame, which is the screen as you hold the device. **Come si vedrà** shows the black and white result; **Salva sfondo** stores it in `RUSTMIX/SLEEP`. The page turns the image for the panel, sets the contrast and names the file by itself. Searching needs the Internet, so it is not offered on the device's own hotspot.
+**Wallpapers.** Choose a picture from the phone or computer, or paste or drag in one copied elsewhere. Without one at hand, **Cercala su Google** opens Google's picture search in another tab: save the picture you like, then choose it. Then drag it and zoom (two fingers, the mouse wheel or the slider) inside the upright frame, which is the screen as you hold the device. **Come si vedrà** shows the black and white result; **Salva sfondo** stores it in `RUSTMIX/SLEEP`. The page turns the image for the panel, sets the contrast and names the file by itself. The Google link is not shown on the device's own hotspot, where the phone has no Internet. **In standby mostra** sets the sleep screen from the page, the same four choices as Settings → Schermo: the wallpapers one after the other, at random, always the same one, or the cover of the book being read. Under **Sfondi sul dispositivo** every wallpaper can be downloaded, deleted, or kept in standby all the time with **Usa come fisso**, which also sets "always the same one"; the one kept is marked **Sfondo fisso**.
 
 Without a Wi-Fi network, the device opens its own hotspot and shows a QR code: join it with a phone, and the setup page opens by itself, to add networks (up to 8) and passwords with the phone's keyboard.
 
@@ -165,12 +169,12 @@ A browser of the whole microSD, with a preview of text files. SELECT opens a fol
 | Aggiorna (Update) | Firmware updates over Wi-Fi, from the stable or the beta channel (never checked automatically) |
 | Audio | Codec state, volume, test chime |
 | Orologio (Clock) | Date, time and time zone (Europe/Rome by default, New York, UTC). The editor goes through time zone, day, month, year, hour and minute; BOOT steps back one field |
-| Schermo (Display) | Interface text size, sleep screen, automatic standby |
+| Schermo (Display) | Interface text size, sleep screen, fixed wallpaper, automatic standby |
 | Lingua (Language) | Italiano, English |
 | Info | Firmware version, board and memory state; **Ripristina impostazioni** (Restore settings) |
 | Primi passi (First steps) | The first-start pages, to go through again |
 
-The sleep screen is what stays on the glass during standby: the images in `RUSTMIX/SLEEP` in turn (default) or at random, or the cover of the book being read. Automatic standby comes after 5, 10 (default), 15, 30 or 60 minutes without input, or never.
+The sleep screen is what stays on the glass during standby: the images in `RUSTMIX/SLEEP` in turn (**In sequenza**, the default) or at random (**Casuale**), always the same one (**Fissa**), or the cover of the book being read (**Copertina**). **Sfondo fisso** (Fixed wallpaper) chooses which one stays: the wallpapers are shown one at a time over the whole screen, as standby will show them, Up and Down move through them and SELECT keeps the one on screen, which also sets the sleep screen to **Fissa**. Without a choice, **Fissa** keeps the last one shown. The same choice can be made from the Wi-Fi page. With no wallpaper on the card, standby shows the four steps to add one from the phone instead of an empty screen. Automatic standby comes after 5, 10 (default), 15, 30 or 60 minutes without input, or never.
 
 Rete lists the connection state and four actions. **Configura da telefono** opens the portal of section 6. **Reti salvate** lists the saved networks, the connected one marked: SELECT on a network opens a menu to connect to it or forget it. If it cannot be joined, the Network screen says so and the device goes back to the saved networks by itself. **Riprova connessione** tries the saved networks again, and **Dettagli** shows the time synchronization and the last error.
 

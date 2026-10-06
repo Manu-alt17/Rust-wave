@@ -30,7 +30,7 @@ use std::{
 
 use log::warn;
 
-use crate::{ntp, regional::TimeZoneProfile, rtc::RtcDateTime};
+use crate::{date_math, ntp, regional::TimeZoneProfile, rtc::RtcDateTime};
 
 /// SD directory holding one append-only log file per calendar month, plus
 /// nothing else -- there is no cross-month summary cache; see this module's
@@ -264,29 +264,61 @@ fn read_month_log(stats_root: &str, year: u16, month: u8) -> Vec<ReadingSession>
         .collect()
 }
 
+/// One month's log with the UTC month it is filed under.
+type MonthLog = ((u16, u8), Vec<ReadingSession>);
+
+/// The month before `(year, month)`.
+const fn previous_month(year: u16, month: u8) -> (u16, u8) {
+    if month <= 1 {
+        (year.saturating_sub(1), 12)
+    } else {
+        (year, month - 1)
+    }
+}
+
+/// The month after `(year, month)`.
+const fn next_month(year: u16, month: u8) -> (u16, u8) {
+    if month >= 12 {
+        (year.saturating_add(1), 1)
+    } else {
+        (year, month + 1)
+    }
+}
+
 /// Read the current month's log plus `months_back` preceding months' logs,
 /// one entry per month, newest first. Bounded and exact: it walks calendar
 /// months by field arithmetic rather than jumping fixed day counts, so it
 /// never skips a short month.
-fn read_recent_month_logs(
-    stats_root: &str,
-    months_back: u32,
-    now: u64,
-) -> Vec<Vec<ReadingSession>> {
+fn read_recent_month_logs(stats_root: &str, months_back: u32, now: u64) -> Vec<MonthLog> {
     let start = ntp::utc_from_unix_seconds(now);
-    let mut year = start.year;
-    let mut month = start.month;
+    let mut key = (start.year, start.month);
     let mut months = Vec::new();
     for _ in 0..=months_back {
-        months.push(read_month_log(stats_root, year, month));
-        if month == 1 {
-            month = 12;
-            year = year.saturating_sub(1);
-        } else {
-            month -= 1;
-        }
+        months.push((key, read_month_log(stats_root, key.0, key.1)));
+        key = previous_month(key.0, key.1);
     }
     months
+}
+
+/// The oldest month a log exists for, from the names in the folder alone.
+fn earliest_logged_month(stats_root: &str) -> Option<(u16, u8)> {
+    fs::read_dir(stats_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let stem = name
+                .strip_suffix(".LOG")
+                .or_else(|| name.strip_suffix(".log"))?;
+            if stem.len() != 6 || !stem.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            let year = stem[..4].parse().ok()?;
+            let month: u8 = stem[4..].parse().ok()?;
+            (1..=12).contains(&month).then_some((year, month))
+        })
+        .min()
 }
 
 fn aggregate_daily(sessions: &[ReadingSession], zone: TimeZoneProfile) -> Vec<DailyStats> {
@@ -405,29 +437,168 @@ pub struct CurrentBookProgress {
     pub book_end_position: Option<u64>,
 }
 
-/// One day's reading total for the last-7-days bar chart, carrying the
-/// weekday (`0` = Sunday .. `6` = Saturday, matching
-/// [`ntp::utc_from_unix_seconds`]) so the screen can render a locale-aware
-/// day-initial label without needing wall-clock access of its own.
+/// What span of time the statistics screen charts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct DayBar {
-    pub weekday: u8,
-    pub total_seconds: u32,
+pub enum StatsPeriod {
+    /// A calendar week, Monday to Sunday.
+    #[default]
+    Week,
+    /// A calendar month.
+    Month,
 }
 
-/// Top N books (by [`BOOKS_THIS_MONTH_LIMIT`]) is the number of entries a
-/// screen should ever need to lay out at once for the "read this month"
-/// list.
-pub const BOOKS_THIS_MONTH_LIMIT: usize = 5;
+impl StatsPeriod {
+    /// The other one: the screen has two.
+    #[must_use]
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Week => Self::Month,
+            Self::Month => Self::Week,
+        }
+    }
 
-/// One book's total reading time within the current month. Carries only
+    /// How many periods back from the current one the screen goes: a year.
+    #[must_use]
+    pub const fn max_back(self) -> u16 {
+        match self {
+            Self::Week => 52,
+            Self::Month => 12,
+        }
+    }
+}
+
+/// The period on show: a week or a month, and how many of them before the
+/// current one (`0` is the week or month of today).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StatsView {
+    pub period: StatsPeriod,
+    pub back: u16,
+}
+
+/// A calendar date, local to the timezone chosen on the device.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CalendarDay {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+}
+
+impl CalendarDay {
+    fn of(date: RtcDateTime) -> Self {
+        Self {
+            year: date.year,
+            month: date.month,
+            day: date.day,
+        }
+    }
+}
+
+/// One day of the charted period: a bar of the chart. Carries the weekday
+/// (`0` = Sunday .. `6` = Saturday, matching
+/// [`ntp::utc_from_unix_seconds`]) and the day of the month, so the screen
+/// labels it without wall-clock access of its own.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PeriodDay {
+    pub day: u8,
+    pub weekday: u8,
+    pub total_seconds: u32,
+    /// Today.
+    pub today: bool,
+    /// Still to come: it has no bar, where a day without reading has an
+    /// empty one.
+    pub future: bool,
+}
+
+/// Most books a period lists: all a screen ever lays out at once.
+pub const PERIOD_BOOKS_LIMIT: usize = 5;
+
+/// One book's total reading time within the charted period. Carries only
 /// [`Self::book_id`] -- the screen resolves title/cover/percent from
 /// `AppState`'s already-in-RAM Reader library state, which `reading_stats`
 /// deliberately does not depend on.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct BookMonthStats {
+pub struct BookPeriodStats {
     pub book_id: u32,
     pub total_seconds: u32,
+}
+
+/// The reading of one week or one month, day by day.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PeriodStats {
+    pub view: StatsView,
+    pub first: CalendarDay,
+    pub last: CalendarDay,
+    /// One entry per day from `first` to `last`: 7, or 28 to 31.
+    pub days: Vec<PeriodDay>,
+    pub total_seconds: u32,
+    /// Days of the period up to today, all of them for a past one: what the
+    /// daily average divides by.
+    pub elapsed_days: u16,
+    /// Sorted by total time descending, bounded to [`PERIOD_BOOKS_LIMIT`].
+    pub books: Vec<BookPeriodStats>,
+    /// Whether an earlier period may hold reading: there is a log older
+    /// than this one's first day, and the limit of a year is not reached.
+    pub has_older: bool,
+}
+
+#[cfg(test)]
+impl PeriodStats {
+    /// A period for the screen tests: `seconds` of reading per day from
+    /// `first` on, the day at index `today` being today and those after it
+    /// still to come.
+    pub(crate) fn sample(
+        view: StatsView,
+        first: CalendarDay,
+        seconds: &[u32],
+        today: Option<usize>,
+        books: Vec<BookPeriodStats>,
+        has_older: bool,
+    ) -> Self {
+        let start = calendar_date(first.year, first.month, first.day);
+        let days: Vec<PeriodDay> = seconds
+            .iter()
+            .enumerate()
+            .map(|(index, total_seconds)| {
+                let date = days_after(start, index as u32);
+                PeriodDay {
+                    day: date.day,
+                    weekday: date.weekday,
+                    total_seconds: *total_seconds,
+                    today: today == Some(index),
+                    future: today.is_some_and(|today| index > today),
+                }
+            })
+            .collect();
+        let last = days_after(start, seconds.len().saturating_sub(1) as u32);
+        Self {
+            view,
+            first,
+            last: CalendarDay::of(last),
+            total_seconds: days.iter().map(|day| day.total_seconds).sum(),
+            elapsed_days: today.map_or(days.len(), |today| today + 1) as u16,
+            days,
+            books,
+            has_older,
+        }
+    }
+}
+
+impl PeriodStats {
+    /// Average reading time per day elapsed, in seconds.
+    #[must_use]
+    pub fn average_seconds_per_day(&self) -> u32 {
+        self.total_seconds / u32::from(self.elapsed_days.max(1))
+    }
+
+    /// The longest day, in seconds.
+    #[must_use]
+    pub fn longest_day_seconds(&self) -> u32 {
+        self.days
+            .iter()
+            .map(|day| day.total_seconds)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// Pure, display-ready aggregate consumed by the Reading Stats screen.
@@ -440,28 +611,27 @@ pub struct ReadingStatsSnapshot {
     pub available: bool,
     pub today_seconds: u32,
     pub sessions_today: u16,
-    pub week_seconds: u32,
-    pub month_seconds: u32,
     pub streak_days: u32,
     pub chars_per_minute: Option<u32>,
     pub remaining_chapter_seconds: Option<u64>,
     pub remaining_book_seconds: Option<u64>,
-    /// Oldest to newest, index 6 is today.
-    pub last_7_days: [DayBar; 7],
-    /// Sorted by total time descending, bounded to [`BOOKS_THIS_MONTH_LIMIT`].
-    pub books_this_month: Vec<BookMonthStats>,
+    /// The week or month asked for, day by day.
+    pub period: PeriodStats,
 }
 
 /// Lazily aggregate everything the Reading Stats screen shows by reading
 /// only the current month's log plus, for the streak, up to
-/// [`STREAK_LOOKBACK_MONTHS`] preceding months -- never the device's entire
-/// reading history. Days, the week and the month are local to `zone`.
+/// [`STREAK_LOOKBACK_MONTHS`] preceding months, and the one to three logs
+/// the period on show (`view`) lies in when it is older than those -- never
+/// the device's entire reading history. Days, weeks and months are local to
+/// `zone`.
 #[must_use]
 pub fn compute_snapshot(
     stats_root: &str,
     now: u64,
     book_progress: Option<CurrentBookProgress>,
     zone: TimeZoneProfile,
+    view: StatsView,
 ) -> ReadingStatsSnapshot {
     let _span = crate::boot_profile::span("reading-stats-compute");
     let local_now = local_date(now, zone);
@@ -471,34 +641,23 @@ pub fn compute_snapshot(
     // streak window below are all prefixes of this newest-first list.
     let months = read_recent_month_logs(stats_root, STREAK_LOOKBACK_MONTHS, now);
 
-    // Current + previous log always covers any trailing 7-day window, the
-    // 10-session speed window and the whole local month: the logs are split
-    // by UTC month, which is never more than a day away from the local one.
-    let recent_sessions: Vec<ReadingSession> = months.iter().take(2).flatten().copied().collect();
-    let month_sessions: Vec<ReadingSession> = recent_sessions
+    // Current + previous log always covers today and the 10-session speed
+    // window: the logs are split by UTC month, which is never more than a
+    // day away from the local one.
+    let recent_sessions: Vec<ReadingSession> = months
         .iter()
-        .filter(|session| {
-            let local = local_date(session.end_ts, zone);
-            (local.year, local.month) == (local_now.year, local_now.month)
-        })
+        .take(2)
+        .flat_map(|(_, sessions)| sessions)
         .copied()
         .collect();
-    let month_seconds: u32 = month_sessions
-        .iter()
-        .map(ReadingSession::duration_seconds)
-        .sum::<u64>()
-        .min(u64::from(u32::MAX)) as u32;
     let recent_daily = aggregate_daily(&recent_sessions, zone);
     let today_stats = recent_daily.iter().find(|day| day.date == today).copied();
-    let week_start = yyyymmdd(days_before(local_now, 6));
-    let week_seconds: u32 = recent_daily
-        .iter()
-        .filter(|day| (week_start..=today).contains(&day.date))
-        .map(|day| u64::from(day.total_seconds))
-        .sum::<u64>()
-        .min(u64::from(u32::MAX)) as u32;
 
-    let streak_sessions: Vec<ReadingSession> = months.iter().flatten().copied().collect();
+    let streak_sessions: Vec<ReadingSession> = months
+        .iter()
+        .flat_map(|(_, sessions)| sessions)
+        .copied()
+        .collect();
     let streak_daily = aggregate_daily(&streak_sessions, zone);
     let streak_days = current_streak_days(&streak_daily, now, zone);
 
@@ -522,45 +681,153 @@ pub fn compute_snapshot(
         available: true,
         today_seconds: today_stats.map_or(0, |day| day.total_seconds),
         sessions_today: today_stats.map_or(0, |day| day.sessions),
-        week_seconds,
-        month_seconds,
         streak_days,
         chars_per_minute,
         remaining_chapter_seconds,
         remaining_book_seconds,
-        last_7_days: last_7_days_bars(&recent_daily, now, zone),
-        books_this_month: top_books_this_month(&month_sessions),
+        period: period_stats(stats_root, &months, local_now, zone, view),
     }
 }
 
-/// Build the last-7-days bar-chart data (oldest to newest, today last) from
-/// an already-aggregated daily list -- `recent_daily` in [`compute_snapshot`]
-/// always covers the current + previous month, which is always enough for
-/// any trailing 7-day window regardless of where in the month `now` falls.
-fn last_7_days_bars(daily: &[DailyStats], now: u64, zone: TimeZoneProfile) -> [DayBar; 7] {
-    let today = local_date(now, zone);
-    let mut bars = [DayBar::default(); 7];
-    for (offset, bar) in bars.iter_mut().enumerate() {
-        let day = days_before(today, 6 - offset as u32);
-        let date = yyyymmdd(day);
-        let weekday = day.weekday;
-        let total_seconds = daily
-            .iter()
-            .find(|day| day.date == date)
-            .map_or(0, |day| day.total_seconds);
-        *bar = DayBar {
-            weekday,
-            total_seconds,
+/// A date with its weekday, at midnight: what the calendar steps below
+/// start from.
+fn calendar_date(year: u16, month: u8, day: u8) -> RtcDateTime {
+    RtcDateTime {
+        year,
+        month,
+        day,
+        weekday: date_math::weekday(year, month, day),
+        hour: 0,
+        minute: 0,
+        second: 0,
+    }
+}
+
+/// The calendar date `days` days after `date`.
+fn days_after(date: RtcDateTime, days: u32) -> RtcDateTime {
+    date.shift_minutes(days as i32 * 24 * 60)
+}
+
+/// First and last day of the week or month `view` asks for, counted back
+/// from the one `today` is in. Weeks run Monday to Sunday.
+fn period_bounds(today: RtcDateTime, view: StatsView) -> (RtcDateTime, RtcDateTime) {
+    let back = view.back.min(view.period.max_back());
+    let today = calendar_date(today.year, today.month, today.day);
+    match view.period {
+        StatsPeriod::Week => {
+            let since_monday = (u32::from(today.weekday) + 6) % 7;
+            let first = days_before(today, since_monday + 7 * u32::from(back));
+            (first, days_after(first, 6))
+        }
+        StatsPeriod::Month => {
+            let mut key = (today.year, today.month);
+            for _ in 0..back {
+                key = previous_month(key.0, key.1);
+            }
+            (
+                calendar_date(key.0, key.1, 1),
+                calendar_date(key.0, key.1, date_math::days_in_month(key.0, key.1)),
+            )
+        }
+    }
+}
+
+/// The reading of the week or month `view` asks for. `loaded` are the logs
+/// [`compute_snapshot`] already read; a period older than those reads its
+/// own, at most three: the logs are filed by UTC month, a day at most away
+/// from the local one at either end.
+fn period_stats(
+    stats_root: &str,
+    loaded: &[MonthLog],
+    local_now: RtcDateTime,
+    zone: TimeZoneProfile,
+    view: StatsView,
+) -> PeriodStats {
+    let view = StatsView {
+        period: view.period,
+        back: view.back.min(view.period.max_back()),
+    };
+    let (first, last) = period_bounds(local_now, view);
+    let (first_date, last_date) = (yyyymmdd(first), yyyymmdd(last));
+    let today = yyyymmdd(local_now);
+
+    let before = days_before(first, 1);
+    let after = days_after(last, 1);
+    let mut key = (before.year, before.month);
+    let end = (after.year, after.month);
+    let mut sessions: Vec<ReadingSession> = Vec::new();
+    loop {
+        let in_period = |session: &&ReadingSession| {
+            (first_date..=last_date).contains(&yyyymmdd(local_date(session.end_ts, zone)))
         };
+        match loaded.iter().find(|(month, _)| *month == key) {
+            Some((_, log)) => sessions.extend(log.iter().filter(in_period)),
+            // Nothing is logged in a month still to come.
+            None if key > (local_now.year, local_now.month) => {}
+            None => sessions.extend(
+                read_month_log(stats_root, key.0, key.1)
+                    .iter()
+                    .filter(in_period),
+            ),
+        }
+        if key >= end {
+            break;
+        }
+        key = next_month(key.0, key.1);
     }
-    bars
+
+    let daily = aggregate_daily(&sessions, zone);
+    let mut days = Vec::new();
+    let mut total_seconds = 0_u32;
+    let mut elapsed_days = 0_u16;
+    let mut date = first;
+    loop {
+        let stamp = yyyymmdd(date);
+        let seconds = daily
+            .iter()
+            .find(|day| day.date == stamp)
+            .map_or(0, |day| day.total_seconds);
+        total_seconds = total_seconds.saturating_add(seconds);
+        if stamp <= today {
+            elapsed_days += 1;
+        }
+        days.push(PeriodDay {
+            day: date.day,
+            weekday: date.weekday,
+            total_seconds: seconds,
+            today: stamp == today,
+            future: stamp > today,
+        });
+        if stamp >= last_date {
+            break;
+        }
+        date = days_after(date, 1);
+    }
+
+    let has_older = view.back < view.period.max_back()
+        && earliest_logged_month(stats_root).is_some_and(|(year, month)| {
+            // The UTC month a log is filed under starts at most a day off
+            // the local one: close enough to say whether to offer a step.
+            yyyymmdd(calendar_date(year, month, 1)) < first_date
+        });
+
+    PeriodStats {
+        view,
+        first: CalendarDay::of(first),
+        last: CalendarDay::of(last),
+        days,
+        total_seconds,
+        elapsed_days,
+        books: top_books(&sessions),
+        has_older,
+    }
 }
 
-/// Sum this month's sessions per book, sorted by total time descending and
-/// bounded to [`BOOKS_THIS_MONTH_LIMIT`] entries.
-fn top_books_this_month(month_sessions: &[ReadingSession]) -> Vec<BookMonthStats> {
-    let mut totals: Vec<BookMonthStats> = Vec::new();
-    for session in month_sessions {
+/// Sum the sessions per book, sorted by total time descending and bounded
+/// to [`PERIOD_BOOKS_LIMIT`] entries.
+fn top_books(sessions: &[ReadingSession]) -> Vec<BookPeriodStats> {
+    let mut totals: Vec<BookPeriodStats> = Vec::new();
+    for session in sessions {
         let seconds = session.duration_seconds().min(u64::from(u32::MAX)) as u32;
         if let Some(entry) = totals
             .iter_mut()
@@ -568,14 +835,14 @@ fn top_books_this_month(month_sessions: &[ReadingSession]) -> Vec<BookMonthStats
         {
             entry.total_seconds = entry.total_seconds.saturating_add(seconds);
         } else {
-            totals.push(BookMonthStats {
+            totals.push(BookPeriodStats {
                 book_id: session.book_id,
                 total_seconds: seconds,
             });
         }
     }
     totals.sort_by(|left, right| right.total_seconds.cmp(&left.total_seconds));
-    totals.truncate(BOOKS_THIS_MONTH_LIMIT);
+    totals.truncate(PERIOD_BOOKS_LIMIT);
     totals
 }
 
@@ -691,10 +958,10 @@ impl ReadingStatsTracker {
 mod tests {
     use super::{
         aggregate_daily, append_session, book_id_for, compute_snapshot, current_streak_days,
-        estimated_seconds_remaining, format_duration_seconds, last_7_days_bars, read_month_log,
-        resolve_unix_timestamp, top_books_this_month, unix_seconds_from_utc,
-        weighted_chars_per_second, CurrentBookProgress, DailyStats, ReadingSession,
-        ReadingStatsTracker,
+        estimated_seconds_remaining, format_duration_seconds, local_date, period_bounds,
+        read_month_log, resolve_unix_timestamp, top_books, unix_seconds_from_utc,
+        weighted_chars_per_second, CalendarDay, CurrentBookProgress, DailyStats, ReadingSession,
+        ReadingStatsTracker, StatsPeriod, StatsView,
     };
     use crate::{ntp::utc_from_unix_seconds, regional::TimeZoneProfile, rtc::RtcDateTime};
     use std::{
@@ -705,14 +972,44 @@ mod tests {
 
     const UTC: TimeZoneProfile = TimeZoneProfile::Utc;
     const ROME: TimeZoneProfile = TimeZoneProfile::EuropeRome;
+    const WEEK: StatsView = StatsView {
+        period: StatsPeriod::Week,
+        back: 0,
+    };
+    const MONTH: StatsView = StatsView {
+        period: StatsPeriod::Month,
+        back: 0,
+    };
+
+    fn weeks_back(back: u16) -> StatsView {
+        StatsView {
+            period: StatsPeriod::Week,
+            back,
+        }
+    }
+
+    fn months_back(back: u16) -> StatsView {
+        StatsView {
+            period: StatsPeriod::Month,
+            back,
+        }
+    }
+
+    fn day(year: u16, month: u8, day: u8) -> CalendarDay {
+        CalendarDay { year, month, day }
+    }
 
     fn utc_day(seconds: u64) -> u32 {
         super::yyyymmdd(utc_from_unix_seconds(seconds))
     }
 
     fn unix(month: u8, day: u8, hour: u8, minute: u8) -> u64 {
+        unix_in(2026, month, day, hour, minute)
+    }
+
+    fn unix_in(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> u64 {
         unix_seconds_from_utc(RtcDateTime {
-            year: 2026,
+            year,
             month,
             day,
             weekday: 0,
@@ -741,13 +1038,16 @@ mod tests {
         let root = fixture_root("local-days");
         append_session(&root, late).unwrap();
         let now = unix(6, 4, 8, 0);
-        let rome = compute_snapshot(&root, now, None, ROME);
+        let rome = compute_snapshot(&root, now, None, ROME, WEEK);
         assert_eq!(rome.today_seconds, 600);
         assert_eq!(rome.streak_days, 1);
-        assert_eq!(rome.last_7_days[6].total_seconds, 600);
-        let utc = compute_snapshot(&root, now, None, UTC);
+        // 4 June 2026 is a Thursday: the fourth day of a week from Monday.
+        assert_eq!(rome.period.days[3].total_seconds, 600);
+        assert!(rome.period.days[3].today);
+        let utc = compute_snapshot(&root, now, None, UTC, WEEK);
         assert_eq!(utc.today_seconds, 0);
-        assert_eq!(utc.last_7_days[5].total_seconds, 600);
+        assert_eq!(utc.period.days[2].total_seconds, 600);
+        assert!(utc.period.days[3].today);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -762,14 +1062,15 @@ mod tests {
         )
         .unwrap();
         let now = unix(7, 1, 8, 0);
-        assert_eq!(compute_snapshot(&root, now, None, ROME).month_seconds, 600);
-        assert_eq!(
-            compute_snapshot(&root, now, None, ROME)
-                .books_this_month
-                .len(),
-            1
-        );
-        assert_eq!(compute_snapshot(&root, now, None, UTC).month_seconds, 0);
+        let july = |zone| compute_snapshot(&root, now, None, zone, MONTH).period;
+        let june = |zone| compute_snapshot(&root, now, None, zone, months_back(1)).period;
+        assert_eq!(july(ROME).total_seconds, 600);
+        assert_eq!(july(ROME).books.len(), 1);
+        assert_eq!(july(ROME).days[0].total_seconds, 600);
+        assert_eq!(june(ROME).total_seconds, 0);
+        assert_eq!(july(UTC).total_seconds, 0);
+        assert_eq!(june(UTC).total_seconds, 600);
+        assert_eq!(june(UTC).days[29].total_seconds, 600);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -785,13 +1086,154 @@ mod tests {
             reading_day(20260328),
         ];
         assert_eq!(current_streak_days(&daily, now, ROME), 3);
-        let bars = last_7_days_bars(&daily, now, ROME);
+    }
+
+    #[test]
+    fn a_week_runs_monday_to_sunday_in_the_local_calendar() {
+        // 22:30 UTC on Sunday 29 March 2026 is 00:30 on Monday 30 in Rome,
+        // the night the clocks went forward: a new week there, the last day
+        // of the old one in UTC.
+        let root = fixture_root("weeks");
+        for (day, hour) in [(28, 12), (29, 12), (29, 22)] {
+            append_session(
+                &root,
+                session(1, unix(3, day, hour, 20), unix(3, day, hour, 30), 0, 6_000),
+            )
+            .unwrap();
+        }
+        let now = unix(3, 29, 22, 30);
+        let seconds = |zone, view| {
+            compute_snapshot(&root, now, None, zone, view)
+                .period
+                .days
+                .iter()
+                .map(|day| day.total_seconds)
+                .collect::<Vec<_>>()
+        };
+
+        let this_week = compute_snapshot(&root, now, None, ROME, WEEK).period;
+        assert_eq!(this_week.first, day(2026, 3, 30));
+        assert_eq!(this_week.last, day(2026, 4, 5));
+        assert_eq!(seconds(ROME, WEEK), [600, 0, 0, 0, 0, 0, 0]);
+        assert!(this_week.days[0].today && !this_week.days[0].future);
+        assert!(this_week.days[1..].iter().all(|day| day.future));
+        assert_eq!(this_week.days[0].weekday, 1);
+        assert_eq!(this_week.elapsed_days, 1);
+        assert_eq!(this_week.average_seconds_per_day(), 600);
+
+        let last_week = compute_snapshot(&root, now, None, ROME, weeks_back(1)).period;
+        assert_eq!(last_week.first, day(2026, 3, 23));
+        assert_eq!(last_week.last, day(2026, 3, 29));
+        assert_eq!(seconds(ROME, weeks_back(1)), [0, 0, 0, 0, 0, 600, 600]);
+        assert!(last_week.days.iter().all(|day| !day.future && !day.today));
+        assert_eq!(last_week.total_seconds, 1_200);
+        assert_eq!(last_week.elapsed_days, 7);
+        assert_eq!(last_week.longest_day_seconds(), 600);
+
+        assert_eq!(seconds(UTC, WEEK), [0, 0, 0, 0, 0, 600, 1_200]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_month_has_a_bar_for_each_of_its_days_and_steps_back_across_years() {
+        let bounds = |year, month, day, view| {
+            let today = local_date(unix_in(year, month, day, 12, 0), UTC);
+            let (first, last) = period_bounds(today, view);
+            (
+                (first.year, first.month, first.day),
+                (last.year, last.month, last.day),
+            )
+        };
+        assert_eq!(bounds(2026, 1, 15, MONTH), ((2026, 1, 1), (2026, 1, 31)));
         assert_eq!(
-            bars.map(|bar| bar.total_seconds),
-            [0, 0, 0, 0, 600, 600, 600]
+            bounds(2026, 1, 15, months_back(1)),
+            ((2025, 12, 1), (2025, 12, 31))
         );
-        // 30 March 2026 is a Monday.
-        assert_eq!(bars[6].weekday, 1);
+        assert_eq!(
+            bounds(2028, 3, 31, months_back(1)),
+            ((2028, 2, 1), (2028, 2, 29))
+        );
+        // No further back than a year, whatever is asked.
+        assert_eq!(
+            bounds(2026, 1, 15, months_back(40)),
+            bounds(2026, 1, 15, months_back(12))
+        );
+        assert_eq!(
+            bounds(2026, 1, 15, months_back(12)),
+            ((2025, 1, 1), (2025, 1, 31))
+        );
+        // Thursday 1 January 2026: its week starts in the year before.
+        assert_eq!(bounds(2026, 1, 1, WEEK), ((2025, 12, 29), (2026, 1, 4)));
+
+        let root = fixture_root("month-days");
+        let february = compute_snapshot(&root, unix_in(2028, 2, 10, 12, 0), None, UTC, MONTH);
+        assert_eq!(february.period.days.len(), 29);
+        assert_eq!(february.period.days[9].day, 10);
+        assert!(february.period.days[9].today);
+        assert_eq!(february.period.elapsed_days, 10);
+        assert_eq!(february.period.view, MONTH);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_old_period_reads_its_own_log_and_the_steps_back_stop_at_the_first_one() {
+        // One sitting in November 2025, looked at in June 2026: its log is
+        // none of those the streak reads.
+        let root = fixture_root("old-period");
+        append_session(
+            &root,
+            session(
+                7,
+                unix_in(2025, 11, 10, 20, 0),
+                unix_in(2025, 11, 10, 20, 10),
+                0,
+                6_000,
+            ),
+        )
+        .unwrap();
+        let now = unix(6, 4, 8, 0);
+        let period = |view| compute_snapshot(&root, now, None, UTC, view).period;
+
+        let november = period(months_back(7));
+        assert_eq!(november.first, day(2025, 11, 1));
+        assert_eq!(november.total_seconds, 600);
+        assert_eq!(november.days[9].total_seconds, 600);
+        assert_eq!(november.books[0].book_id, 7);
+        assert_eq!(november.elapsed_days, 30);
+        assert!(!november.has_older, "nothing is logged before November");
+
+        assert!(period(months_back(6)).has_older);
+        assert_eq!(period(months_back(6)).total_seconds, 0);
+        assert!(period(MONTH).has_older);
+        assert!(period(WEEK).has_older);
+        // Monday 10 November 2025 opens its week; the week before holds the
+        // first days of the month the log is named after.
+        let week = (0..=52)
+            .map(|back| period(weeks_back(back)))
+            .find(|week| week.total_seconds > 0)
+            .unwrap();
+        assert_eq!(week.first, day(2025, 11, 10));
+        assert_eq!(week.days[0].total_seconds, 600);
+        assert!(week.has_older);
+        assert!(!period(weeks_back(week.view.back + 2)).has_older);
+
+        // A year back is as far as it goes.
+        assert!(!period(months_back(12)).has_older);
+        assert!(!period(weeks_back(52)).has_older);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn without_any_log_there_is_no_older_period() {
+        let root = fixture_root("no-logs");
+        let now = unix(6, 4, 8, 0);
+        for view in [WEEK, MONTH] {
+            let period = compute_snapshot(&root, now, None, UTC, view).period;
+            assert!(!period.has_older);
+            assert_eq!(period.total_seconds, 0);
+            assert!(period.books.is_empty());
+        }
+        fs::remove_dir_all(&root).unwrap();
     }
 
     fn fixture_root(label: &str) -> String {
@@ -1056,7 +1498,7 @@ mod tests {
     #[test]
     fn compute_snapshot_reports_unavailable_speed_without_history() {
         let root = fixture_root("empty-snapshot");
-        let snapshot = compute_snapshot(&root, 1_780_488_000, None, UTC);
+        let snapshot = compute_snapshot(&root, 1_780_488_000, None, UTC, WEEK);
         assert!(snapshot.available);
         assert_eq!(snapshot.today_seconds, 0);
         assert_eq!(snapshot.streak_days, 0);
@@ -1075,7 +1517,7 @@ mod tests {
             chapter_end_position: Some(400),
             book_end_position: Some(1_000),
         };
-        let snapshot = compute_snapshot(&root, now, Some(progress), UTC);
+        let snapshot = compute_snapshot(&root, now, Some(progress), UTC, WEEK);
         assert_eq!(snapshot.chars_per_minute, Some(120));
         assert_eq!(snapshot.remaining_chapter_seconds, Some(100));
         assert_eq!(snapshot.remaining_book_seconds, Some(400));
@@ -1083,48 +1525,13 @@ mod tests {
     }
 
     #[test]
-    fn last_7_days_bars_places_today_last_and_fills_gaps_with_zero() {
-        let now = 1_780_488_000_u64; // 2026-06-03, some weekday.
-        let today = utc_day(now);
-        let two_days_ago = utc_day(now - 2 * 86_400);
-        let daily = vec![
-            DailyStats {
-                date: today,
-                total_seconds: 600,
-                sessions: 1,
-                chars_read: 100,
-            },
-            DailyStats {
-                date: two_days_ago,
-                total_seconds: 300,
-                sessions: 1,
-                chars_read: 50,
-            },
-        ];
-        let bars = last_7_days_bars(&daily, now, UTC);
-        assert_eq!(bars[6].total_seconds, 600, "today must be the last entry");
-        assert_eq!(
-            bars[4].total_seconds, 300,
-            "two days ago is index 4 (6 - 2)"
-        );
-        assert_eq!(
-            bars[0].total_seconds, 0,
-            "days with no log entry read as zero"
-        );
-        // Weekday advances by exactly one each entry (no calendar skips).
-        for pair in bars.windows(2) {
-            assert_eq!((pair[0].weekday + 1) % 7, pair[1].weekday);
-        }
-    }
-
-    #[test]
-    fn top_books_this_month_sums_per_book_and_orders_by_time_descending() {
+    fn top_books_sums_per_book_and_orders_by_time_descending() {
         let sessions = vec![
             session(1, 0, 100, 0, 50),
             session(2, 200, 500, 0, 50),
             session(1, 600, 750, 50, 100),
         ];
-        let top = top_books_this_month(&sessions);
+        let top = top_books(&sessions);
         assert_eq!(top.len(), 2);
         assert_eq!(
             top[0].book_id, 2,
@@ -1136,14 +1543,11 @@ mod tests {
     }
 
     #[test]
-    fn top_books_this_month_is_bounded_to_the_display_limit() {
+    fn top_books_is_bounded_to_the_display_limit() {
         let sessions: Vec<ReadingSession> = (0..10)
             .map(|book_id| session(book_id, 0, 100, 0, 10))
             .collect();
-        assert_eq!(
-            top_books_this_month(&sessions).len(),
-            super::BOOKS_THIS_MONTH_LIMIT
-        );
+        assert_eq!(top_books(&sessions).len(), super::PERIOD_BOOKS_LIMIT);
     }
 
     #[test]

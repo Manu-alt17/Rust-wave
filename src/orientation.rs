@@ -278,6 +278,13 @@ impl<'a> OrientedFrameBuffer<'a> {
         }
     }
 
+    /// Replace the whole panel with a frame already in native panel order,
+    /// such as a sleep wallpaper. Orientation-independent: nothing is
+    /// turned, the frame is shown as the panel would show it by itself.
+    pub fn copy_native_frame(&mut self, source: &FrameBuffer) {
+        self.frame.copy_from(source);
+    }
+
     /// Swap black and white across the whole panel. Orientation-independent,
     /// so it runs straight on the packed bytes.
     pub fn invert_all(&mut self) {
