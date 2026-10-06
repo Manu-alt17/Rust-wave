@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.0-beta.5 — A fixed wallpaper, statistics by period, the keys drawn
 
 Hotspot (the device's own network, when no Wi-Fi is in reach):
 
@@ -15,7 +15,6 @@ Standby:
 - **Schermata di standby** has a fourth choice, **Fissa**: always the same wallpaper, where there were only the rotation (in order or at random) and the book's cover. It is the image named in `RUSTMIX/SLEEPIDX.TXT`, the file that already remembered the last one shown, so with no choice made the wallpaper standby stopped on is the one that stays; one deleted from the card is replaced by the first in name order. `sleep_screen=fixed` in `DISPLAY.TXT`; older firmware does not know the value and starts with the default display settings.
 - **Sfondo fisso**, a new row in Settings → Schermo, chooses it on the device. The wallpapers are shown one at a time over the whole panel, as standby will show them (their names, `SLEEP003.BMP`, say nothing): the rocker moves through them, SELECT keeps the one on screen and sets the sleep screen to **Fissa**, BOOT leaves without choosing. Each different wallpaper gets a fast global refresh, like an EPUB cover, so the previous one does not show through it. One file is read per step and nothing stays in memory once the screen is left.
 - The Wi-Fi page sets the whole sleep screen, since that is where wallpapers are made and loaded: **In standby mostra** offers the same four choices as Settings → Schermo (one after the other, at random, always the same one, the book's cover), and under **Sfondi sul dispositivo** each wallpaper has **Usa come fisso**, the one kept being marked **Sfondo fisso**. `POST /api/sleep?mode=…[&name=…]` only records the request; the main loop, which owns the display settings, carries it out and saves `DISPLAY.TXT`. `/api/status` tells the page `sleep: {mode, fixed}`.
-
 - With no wallpaper on the card, standby drew an empty frame: a border and a small rectangle, which said nothing about what belongs there. It now shows **Nessuno sfondo** and the four steps to add one from the phone (Power, Home → Carica → Wi-Fi, the QR code, **Sfondi** on the page), in the device's language and interface text size, and names the book's cover as the other choice, unless that is the one already chosen (`src/sleep_tutorial.rs`).
 
 Statistics:
