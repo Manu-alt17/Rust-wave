@@ -50,10 +50,20 @@ fn read_at(file: &mut File, offset: u64, buffer: &mut [u8]) -> Result<usize, Str
         .map_err(|error| format!("EPUB cache read failed: {error}"))
 }
 
-/// Maximum EPUB archive bytes accepted from removable storage.
-pub const EPUB_ARCHIVE_BYTES_LIMIT: usize = 16 * 1024 * 1024;
+/// Maximum EPUB archive bytes accepted from removable storage: the most a
+/// ZIP without ZIP64 records can address (its offsets are 32-bit), and also
+/// the largest file FAT32 holds. The archive's size costs no memory by
+/// itself: past [`ZIP_IN_MEMORY_LIMIT`] only the central directory and one
+/// member at a time are read. The former 16 MiB ceiling refused illustrated
+/// books that open fine.
+pub const EPUB_ARCHIVE_BYTES_LIMIT: usize = u32::MAX as usize;
 /// Maximum central-directory records accepted from one EPUB.
 pub const EPUB_ARCHIVE_ENTRY_LIMIT: usize = 4096;
+/// Maximum central-directory bytes read from one EPUB, the one allocation
+/// sized by a field of the archive rather than by the limits above:
+/// [`EPUB_ARCHIVE_ENTRY_LIMIT`] records with 200-byte names still fit, and
+/// a damaged end record claiming more is refused instead of allocated.
+pub const EPUB_CENTRAL_DIRECTORY_LIMIT: usize = 1024 * 1024;
 /// Maximum compressed bytes extracted for one EPUB member.
 pub const EPUB_MEMBER_COMPRESSED_LIMIT: usize = 2 * 1024 * 1024;
 /// Maximum decompressed bytes extracted for one EPUB member.
@@ -435,19 +445,7 @@ impl ZipArchive {
         let tail_len = archive_len.min(65_557);
         let tail_start = archive_len - tail_len;
         let tail = storage.range(tail_start, tail_len)?;
-        let eocd = find_eocd(&tail).ok_or_else(|| "EPUB ZIP end record missing".to_string())?;
-        let entry_count = read_u16(&tail, eocd + 10)? as usize;
-        let central_size = read_u32(&tail, eocd + 12)? as usize;
-        let central_offset = read_u32(&tail, eocd + 16)? as usize;
-        if entry_count > EPUB_ARCHIVE_ENTRY_LIMIT {
-            return Err(format!("EPUB ZIP has too many entries: {entry_count}"));
-        }
-        let central_end = central_offset
-            .checked_add(central_size)
-            .ok_or_else(|| "EPUB ZIP directory overflow".to_string())?;
-        if central_end > archive_len {
-            return Err("EPUB ZIP directory exceeds archive".into());
-        }
+        let (entry_count, central_offset, central_size) = central_directory(&tail, archive_len)?;
         let directory = if central_offset >= tail_start {
             let start = central_offset - tail_start;
             Cow::Owned(tail[start..start + central_size].to_vec())
@@ -519,6 +517,31 @@ impl ZipArchive {
         check_entry_limits(entry)?;
         inflate_entry(entry, &self.compressed_bytes(entry, None)?)
     }
+}
+
+/// `(entry_count, offset, size)` of the central directory, from the end
+/// record in `tail` (the last bytes of an `archive_len`-byte archive),
+/// checked against the limits before anything is allocated to read it.
+fn central_directory(tail: &[u8], archive_len: usize) -> Result<(usize, usize, usize), String> {
+    let eocd = find_eocd(tail).ok_or_else(|| "EPUB ZIP end record missing".to_string())?;
+    let entry_count = read_u16(tail, eocd + 10)? as usize;
+    let central_size = read_u32(tail, eocd + 12)? as usize;
+    let central_offset = read_u32(tail, eocd + 16)? as usize;
+    if entry_count > EPUB_ARCHIVE_ENTRY_LIMIT {
+        return Err(format!("EPUB ZIP has too many entries: {entry_count}"));
+    }
+    if central_size > EPUB_CENTRAL_DIRECTORY_LIMIT {
+        return Err(format!(
+            "EPUB ZIP directory exceeds {EPUB_CENTRAL_DIRECTORY_LIMIT} byte limit"
+        ));
+    }
+    if central_offset
+        .checked_add(central_size)
+        .map_or(true, |end| end > archive_len)
+    {
+        return Err("EPUB ZIP directory exceeds archive".into());
+    }
+    Ok((entry_count, central_offset, central_size))
 }
 
 /// Parse `entry_count` central-directory records from `bytes[start..central_end]`.
@@ -892,19 +915,7 @@ pub fn extract_member(path: impl AsRef<Path>, href: &str) -> Result<Vec<u8>, Str
     let tail_len = file_len.min(65_557);
     let tail_start = file_len - tail_len;
     let tail = read_file_range(&mut file, tail_start, tail_len)?;
-    let eocd = find_eocd(&tail).ok_or_else(|| "EPUB ZIP end record missing".to_string())?;
-    let entry_count = read_u16(&tail, eocd + 10)? as usize;
-    let central_size = read_u32(&tail, eocd + 12)? as usize;
-    let central_offset = read_u32(&tail, eocd + 16)? as usize;
-    if entry_count > EPUB_ARCHIVE_ENTRY_LIMIT {
-        return Err(format!("EPUB ZIP has too many entries: {entry_count}"));
-    }
-    if central_offset
-        .checked_add(central_size)
-        .map_or(true, |end| end > file_len)
-    {
-        return Err("EPUB ZIP directory exceeds archive".into());
-    }
+    let (entry_count, central_offset, central_size) = central_directory(&tail, file_len)?;
     let directory = if central_offset >= tail_start {
         let start = central_offset - tail_start;
         tail[start..start + central_size].to_vec()
@@ -1033,6 +1044,15 @@ pub fn open_epub(path: impl AsRef<Path>) -> Result<EpubDocument, String> {
         let (chapter, flattened_images) = html_to_text_with_images(&xhtml, &member_dir);
         if chapter.trim().is_empty() {
             continue;
+        }
+        // The text is the allocation that grows with the book, and a failed
+        // allocation aborts the firmware: a book whose text does not fit is
+        // refused with a message instead, after one more try at the exact
+        // size rather than the doubled one.
+        let needed = chapter.trim().len() + 2;
+        if text.try_reserve(needed).is_err() {
+            text.try_reserve_exact(needed)
+                .map_err(|_| "Not enough memory for the text of this book".to_string())?;
         }
         if !text.is_empty() {
             text.push_str("\n\n");
@@ -1886,8 +1906,9 @@ mod tests {
     use super::{
         attribute, extract_cover, extract_cover_on_worker, extract_member, first_open_tag,
         html_to_text, html_to_text_with_images, image_header_size, open_epub, open_epub_on_worker,
-        read_epub_title_on_worker, EPUB_IMAGE_LIMIT, EPUB_IMAGE_SENTINEL,
-        EPUB_PARSER_WORKER_STACK_BYTES, EPUB_REFLOW_TEXT_LIMIT, EPUB_TITLE_WORKER_STACK_BYTES,
+        read_epub_title_on_worker, EPUB_CENTRAL_DIRECTORY_LIMIT, EPUB_IMAGE_LIMIT,
+        EPUB_IMAGE_SENTINEL, EPUB_PARSER_WORKER_STACK_BYTES, EPUB_REFLOW_TEXT_LIMIT,
+        EPUB_TITLE_WORKER_STACK_BYTES,
     };
 
     fn temp_epub(name: &str) -> PathBuf {
@@ -2312,6 +2333,59 @@ mod tests {
             b"<html><body><p>Text</p></body></html>"
         );
         assert!(extract_member(&path, "OEBPS/missing.png").is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    /// An illustrated book is large because of its images: past the former
+    /// 16 MiB ceiling it opens, lists its title and shows its images like any
+    /// other, since only the central directory and one member at a time are
+    /// read.
+    #[test]
+    fn opens_a_book_larger_than_sixteen_mebibytes() {
+        let path = temp_epub("over-16-mib");
+        let plate = "x".repeat(17 * 1024 * 1024);
+        let bytes = stored_zip(&[
+            ("META-INF/container.xml", "<container><rootfiles><rootfile full-path='OEBPS/book.opf'/></rootfiles></container>"),
+            ("OEBPS/book.opf", "<package><metadata><dc:title>Big Book</dc:title></metadata><manifest><item id='c1' href='c1.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='c1'/></spine></package>"),
+            ("OEBPS/images/plate.bin", &plate),
+            ("OEBPS/images/fig1.jpg", "not really a jpeg"),
+            ("OEBPS/c1.xhtml", "<html><body><p>Text</p></body></html>"),
+        ]);
+        assert!(bytes.len() > 16 * 1024 * 1024);
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(open_epub(&path).unwrap().title, "Big Book");
+        assert_eq!(read_epub_title_on_worker(&path).unwrap(), "Big Book");
+        assert_eq!(
+            extract_member(&path, "OEBPS/images/fig1.jpg").unwrap(),
+            b"not really a jpeg"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    /// A damaged end record claiming a huge central directory is refused
+    /// before a buffer that size is allocated.
+    #[test]
+    fn refuses_a_central_directory_past_its_limit() {
+        let path = temp_epub("huge-directory");
+        let padding = "x".repeat(EPUB_CENTRAL_DIRECTORY_LIMIT + 1024);
+        let mut bytes = stored_zip(&[
+            ("META-INF/container.xml", "<container/>"),
+            ("OEBPS/padding.bin", &padding),
+        ]);
+        // The end record now says the whole archive before it is directory.
+        let eocd = bytes.len() - 22;
+        bytes[eocd + 12..eocd + 16].copy_from_slice(&(eocd as u32).to_le_bytes());
+        bytes[eocd + 16..eocd + 20].copy_from_slice(&0_u32.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+        for error in [
+            open_epub(&path).unwrap_err(),
+            extract_member(&path, "OEBPS/padding.bin").unwrap_err(),
+        ] {
+            assert!(
+                error.contains("directory exceeds") && error.contains("byte limit"),
+                "{error}"
+            );
+        }
         let _ = fs::remove_file(path);
     }
 

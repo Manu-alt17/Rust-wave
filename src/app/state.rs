@@ -25,7 +25,7 @@ use crate::{
 use super::{
     audiobooks::AudiobookUiState,
     display::{DisplayPreferences, SleepScreenMode},
-    menu::{category_index, home_entries, CategoryUsage, CATEGORY_COUNT, MAIN_CATEGORY_COUNT},
+    menu::{category_entries, category_index, home_entries, CATEGORY_COUNT, MAIN_CATEGORY_COUNT},
     router::{ScreenRoute, ScreenRouter},
     setup::{SetupOutcome, SetupUiState},
     sleep_picker::SleepPickerState,
@@ -69,9 +69,6 @@ pub enum SettingsResetStage {
 pub struct AppState {
     pub home_selected: usize,
     category_selected: [usize; CATEGORY_COUNT],
-    /// Recently-opened Settings entries shown under "Most used";
-    /// persisted by the runtime owner in main.rs whenever it changes.
-    pub category_usage: CategoryUsage,
     pub display_action_selected: usize,
     /// Display's chooser of the fixed sleep wallpaper; the runtime owner in
     /// main.rs feeds it from the card.
@@ -215,7 +212,6 @@ impl Default for AppState {
             // whichever tile happens to sit at index 0.
             home_selected: MAIN_CATEGORY_COUNT - 1,
             category_selected: [0; CATEGORY_COUNT],
-            category_usage: CategoryUsage::default(),
             display_action_selected: 0,
             sleep_picker: SleepPickerState::default(),
             display: DisplayPreferences::default(),
@@ -364,10 +360,9 @@ impl AppState {
         } else if route == ScreenRoute::ReadingStats {
             self.apply_reading_stats(event);
         } else if route == ScreenRoute::UsbDisk {
-            if event == ButtonEvent::Select && self.usb_disk == UsbDiskPhase::Idle {
-                self.note_select_press();
-                self.usb_disk_request = true;
-            }
+            // Disk mode starts as the screen opens (`open_usb_disk`), and
+            // from then on the runtime owner handles every key. Only BOOT,
+            // with no card to hand over, reaches this screen: see `back`.
         } else if route == ScreenRoute::Setup {
             self.apply_setup(event);
         } else if route == ScreenRoute::CardWarning {
@@ -650,10 +645,19 @@ impl AppState {
                     self.wifi_transfer_return_route = ScreenRoute::Upload;
                     self.router.navigate_to(ScreenRoute::WifiTransfer);
                 } else {
-                    self.router.navigate_to(ScreenRoute::UsbDisk);
+                    self.open_usb_disk();
                 }
             }
         }
+    }
+
+    /// "USB cable" in Upload, or "Connect to PC" in the first-run pages:
+    /// disk mode starts with this same SELECT, not a second one on the
+    /// screen that opens.
+    fn open_usb_disk(&mut self) {
+        self.usb_disk = UsbDiskPhase::Idle;
+        self.usb_disk_request = true;
+        self.router.navigate_to(ScreenRoute::UsbDisk);
     }
 
     /// Resume the saved book directly instead of routing through the old
@@ -758,7 +762,7 @@ impl AppState {
             }
             SetupOutcome::OpenUsbDisk => {
                 self.library_known_empty = false;
-                self.router.navigate_to(ScreenRoute::UsbDisk);
+                self.open_usb_disk();
             }
             SetupOutcome::Finished => {
                 self.router.navigate_to(ScreenRoute::Home);
@@ -788,7 +792,7 @@ impl AppState {
     }
 
     fn apply_category(&mut self, route: ScreenRoute, event: ButtonEvent) {
-        let entries = self.category_usage.ordered_entries(route);
+        let entries = category_entries(route);
         match event {
             ButtonEvent::Up => {
                 let selected = self.category_selection_mut(route);
@@ -801,11 +805,6 @@ impl AppState {
             ButtonEvent::Select => {
                 let target = entries[self.category_selection(route)].route;
                 self.note_select_press();
-                // The opened entry moves to the front of "Most used", so keep
-                // the cursor on it for when BOOT brings the user back here.
-                if self.category_usage.record(route, target) {
-                    *self.category_selection_mut(route) = 0;
-                }
                 if target == ScreenRoute::Audio {
                     self.audio_action_selected = 0;
                 }
@@ -988,7 +987,7 @@ impl AppState {
         core::mem::take(&mut self.network_retry_request)
     }
 
-    /// SELECT on "Connect to PC" asks the runtime to start disk mode.
+    /// Choosing "Connect to PC" asks the runtime to start disk mode.
     pub fn take_usb_disk_request(&mut self) -> bool {
         std::mem::take(&mut self.usb_disk_request)
     }
@@ -1342,12 +1341,10 @@ impl AppState {
     }
 
     /// Back to the values of a first start: text size, standby and sleep
-    /// screen, the "most used" settings and the update channel. Language,
-    /// clock, Wi-Fi networks, books and reading preferences are the user's
-    /// own and stay.
+    /// screen and the update channel. Language, clock, Wi-Fi networks, books
+    /// and reading preferences are the user's own and stay.
     fn restore_default_settings(&mut self) {
         self.display = DisplayPreferences::default();
-        self.category_usage = CategoryUsage::default();
         let channel = UpdateChannel::of_version(FIRMWARE_VERSION);
         if self.ota_channel != channel {
             self.ota_channel = channel;
@@ -1779,7 +1776,10 @@ mod tests {
         DISPLAY_FIXED_WALLPAPER_ROW,
     };
     use crate::{
-        app::{menu::home_entries, router::ScreenRoute},
+        app::{
+            menu::{category_entries, home_entries},
+            router::ScreenRoute,
+        },
         buttons::ButtonEvent,
         reader::{
             BookFormat, ReaderBook, ReaderCachedPage, ReaderDictionaryMode, ReaderPageLine,
@@ -1915,13 +1915,24 @@ mod tests {
     }
 
     #[test]
-    fn home_file_browser_returns_home() {
+    fn the_file_browser_opens_from_settings_and_goes_back_there() {
         let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Files);
+        state.home_selected = home_index(ScreenRoute::Settings);
+        state.apply(ButtonEvent::Select);
+        assert_eq!(state.active_route(), ScreenRoute::Settings);
+        let index = category_entries(ScreenRoute::Settings)
+            .iter()
+            .position(|entry| entry.route == ScreenRoute::Files)
+            .expect("Files is a Settings tile");
+        for _ in 0..index {
+            state.apply(ButtonEvent::Down);
+        }
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::Files);
         state.router.back();
-        assert_eq!(state.active_route(), ScreenRoute::Home);
+        assert_eq!(state.active_route(), ScreenRoute::Settings);
+        // Opening an entry never reorders Settings: the cursor is still on it.
+        assert_eq!(state.category_selection(ScreenRoute::Settings), index);
     }
 
     #[test]
@@ -2603,14 +2614,15 @@ mod tests {
             Some(crate::wifi_transfer::WifiTransferUiRequest::Stop)
         );
 
-        // USB cable: the "Connect to PC" screen, which asks for its own
-        // SELECT before the card is handed to the computer.
+        // USB cable: this same SELECT starts disk mode, no second one.
         state.apply(ButtonEvent::Down);
         assert_eq!(state.upload_selected, 1);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::UsbDisk);
-        assert!(!state.take_usb_disk_request());
+        assert!(state.take_usb_disk_request());
         assert_eq!(state.take_wifi_transfer_request(), None);
+        // Without a card nothing is handed over, and BOOT comes back.
+        state.usb_disk = crate::usb_disk::UsbDiskPhase::NoCard;
         state.back();
         assert_eq!(state.active_route(), ScreenRoute::Upload);
         // The rocker wraps between the two.
@@ -3009,11 +3021,14 @@ mod tests {
         assert_eq!(state.active_route(), ScreenRoute::Setup);
         assert!(state.take_clock_set_time_request().is_some());
 
-        // "Connect to PC", left with BOOT before it starts.
+        // "Connect to PC" starts at once; without a card, BOOT goes back to
+        // the first-run pages.
         let mut state = first_run_at(SetupPage::Book);
         state.apply(ButtonEvent::Down);
         state.apply(ButtonEvent::Select);
         assert_eq!(state.active_route(), ScreenRoute::UsbDisk);
+        assert!(state.take_usb_disk_request());
+        state.usb_disk = crate::usb_disk::UsbDiskPhase::NoCard;
         assert_eq!(
             state.setup.take_progress(),
             Some(crate::first_run::SetupProgress::Page(
@@ -3049,9 +3064,7 @@ mod tests {
 
         let mut state = AppState::default();
         state.router.navigate_to(ScreenRoute::Settings);
-        let index = state
-            .category_usage
-            .ordered_entries(ScreenRoute::Settings)
+        let index = category_entries(ScreenRoute::Settings)
             .iter()
             .position(|entry| entry.route == ScreenRoute::Setup)
             .expect("First steps is a Settings tile");

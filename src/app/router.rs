@@ -237,7 +237,7 @@ impl ScreenRoute {
             Self::ReaderOptions => Some(Self::ReaderPage),
             Self::ReaderPreferences => Some(Self::ReaderOptions),
             Self::ReaderToc | Self::ReaderGoTo => Some(Self::ReaderOptions),
-            Self::Files | Self::Upload => Some(Self::Home),
+            Self::Upload => Some(Self::Home),
             Self::PowerKeyMenu | Self::CardWarning => Some(Self::Home),
             // BOOT inside the pages is theirs (see `AppState::back`); this
             // is only where they sit in the hierarchy.
@@ -246,6 +246,7 @@ impl ScreenRoute {
             | Self::Clock
             | Self::Display
             | Self::Language
+            | Self::Files
             | Self::DeviceInfo
             | Self::OtaUpdate
             | Self::Network => Some(Self::Settings),
@@ -308,7 +309,7 @@ mod tests {
 
     #[test]
     fn router_exposes_static_parent_hierarchy() {
-        assert_eq!(ScreenRoute::Files.parent(), Some(ScreenRoute::Home));
+        assert_eq!(ScreenRoute::Files.parent(), Some(ScreenRoute::Settings));
         assert_eq!(ScreenRoute::Display.parent(), Some(ScreenRoute::Settings));
         assert_eq!(
             ScreenRoute::SleepPicker.parent(),

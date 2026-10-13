@@ -49,8 +49,7 @@ The **Continua** (Continue reading) card at the top shows the book being read: i
 | Audiolibri (Audiobooks) | Your audiobooks |
 | Stats (Statistics) | Reading statistics |
 | Carica (Upload) | Copy files onto the card: over Wi-Fi from a browser, or with the USB cable |
-| File (Files) | microSD browser |
-| Opzioni (Settings) | Device settings |
+| Opzioni (Settings) | Device settings, and the microSD browser |
 
 ## 2. Library
 
@@ -157,7 +156,7 @@ Without a Wi-Fi network, the device opens its own hotspot and shows a QR code: j
 
 <img src="../screenshots/rendered-files.png" width="360" alt="Files">
 
-A browser of the whole microSD, with a preview of text files. SELECT opens a folder or previews a file; BOOT closes the preview or goes up one folder, and from the top folder back to Home. Hold SELECT on a file to delete it: the row asks **eliminare?** and a second SELECT deletes, while BOOT or the rocker cancel. Folders cannot be deleted from here.
+A browser of the whole microSD, with a preview of text files, opened from Opzioni → **File**. SELECT opens a folder or previews a file; BOOT closes the preview or goes up one folder, and from the top folder back to Settings. Hold SELECT on a file to delete it: the row asks **eliminare?** and a second SELECT deletes, while BOOT or the rocker cancel. Folders cannot be deleted from here, and neither can the files the device keeps its own state in: the `.TXT` files directly in `RUSTMIX` and in `RUSTMIX/READER` (Wi-Fi networks, clock, display, update channel, reading positions, bookmarks...) and the statistics in `RUSTMIX/STATS`. Holding SELECT on one of them says so instead.
 
 ## 8. Settings
 
@@ -171,8 +170,11 @@ A browser of the whole microSD, with a preview of text files. SELECT opens a fol
 | Orologio (Clock) | Date, time and time zone (Europe/Rome by default, New York, UTC). The editor goes through time zone, day, month, year, hour and minute; BOOT steps back one field |
 | Schermo (Display) | Interface text size, sleep screen, fixed wallpaper, automatic standby |
 | Lingua (Language) | Italiano, English |
+| File (Files) | The microSD browser (section 7) |
 | Info | Firmware version, board and memory state; **Ripristina impostazioni** (Restore settings) |
 | Primi passi (First steps) | The first-start pages, to go through again |
+
+The tiles are always in this order, whichever were opened last.
 
 The sleep screen is what stays on the glass during standby: the images in `RUSTMIX/SLEEP` in turn (**In sequenza**, the default) or at random (**Casuale**), always the same one (**Fissa**), or the cover of the book being read (**Copertina**). **Sfondo fisso** (Fixed wallpaper) chooses which one stays: the wallpapers are shown one at a time over the whole screen, as standby will show them, Up and Down move through them and SELECT keeps the one on screen, which also sets the sleep screen to **Fissa**. Without a choice, **Fissa** keeps the last one shown. The same choice can be made from the Wi-Fi page. With no wallpaper on the card, standby shows the four steps to add one from the phone instead of an empty screen. Automatic standby comes after 5, 10 (default), 15, 30 or 60 minutes without input, or never.
 
@@ -182,19 +184,19 @@ Update shows the installed version and the channel. **Stabile** follows the late
 
 While an update downloads, the screen shows a bar with the percentage and the megabytes received, redrawn every 10%.
 
-**Ripristina impostazioni**, on Info, puts the interface text size, the automatic standby, the sleep screen, the "most used" settings and the update channel back to their first values, after a second SELECT to confirm. The language, the clock, the Wi-Fi networks, the books and the reading preferences are not touched.
+**Ripristina impostazioni**, on Info, puts the interface text size, the automatic standby, the sleep screen and the update channel back to their first values, after a second SELECT to confirm. The language, the clock, the Wi-Fi networks, the books and the reading preferences are not touched.
 
-Update also shows the bootloader the device has (ESP-IDF version and build date). When the firmware is up to date and the release carries a different bootloader, the screen offers it: SELECT downloads and checks it, writing nothing; a second SELECT writes it, then the device restarts. The write needs the battery at 50% or the USB cable, and takes under a second: do not switch the device off meanwhile, because a bootloader cut halfway can only be fixed by reflashing over USB.
+Update also shows the bootloader the device has (ESP-IDF version and build date). When the firmware is up to date and the newest release with a bootloader (on the channel in use, even if later releases came without one) carries a different bootloader, the screen offers it: SELECT downloads and checks it, writing nothing; a second SELECT writes it, then the device restarts. The write needs the battery at 50% or the USB cable, and takes under a second: do not switch the device off meanwhile, because a bootloader cut halfway can only be fixed by reflashing over USB.
 
 ## 9. Connect to PC
 
 <img src="../screenshots/rendered-usb-disk.png" width="360" alt="Connect to PC">
 
-Reached from Home → Carica → Cavo USB. Connect the board to a computer with the USB cable and press SELECT: the microSD appears on the computer as a USB disk, to copy books into `RUSTMIX/BOOKS` and audiobooks into `RUSTMIX/AUDIO`. Meanwhile the device is not usable, and the serial port is gone.
+Home → Carica → **Cavo USB** starts it with that same SELECT. Connect the board to a computer with the USB cable: the microSD appears on the computer as a USB disk, to copy books into `RUSTMIX/BOOKS` and audiobooks into `RUSTMIX/AUDIO`. Meanwhile the device is not usable, and the serial port is gone. Without a readable card nothing is handed over: the screen says so and BOOT goes back.
 
 <img src="../screenshots/rendered-usb-disk-active.png" width="360" alt="Connected to PC">
 
-When done, eject the disk on the computer, then press a key on the device (not BOOT): it restarts and finds the new files. The firmware never formats the card, not even when the computer is unplugged without ejecting.
+When done, eject the disk on the computer, then press any key on the device, BOOT included: it restarts and finds the new files. The firmware never formats the card, not even when the computer is unplugged without ejecting.
 
 ## 10. Standby and power
 

@@ -31,7 +31,6 @@ mod firmware {
     use waveshare_epd397_rust_app::{
         app::{
             display::{DisplayPreferences, SleepScreenMode, DISPLAY_CONFIG_PATH},
-            menu::{CategoryUsage, MENU_USAGE_CONFIG_PATH},
             render_current_screen,
             screens::reader::library_visible_books,
             AppState, ScreenRoute, AUTO_DEEP_SLEEP_ENABLED, CHARGING_STATUS_POLL_SECONDS,
@@ -95,7 +94,7 @@ mod firmware {
             book_id_for, compute_snapshot, resolve_unix_timestamp, ReadingStatsSnapshot,
             ReadingStatsTracker, STATS_DIRECTORY,
         },
-        regional::{Locale, RegionalPreferences, CLOCK_CONFIG_PATH},
+        regional::{RegionalPreferences, CLOCK_CONFIG_PATH},
         runtime_memory::{debug_runtime_memory, log_runtime_memory},
         sd_log,
         shared_i2c::SharedI2cBus,
@@ -789,10 +788,6 @@ mod firmware {
             "rustmix-wave=bootloader installed={}",
             state.installed_bootloader.as_deref().unwrap_or("unknown")
         );
-        // A missing file (first boot) just keeps the default history.
-        if let Ok(usage) = CategoryUsage::load_from_path(MENU_USAGE_CONFIG_PATH) {
-            state.category_usage = usage;
-        }
         // The volume last chosen: the codec starts at it, and the Audio
         // screen shows it before audio is first used.
         state.audio.volume_percent = load_saved_volume(std::path::Path::new(AUDIO_VOLUME_PATH));
@@ -2603,7 +2598,11 @@ mod firmware {
                             && storage_browser.request_delete();
                         if files_delete_context {
                             state.update_storage_snapshot(storage_browser.snapshot());
-                            info!("rustmix-wave=storage-delete status=awaiting-confirmation");
+                            if state.storage.pending_delete.is_some() {
+                                info!("rustmix-wave=storage-delete status=awaiting-confirmation");
+                            } else {
+                                info!("rustmix-wave=storage-delete status=refused-protected");
+                            }
                         }
                         if reader_dictionary_context
                             || network_saved_context
@@ -2682,7 +2681,6 @@ mod firmware {
                         let previous_route = state.active_route();
                         let previous_display = state.display;
                         let previous_ota_channel = state.ota_channel;
-                        let previous_category_usage = state.category_usage.clone();
                         let previous_regional = state.regional;
                         if previous_route == ScreenRoute::Files {
                             apply_storage_event(&mut storage_browser, &mut state, event);
@@ -2747,14 +2745,16 @@ mod firmware {
                             // One way: this ends in a restart.
                             if state.take_usb_disk_request() {
                                 if mounted_sd.is_none() {
-                                    state.usb_disk = UsbDiskPhase::Failed(
-                                        match state.regional.locale {
-                                            Locale::English => "The microSD card is not readable.",
-                                            Locale::Italian => "La microSD non è leggibile.",
-                                        }
-                                        .into(),
-                                    );
+                                    // Nothing to hand over and nothing
+                                    // changed: the screen says so, and BOOT
+                                    // goes back.
+                                    warn!("rustmix-wave=usb-disk status=no-card");
+                                    state.usb_disk = UsbDiskPhase::NoCard;
                                 } else {
+                                    // What is still only in memory is saved
+                                    // first, as before a restart.
+                                    reading_stats_tracker.close_session(STATS_DIRECTORY);
+                                    state.reader.flush_pending_persist();
                                     if let Some(engine) = audio_engine.as_ref() {
                                         engine.send(AudioCommand::Player(PlayerCommand::Stop));
                                         engine.suspend();
@@ -2776,15 +2776,13 @@ mod firmware {
                                     drop(mounted_sd.take());
                                     info!("rustmix-wave=usb-disk status=sd-unmounted");
                                     state.usb_disk = UsbDiskPhase::Active;
-                                }
-                                refresh_screen(
-                                    &mut panel,
-                                    &mut frame,
-                                    &mut state,
-                                    &mut panel_refresh,
-                                    RefreshRequest::Normal,
-                                )?;
-                                if state.usb_disk == UsbDiskPhase::Active {
+                                    refresh_screen(
+                                        &mut panel,
+                                        &mut frame,
+                                        &mut state,
+                                        &mut panel_refresh,
+                                        RefreshRequest::Normal,
+                                    )?;
                                     if let Err(error) = usb_disk::espidf::start(USB_DISK_SD_PINS) {
                                         warn!("rustmix-wave=usb-disk status=start-failed error={error}");
                                         state.usb_disk = UsbDiskPhase::Failed(error);
@@ -2796,8 +2794,10 @@ mod firmware {
                                             RefreshRequest::Normal,
                                         )?;
                                     }
+                                    // The card is unmounted either way:
+                                    // only a restart mounts it again.
+                                    wait_for_usb_disk_exit(&input_queue);
                                 }
-                                wait_for_usb_disk_exit(&input_queue);
                             }
                         }
                         // Consume Settings > Network transfer start/stop intents before
@@ -2855,15 +2855,6 @@ mod firmware {
                                 Err(error) => warn!(
                                     "rustmix-wave=update-channel-write status=failed path={UPDATE_CONFIG_PATH} error={error:#}"
                                 ),
-                            }
-                        }
-                        if state.category_usage != previous_category_usage {
-                            if let Err(error) =
-                                state.category_usage.save_to_path(MENU_USAGE_CONFIG_PATH)
-                            {
-                                warn!(
-                                    "rustmix-wave=menu-usage-write status=failed path={MENU_USAGE_CONFIG_PATH} error={error:#}"
-                                );
                             }
                         }
                         if state.regional != previous_regional {
@@ -4218,18 +4209,21 @@ mod firmware {
     }
 
     /// Disk mode's only loop: nothing else runs while the PC owns the card.
-    /// Any key but BOOT restarts the device -- GPIO0 is a strapping pin, and
-    /// a restart with it held down would enter download mode. Presses queued
-    /// before disk mode began are dropped, so only a fresh one ends it.
+    /// Any key restarts the device, BOOT too: GPIO0 is a strapping pin, and
+    /// a restart with it held down would enter download mode, but its event
+    /// arrives only once the key is up again (see `BootBackButton::poll`).
+    /// Presses queued before disk mode began are dropped, so only a fresh
+    /// one ends it.
     fn wait_for_usb_disk_exit(input_queue: &InputEventQueue) -> ! {
         while input_queue.pop().is_some() {}
         loop {
             input_queue.wait_timeout(Duration::from_millis(500));
-            while let Some(event) = input_queue.pop() {
-                if !matches!(event, InputEvent::Back) {
-                    info!("rustmix-wave=usb-disk status=restarting");
-                    usb_disk::espidf::restart();
-                }
+            if let Some(event) = input_queue.pop() {
+                info!(
+                    "rustmix-wave=usb-disk status=restarting key={}",
+                    event.marker()
+                );
+                usb_disk::espidf::restart();
             }
         }
     }

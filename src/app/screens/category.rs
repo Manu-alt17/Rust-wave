@@ -12,7 +12,7 @@ use embedded_graphics::{
 use crate::{
     app::{
         i18n::t,
-        menu::MenuEntry,
+        menu::category_entries,
         router::ScreenRoute,
         state::AppState,
         typography::{Text, UiTextRole, UiTextStyle},
@@ -384,219 +384,46 @@ const TILE_GRID_TOP: i32 = 46;
 const TILE_GRID_BOTTOM: i32 = 736;
 /// Tiles per row.
 const TILE_GRID_COLUMNS: usize = 3;
-/// Gap between a section header's baseline and its underline.
-const TILE_GRID_HEADER_UNDERLINE_GAP: i32 = 3;
-/// Gap kept below a section header's underline before its first tile row.
-const TILE_GRID_HEADER_BELOW_GAP: i32 = 10;
 
-/// A vertical slice of the Settings grid's layout: either a section header
-/// or one row of up to [`TILE_GRID_COLUMNS`] tiles. `start`/`count` index
-/// into `category_entries(ScreenRoute::Settings)`.
-#[derive(Clone, Copy, Debug)]
-enum TileGridBlock {
-    Header { primary: bool },
-    Row { start: usize, count: usize },
-}
-
-/// Font-metric-dependent block heights, computed once per frame since line
-/// height varies with the user's chosen text size.
-struct TileGridMetrics {
-    header_height: i32,
-    row_height: i32,
-}
-
-fn tile_grid_metrics(state: &AppState) -> TileGridMetrics {
-    let heading_line = i32::from(state.display.heading_style().line_height());
-    TileGridMetrics {
-        header_height: heading_line
-            + TILE_GRID_HEADER_UNDERLINE_GAP
-            + 1
-            + TILE_GRID_HEADER_BELOW_GAP,
-        row_height: COMPACT_TILE_SIZE.height as i32 + TILE_GAP_Y,
-    }
-}
-
-fn tile_grid_block_height(block: &TileGridBlock, metrics: &TileGridMetrics) -> i32 {
-    match block {
-        TileGridBlock::Header { .. } => metrics.header_height,
-        TileGridBlock::Row { .. } => metrics.row_height,
-    }
-}
-
-/// Lays `entry_count` entries out as tile rows, optionally split into a
-/// "Most used" header + rows and an "Other" header + rows the way the
-/// Settings grid uses it (mirroring `screens::reader::library_blocks`'s
-/// Reading Now / Recent split). `primary_count == 0` means the category has
-/// no such split (nothing opened yet, say) — just one plain run of rows with
-/// no section captions at all.
-fn tile_grid_blocks(entry_count: usize, primary_count: usize) -> Vec<TileGridBlock> {
-    let mut blocks = Vec::new();
-    if primary_count == 0 {
-        push_tile_grid_rows(&mut blocks, 0, entry_count);
-        return blocks;
-    }
-    blocks.push(TileGridBlock::Header { primary: true });
-    push_tile_grid_rows(&mut blocks, 0, primary_count);
-    if entry_count > primary_count {
-        blocks.push(TileGridBlock::Header { primary: false });
-        push_tile_grid_rows(&mut blocks, primary_count, entry_count);
-    }
-    blocks
-}
-
-fn push_tile_grid_rows(blocks: &mut Vec<TileGridBlock>, start: usize, end: usize) {
-    let mut index = start;
-    while index < end {
-        let count = (end - index).min(TILE_GRID_COLUMNS);
-        blocks.push(TileGridBlock::Row {
-            start: index,
-            count,
-        });
-        index += count;
-    }
-}
-
-/// Splits `blocks` into screen-height pages. Unlike the Library grid's book
-/// count (unbounded, so it needs a scrolling, selection-following window —
-/// see `screens::reader::library_window`), Settings has a fixed, small entry
-/// count, so a simple greedy pack into pages is enough: no scrollbar, same
-/// "just changes page" behaviour `render_category`'s list already has. A
-/// page that would otherwise start mid-section (its header packed onto the
-/// previous page) gets that header re-added, so the section caption is never
-/// missing from view — there's always headroom to spare once a row's worth
-/// of height is no longer being counted against the same page.
-fn tile_grid_pages(
-    blocks: &[TileGridBlock],
-    metrics: &TileGridMetrics,
-    available: i32,
-) -> Vec<Vec<TileGridBlock>> {
-    let mut pages: Vec<Vec<TileGridBlock>> = Vec::new();
-    let mut current: Vec<TileGridBlock> = Vec::new();
-    let mut current_height = 0;
-    let mut last_header: Option<TileGridBlock> = None;
-
-    for block in blocks.iter().copied() {
-        let height = tile_grid_block_height(&block, metrics);
-        if !current.is_empty() && current_height + height > available {
-            pages.push(std::mem::take(&mut current));
-            current_height = 0;
-            if matches!(block, TileGridBlock::Row { .. }) {
-                if let Some(header) = last_header {
-                    current.push(header);
-                    current_height += tile_grid_block_height(&header, metrics);
-                }
-            }
-        }
-        if matches!(block, TileGridBlock::Header { .. }) {
-            last_header = Some(block);
-        }
-        current.push(block);
-        current_height += height;
-    }
-    if !current.is_empty() {
-        pages.push(current);
-    }
-    pages
-}
-
-/// Index of the page in `pages` whose row range covers `selected`, so
-/// Up/Down navigation past a page boundary lands on the right page without
-/// any paging state of its own — same "derive the page from the selection"
-/// approach `render_category`'s list uses.
-fn tile_grid_page_for_selection(pages: &[Vec<TileGridBlock>], selected: usize) -> usize {
-    pages
-        .iter()
-        .position(|page| {
-            page.iter().any(|block| {
-                matches!(block, TileGridBlock::Row { start, count } if selected >= *start && selected < *start + *count)
-            })
-        })
-        .unwrap_or(0)
-}
-
-/// Compact icon + title tile grid, matching the Home dashboard's grid —
-/// used for Settings, grouped under "Most used" / "Other"
-/// section headers. "Most used" holds up to
-/// [`crate::app::menu::MOST_USED_MAX`] entries opened most recently (see
-/// [`crate::app::menu::CategoryUsage`]), so the ones actually reached for
-/// aren't buried among the rest.
+/// Compact icon + title tile grid, matching the Home dashboard's grid, used
+/// for Settings. Tiles keep the order of `menu::category_entries`, so each
+/// one is always in the same place. Rows that do not fit go on further
+/// pages, and the page shown is the one holding the selection.
 fn render_tile_grid(
     display: &mut OrientedFrameBuffer<'_>,
     state: &AppState,
     route: ScreenRoute,
 ) -> Result<(), Infallible> {
     let locale = state.regional.locale;
-    let entries = state.category_usage.ordered_entries(route);
     let selected = state.category_selection(route);
     let title = route.label_i18n(locale).to_ascii_uppercase();
 
     draw_header(display, state, &title)?;
 
-    let primary_count = state
-        .category_usage
-        .most_used_count(route)
-        .min(entries.len());
-    let blocks = tile_grid_blocks(entries.len(), primary_count);
-    let metrics = tile_grid_metrics(state);
-    let available = TILE_GRID_BOTTOM - TILE_GRID_TOP;
-    let pages = tile_grid_pages(&blocks, &metrics, available);
-    let page_index = tile_grid_page_for_selection(&pages, selected);
-    let empty: Vec<TileGridBlock> = Vec::new();
-    let page = pages.get(page_index).unwrap_or(&empty);
-
-    let mut cursor_y = TILE_GRID_TOP;
-    for block in page {
-        match *block {
-            TileGridBlock::Header { primary } => {
-                let label = if primary {
-                    t(locale, "MOST USED", "PIÙ USATE")
-                } else {
-                    t(locale, "OTHER", "ALTRO")
-                };
-                draw_tile_grid_section_header(display, state, cursor_y, label)?;
-            }
-            TileGridBlock::Row { start, count } => {
-                for offset in 0..count {
-                    let index = start + offset;
-                    let entry: MenuEntry = entries[index];
-                    let x = TILE_GRID_LEFT
-                        + offset as i32 * (COMPACT_TILE_SIZE.width as i32 + TILE_GAP_X);
-                    draw_home_tile_compact(
-                        display,
-                        Point::new(x, cursor_y),
-                        entry,
-                        index == selected,
-                        state.display,
-                        locale,
-                    )?;
-                }
-            }
-        }
-        cursor_y += tile_grid_block_height(block, &metrics);
+    let row_height = COMPACT_TILE_SIZE.height as i32 + TILE_GAP_Y;
+    let rows_per_page = ((TILE_GRID_BOTTOM - TILE_GRID_TOP) / row_height).max(1) as usize;
+    let per_page = rows_per_page * TILE_GRID_COLUMNS;
+    let first = selected / per_page * per_page;
+    for (index, entry) in category_entries(route)
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(first)
+        .take(per_page)
+    {
+        let slot = index - first;
+        let x = TILE_GRID_LEFT
+            + (slot % TILE_GRID_COLUMNS) as i32 * (COMPACT_TILE_SIZE.width as i32 + TILE_GAP_X);
+        let y = TILE_GRID_TOP + (slot / TILE_GRID_COLUMNS) as i32 * row_height;
+        draw_home_tile_compact(
+            display,
+            Point::new(x, y),
+            entry,
+            index == selected,
+            state.display,
+            locale,
+        )?;
     }
 
-    Ok(())
-}
-
-/// Section header: an uppercase caption with a full-width underline beneath
-/// it, matching `screens::reader::draw_library_section_header`'s look.
-fn draw_tile_grid_section_header(
-    display: &mut OrientedFrameBuffer<'_>,
-    state: &AppState,
-    top: i32,
-    label: &str,
-) -> Result<(), Infallible> {
-    let style = state.display.heading_style();
-    let baseline = top + i32::from(style.line_height());
-    Text::new(label, Point::new(TILE_GRID_LEFT, baseline), style).draw(display)?;
-    let underline_top = baseline + TILE_GRID_HEADER_UNDERLINE_GAP;
-    let underline_width = COMPACT_TILE_SIZE.width as i32 * TILE_GRID_COLUMNS as i32
-        + TILE_GAP_X * (TILE_GRID_COLUMNS as i32 - 1);
-    Rectangle::new(
-        Point::new(TILE_GRID_LEFT, underline_top),
-        Size::new(underline_width as u32, 1),
-    )
-    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-    .draw(display)?;
     Ok(())
 }

@@ -85,8 +85,8 @@ pub fn render_device_info(
             display,
             t(
                 locale,
-                "Text size, standby, sleep screen, most used settings and update channel go back to their first values. Language, clock, Wi-Fi and books stay.",
-                "Dimensione del testo, standby, schermata di riposo, voci pi\u{00F9} usate e canale aggiornamenti tornano ai valori iniziali. Lingua, orologio, Wi-Fi e libri restano.",
+                "Text size, standby, sleep screen and update channel go back to their first values. Language, clock, Wi-Fi and books stay.",
+                "Dimensione del testo, standby, schermata di riposo e canale aggiornamenti tornano ai valori iniziali. Lingua, orologio, Wi-Fi e libri restano.",
             ),
             CONTENT_LEFT,
             baseline + 14,

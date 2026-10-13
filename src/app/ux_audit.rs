@@ -1427,6 +1427,13 @@ fn scenarios() -> Vec<(String, Arrange)> {
             state.router.navigate_to(ScreenRoute::UsbDisk);
         }),
     );
+    add(
+        "usb-no-card",
+        Box::new(|state| {
+            state.usb_disk = UsbDiskPhase::NoCard;
+            state.router.navigate_to(ScreenRoute::UsbDisk);
+        }),
+    );
 
     // --- First run ---------------------------------------------------------
     add(

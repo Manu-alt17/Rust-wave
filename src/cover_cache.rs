@@ -102,9 +102,10 @@ const CACHE_FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 /// while read, transparency on white; the covers the full-frame decode
 /// refused, or crashed on, get another try. `"5"`: Library and Home covers
 /// stretched to the cell again instead of centre-cropped, so the whole
-/// cover shows. The Wi-Fi portal computes the same fingerprint in the
-/// browser (`coverFingerprint`), so the two must match.
-const COVER_CACHE_FORMAT_VERSION: &str = "5";
+/// cover shows. `"6"`: EPUBs over 16 MiB, refused until then and cached as
+/// placeholders, get their cover. The Wi-Fi portal computes the same
+/// fingerprint in the browser (`coverFingerprint`), so the two must match.
+const COVER_CACHE_FORMAT_VERSION: &str = "6";
 
 /// One decoded 1bpp thumbnail, packed MSB-first, bit `1` = ink (black) —
 /// directly usable as the byte slice backing an
@@ -1602,8 +1603,8 @@ fn cover_fingerprint(book: &ReaderBook) -> u64 {
 /// Bumped whenever the `.SLC` full-screen sleep cover decode or format
 /// changes in a way that must invalidate every existing entry. `"2"`:
 /// progressive JPEGs decoded by `jpeg_luma`. `"3"`: PNGs reduced while
-/// read, transparency on white.
-const FULLSCREEN_COVER_FORMAT_VERSION: &str = "3";
+/// read, transparency on white. `"4"`: EPUBs over 16 MiB get their cover.
+const FULLSCREEN_COVER_FORMAT_VERSION: &str = "4";
 
 fn fullscreen_cover_fingerprint(book: &ReaderBook, width: u16, height: u16) -> u64 {
     let mut hash = CACHE_FNV_OFFSET;

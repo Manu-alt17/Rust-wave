@@ -7,15 +7,19 @@
 //! hand the shared USB PHY back to the serial port -- and it rereads the
 //! library, so what was just copied shows up.
 
-/// Where the "Connect to PC" screen stands.
+/// Where the "Connect to PC" screen stands. Choosing it starts disk mode at
+/// once: the screen opens already connecting.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum UsbDiskPhase {
-    /// Explaining what is about to happen; SELECT connects.
+    /// Disk mode is about to start.
     #[default]
     Idle,
-    /// The PC sees the disk. Any key but BOOT restarts the device.
+    /// The PC sees the disk. Any key restarts the device.
     Active,
-    /// Disk mode could not start; a key restarts the device.
+    /// No readable card to hand over. Nothing was changed: BOOT goes back.
+    NoCard,
+    /// Disk mode could not start after the card was unmounted; a key
+    /// restarts the device, which mounts it again.
     Failed(String),
 }
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Books:
+
+- EPUBs over 16 MB open. The 16 MiB ceiling on the archive was a leftover of when books were read whole into memory; above 2 MB only the central directory and one member at a time are read, so the size of the file costs nothing. The limit is now the most a ZIP without ZIP64 can address (4 GB, as FAT32 too). What a damaged file could still make the device allocate is capped instead: the central directory at 1 MiB (4096 records with 200-byte names fit), refused with an error before anything is read. Checked on the device with a 17.8 MB EPUB: opened in 92 ms, and an image stored past the 16 MB mark read back intact.
+- A book whose text does not fit in memory is refused with a message instead of aborting the firmware: the text grows by doubling, so the allocation is tried once more at the exact size before giving up.
+- Library and sleep covers of EPUBs over 16 MB had been cached as placeholders; the cover caches are versioned again (`COVER_CACHE_FORMAT_VERSION` 6, the Wi-Fi page's `coverFingerprint` with it, full-screen covers 4), so every cover is made once more.
+
+Settings and Files:
+
+- **File** moved from Home into Settings (Opzioni), between **Lingua** and **Info**; BOOT from its top folder goes back to Settings. Home has five tiles.
+- Settings keeps its tiles in one fixed order. The **Più usate** / **Altro** sections, which moved the last three opened to the top, are gone, with `RUSTMIX/MENU.TXT` that kept them.
+- Files no longer deletes the files the device keeps its own state in: the `.TXT` files directly in `RUSTMIX` and in `RUSTMIX/READER` (Wi-Fi networks, clock, display, update channel, volume, reading positions, bookmarks...) and the statistics in `RUSTMIX/STATS`. Holding SELECT on one says why instead of asking to confirm, and the footer does not offer it. The Wi-Fi page already refused its own configuration files.
+
+Connect to PC:
+
+- **Cavo USB** in Upload starts disk mode with that SELECT; the second SELECT on the screen that followed is gone. **Collega al PC** in the first-run pages does the same.
+- Any key ends disk mode and restarts the device, BOOT included: it was ignored, and the screen looked impossible to leave. BOOT is safe here because its event arrives only once the key is up again, so GPIO0, a strapping pin, is no longer held at the restart.
+- Without a readable card nothing is handed over: the screen says so and BOOT goes back. Before, the device stayed in the disk-mode loop, waiting for a key that would only restart it.
+- What is still only in memory (the reading position, the open statistics session) is saved before the card goes to the computer, as before a restart.
+
+Updates:
+
+- The bootloader is offered from the newest release of the channel that carries one, not only from the newest release: v1.5.0-beta.3 to beta.5 came without it, so no device was offered the one published with beta.2 any more. Both channels read the 20 most recent releases (`RELEASE_LIST_LENGTH`, the beta channel's list was 5); a stable device only takes a stable release's bootloader, and asks for the list only when it is up to date and the latest release has none. Checked on the device against the live releases: the beta channel offers v1.5.0-beta.2's bootloader in 3 s, the stable channel finds none in 4 s.
+
 ## v1.5.0-beta.5 — A fixed wallpaper, statistics by period, the keys drawn
 
 Hotspot (the device's own network, when no Wi-Fi is in reach):

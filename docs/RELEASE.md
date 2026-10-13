@@ -107,7 +107,7 @@ the Software Update screen:
 - **Stable** reads `releases/latest`: the newest release that is not a
   pre-release. Publish stable releases from `feature/ota-update`, with a plain
   version (`1.4.9`) in `Cargo.toml` and a matching `v1.4.9` tag.
-- **Beta** reads the five most recent releases and takes the highest version,
+- **Beta** reads the 20 most recent releases and takes the highest version,
   pre-releases included. Publish beta builds from the `beta` branch with a
   pre-release version (`1.5.0-beta.1`, then `-beta.2`, ...), and tick
   **Set as a pre-release** on GitHub: without it the build becomes the latest
@@ -129,6 +129,13 @@ the Software Update screen, if it differs from the bootloader in its flash:
 the first SELECT downloads it and checks it against the SHA-256 GitHub
 publishes for the asset (no digest, no offer), the second writes it, and the
 device restarts into it.
+
+The bootloader need not be attached to every release: a device takes it from
+the newest release of its channel that carries one, among the 20 most recent
+releases (a stable device only from stable releases), even when newer
+releases came without it. A bootloader older than that is no longer offered:
+attach it again to a later release if devices that missed it should still get
+it.
 
 Attach it only when the bootloader really changed (the `BOOTLOADER_` options
 in `sdkconfig.defaults`, or a new ESP-IDF). The ESP32-S3 has no backup

@@ -3,12 +3,14 @@
 //! ESP-IDF mounts the SD card at [`SD_MOUNT_POINT`]. This module owns
 //! directory scans, bounded text previews and the one change the browser
 //! can make to the card: deleting a single file, after a confirmation. It
-//! never creates, renames or writes files, and never deletes a folder.
+//! never creates, renames or writes files, never deletes a folder, and
+//! never deletes the files the device keeps its own state in (see
+//! [`is_protected_device_file`]).
 
 use std::{
     fs::{self, File},
     io::{self, Read},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     thread,
     time::Duration,
 };
@@ -188,6 +190,9 @@ pub struct StorageSnapshot {
     pub pending_delete: Option<String>,
     /// How the last delete went, until the list changes again.
     pub notice: Option<StorageNotice>,
+    /// The row under the cursor is one of the device's own files, which a
+    /// held SELECT does not delete.
+    pub selected_protected: bool,
 }
 
 /// Outcome of a delete, for the screen to word in the user's language.
@@ -197,6 +202,36 @@ pub enum StorageNotice {
     Deleted(String),
     /// The named file is still there; the second field says why.
     DeleteFailed(String, String),
+    /// The named file is one of the device's own and was not deleted.
+    Protected(String),
+}
+
+/// Whether `relative`, a path below the card's top folder, is a file the
+/// device keeps its own state in: the `.TXT` files directly in `RUSTMIX`
+/// (Wi-Fi networks, clock, display, update channel, volume, audiobook
+/// positions...) and in `RUSTMIX/READER` (reading positions, bookmarks,
+/// preferences), and the monthly logs in `RUSTMIX/STATS`. Deleting one from
+/// Files would silently forget them, so it is refused, as the Wi-Fi portal
+/// refuses its own configuration files. FAT names are case-insensitive.
+#[must_use]
+pub fn is_protected_device_file(relative: &Path) -> bool {
+    let parts: Vec<String> = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_string_lossy().to_ascii_uppercase()),
+            _ => None,
+        })
+        .collect();
+    match parts
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["RUSTMIX", name] | ["RUSTMIX", "READER", name] => name.ends_with(".TXT"),
+        ["RUSTMIX", "STATS", _] => true,
+        _ => false,
+    }
 }
 
 impl Default for StorageSnapshot {
@@ -213,6 +248,7 @@ impl Default for StorageSnapshot {
             at_root: true,
             pending_delete: None,
             notice: None,
+            selected_protected: false,
         }
     }
 }
@@ -329,6 +365,9 @@ impl StorageBrowser {
             at_root: self.current == self.root,
             pending_delete: self.pending_delete.clone(),
             notice: self.notice.clone(),
+            selected_protected: self.entries.get(self.selected).is_some_and(|entry| {
+                entry.kind == StorageEntryKind::File && self.is_protected(&entry.name)
+            }),
         }
     }
 
@@ -497,25 +536,45 @@ impl StorageBrowser {
         true
     }
 
-    /// Held SELECT on a file: ask to delete it. `true` when the request was
-    /// taken; folders and the preview do not take it.
+    /// Held SELECT on a file: ask to delete it, or say why one of the
+    /// device's own files cannot be. `true` when the request was taken;
+    /// folders and the preview do not take it.
     pub fn request_delete(&mut self) -> bool {
         if self.preview.is_some() {
             return false;
         }
         match self.entries.get(self.selected) {
             Some(entry) if entry.kind == StorageEntryKind::File => {
-                self.notice = None;
-                self.pending_delete = Some(entry.name.clone());
+                let name = entry.name.clone();
+                if self.is_protected(&name) {
+                    self.notice = Some(StorageNotice::Protected(name));
+                } else {
+                    self.notice = None;
+                    self.pending_delete = Some(name);
+                }
                 true
             }
             _ => false,
         }
     }
 
+    /// Whether the file `name` of the current folder is one of the device's
+    /// own (see [`is_protected_device_file`]).
+    fn is_protected(&self, name: &str) -> bool {
+        self.current
+            .join(name)
+            .strip_prefix(&self.root)
+            .is_ok_and(is_protected_device_file)
+    }
+
     /// Delete the file `name` of the current folder and read the folder
     /// again; the cursor stays where the file was.
     fn delete_file(&mut self, name: &str) -> StorageUiOutcome {
+        if self.is_protected(name) {
+            warn!("rustmix-wave=storage-delete status=refused-protected name={name:?}");
+            self.notice = Some(StorageNotice::Protected(name.to_string()));
+            return StorageUiOutcome::DeleteFinished;
+        }
         let candidate = self.current.join(name);
         let result = if candidate.starts_with(&self.root) && candidate.is_file() {
             fs::remove_file(&candidate)
@@ -732,13 +791,13 @@ fn split_at_char_boundary(value: &str, max_chars: usize) -> (&str, &str) {
 mod tests {
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::{
-        retry_readonly_io, StorageBrowser, StorageEntryKind, StorageNotice, StorageUiOutcome,
-        MAX_PREVIEW_BYTES,
+        is_protected_device_file, retry_readonly_io, StorageBrowser, StorageEntryKind,
+        StorageNotice, StorageUiOutcome, MAX_PREVIEW_BYTES,
     };
     use crate::buttons::ButtonEvent;
 
@@ -869,6 +928,58 @@ mod tests {
         assert!(!browser.request_delete());
         assert!(browser.go_back());
         assert!(browser.snapshot().preview.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_devices_own_files_are_recognised() {
+        for path in [
+            "RUSTMIX/WIFI.TXT",
+            "rustmix/update.txt",
+            "RUSTMIX/READER/POSITS.TXT",
+            "RUSTMIX/STATS/2026-10.TXT",
+        ] {
+            assert!(is_protected_device_file(Path::new(path)), "{path}");
+        }
+        for path in [
+            "RUSTMIX/BOOKS/A.TXT",
+            "RUSTMIX/RESETS.LOG",
+            "RUSTMIX/READER/CACHE/1234ABCD.EPX",
+            "RUSTMIX/SLEEP/cover.png",
+            "WIFI.TXT",
+        ] {
+            assert!(!is_protected_device_file(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_held_select_on_a_device_file_explains_instead_of_deleting() {
+        let root = fixture_root("protected");
+        let data = root.join("RUSTMIX");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("WIFI.TXT"), b"networks").unwrap();
+        let mut browser = StorageBrowser::new(&root, true);
+        assert_eq!(
+            browser.apply_button(ButtonEvent::Select),
+            StorageUiOutcome::DirectoryChanged
+        );
+        let snapshot = browser.snapshot();
+        assert_eq!(snapshot.selected_entry().unwrap().name, "WIFI.TXT");
+        assert!(snapshot.selected_protected);
+
+        assert!(browser.request_delete());
+        let snapshot = browser.snapshot();
+        assert!(snapshot.pending_delete.is_none());
+        assert_eq!(
+            snapshot.notice,
+            Some(StorageNotice::Protected("WIFI.TXT".into()))
+        );
+        // Not even a confirmation that got through deletes it.
+        assert_eq!(
+            browser.delete_file("WIFI.TXT"),
+            StorageUiOutcome::DeleteFinished
+        );
+        assert!(data.join("WIFI.TXT").exists());
         fs::remove_dir_all(root).unwrap();
     }
 

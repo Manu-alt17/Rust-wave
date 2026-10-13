@@ -93,6 +93,14 @@ pub fn render_files(
                 "{} {name} ({error})",
                 t(locale, "Could not delete", "Impossibile eliminare")
             ),
+            StorageNotice::Protected(name) => format!(
+                "{name}: {}",
+                t(
+                    locale,
+                    "the device keeps its settings or reading progress in this file, so it cannot be deleted here.",
+                    "il dispositivo ci tiene impostazioni o progressi di lettura, quindi non si elimina da qui.",
+                )
+            ),
         })
     } else if !storage.mounted {
         Some(
@@ -138,7 +146,7 @@ pub fn render_files(
         )?;
     }
 
-    // BOOT goes up a folder and, from the top one, back to Home.
+    // BOOT goes up a folder and, from the top one, back to Settings.
     let boot = if storage.at_root {
         back_action(locale)
     } else {
@@ -154,6 +162,14 @@ pub fn render_files(
         )
     } else {
         match storage.selected_entry().map(|entry| entry.kind) {
+            // The device's own files are not offered for deleting.
+            Some(StorageEntryKind::File) if storage.selected_protected => footer_hints(
+                locale,
+                &[
+                    (FooterKey::Select, t(locale, "OPEN", "APRI")),
+                    (FooterKey::Boot, boot),
+                ],
+            ),
             Some(StorageEntryKind::File) => footer_hints(
                 locale,
                 &[

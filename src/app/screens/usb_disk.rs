@@ -36,31 +36,37 @@ pub fn render_usb_disk(
     )?;
 
     let (title, text, hint) = match &state.usb_disk {
+        // Disk mode starts as this screen opens: this is only ever on the
+        // glass for the moment that takes.
         UsbDiskPhase::Idle => (
-            t(locale, "USB disk", "Disco USB"),
+            t(locale, "Connecting", "Collegamento"),
             t(
                 locale,
-                "Connect the device to a computer with its USB cable and press SELECT: the microSD shows up on the computer as a disk, to copy books into BOOKS and audiobooks into AUDIO. The device cannot be used meanwhile. When done, eject the disk on the computer, then press any key here: the device restarts and reads the new files.",
-                "Collega il dispositivo al computer col cavo USB e premi SELECT: la microSD compare sul computer come un disco, per copiare i libri in BOOKS e gli audiolibri in AUDIO. Nel frattempo il dispositivo non si usa. Finito, espelli il disco dal computer, poi premi un tasto qui: il dispositivo si riavvia e legge i nuovi file.",
+                "Handing the microSD to the computer...",
+                "Passaggio della microSD al computer...",
             )
             .to_string(),
-            footer_hints(
-                locale,
-                &[
-                    (FooterKey::Select, t(locale, "CONNECT", "COLLEGA")),
-                    (FooterKey::Boot, back_action(locale)),
-                ],
-            ),
+            String::new(),
         ),
         UsbDiskPhase::Active => (
             t(locale, "Connected", "Collegato"),
             t(
                 locale,
-                "The computer now sees the microSD as a disk. Copy the files, eject the disk on the computer, then press UP, DOWN or SELECT to restart.",
-                "Il computer ora vede la microSD come un disco. Copia i file, espelli il disco dal computer, poi premi SU, GIÙ o SELECT per riavviare.",
+                "Connect the device to a computer with its USB cable: the microSD shows up as a disk, to copy books into BOOKS and audiobooks into AUDIO. The device cannot be used meanwhile. When done, eject the disk on the computer, then press any key: the device restarts and reads the new files.",
+                "Collega il dispositivo al computer col cavo USB: la microSD compare come un disco, per copiare i libri in BOOKS e gli audiolibri in AUDIO. Nel frattempo il dispositivo non si usa. Finito, espelli il disco dal computer e premi un tasto qualsiasi: il dispositivo si riavvia e legge i nuovi file.",
             )
             .to_string(),
             restart_hint(locale),
+        ),
+        UsbDiskPhase::NoCard => (
+            t(locale, "Card not readable", "Scheda non leggibile"),
+            t(
+                locale,
+                "The microSD cannot be read, so there is nothing to show to the computer. Check that it is pushed all the way in, then restart the device.",
+                "La microSD non si legge, quindi non c'\u{00E8} niente da mostrare al computer. Controlla che sia inserita fino in fondo, poi riavvia il dispositivo.",
+            )
+            .to_string(),
+            footer_hints(locale, &[(FooterKey::Boot, back_action(locale))]),
         ),
         UsbDiskPhase::Failed(error) => (
             t(locale, "Not connected", "Collegamento non riuscito"),
@@ -68,8 +74,8 @@ pub fn render_usb_disk(
                 "{} {error}",
                 t(
                     locale,
-                    "Press UP, DOWN or SELECT to restart.",
-                    "Premi SU, GIÙ o SELECT per riavviare."
+                    "Press any key to restart.",
+                    "Premi un tasto qualsiasi per riavviare."
                 )
             ),
             restart_hint(locale),
@@ -90,12 +96,8 @@ pub fn render_usb_disk(
     draw_footer(display, state, &hint)
 }
 
-/// Any key but BOOT restarts the device once the disk is, or failed to be,
-/// connected.
+/// Once the card is with the computer, or failed to get there, any key
+/// restarts the device: BOOT too.
 fn restart_hint(locale: crate::regional::Locale) -> String {
-    format!(
-        "{} {}",
-        t(locale, "UP/DOWN/SELECT", "SU/GI\u{00D9}/SELECT"),
-        t(locale, "RESTART", "RIAVVIA")
-    )
+    t(locale, "ANY KEY RESTART", "UN TASTO RIAVVIA").to_string()
 }

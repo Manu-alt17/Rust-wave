@@ -87,7 +87,10 @@ pub fn render_current_screen(frame: &mut FrameBuffer, state: &AppState) -> Resul
 mod tests {
     use embedded_graphics::prelude::Point;
 
-    use super::{menu::home_entries, render_current_screen, AppState, ScreenRoute};
+    use super::{
+        menu::{category_entries, home_entries},
+        render_current_screen, AppState, ScreenRoute,
+    };
     use crate::{buttons::ButtonEvent, framebuffer::FrameBuffer};
 
     /// Position of `route` on the Home dashboard, so these tests keep
@@ -97,6 +100,20 @@ mod tests {
             .iter()
             .position(|entry| entry.route == route)
             .expect("route is on the Home dashboard")
+    }
+
+    /// Opens `route` the way a user does: Settings from Home, then its tile.
+    fn open_from_settings(state: &mut AppState, route: ScreenRoute) {
+        state.home_selected = home_index(ScreenRoute::Settings);
+        state.apply(ButtonEvent::Select);
+        let index = category_entries(ScreenRoute::Settings)
+            .iter()
+            .position(|entry| entry.route == route)
+            .expect("route is a Settings tile");
+        for _ in 0..index {
+            state.apply(ButtonEvent::Down);
+        }
+        state.apply(ButtonEvent::Select);
     }
 
     #[test]
@@ -130,11 +147,10 @@ mod tests {
     }
 
     #[test]
-    fn home_file_browser_route_renders() {
+    fn settings_file_browser_route_renders() {
         let mut frame = FrameBuffer::new_white();
         let mut state = AppState::default();
-        state.home_selected = home_index(ScreenRoute::Files);
-        state.apply(ButtonEvent::Select);
+        open_from_settings(&mut state, ScreenRoute::Files);
         assert_eq!(state.active_route(), ScreenRoute::Files);
         render_current_screen(&mut frame, &state).unwrap();
     }
@@ -601,17 +617,11 @@ mod tests {
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("device-info-board", |state| {
-                state.home_selected = home_index(ScreenRoute::Settings);
-                state.apply(crate::buttons::ButtonEvent::Select);
-                for _ in 0..4 {
-                    state.apply(crate::buttons::ButtonEvent::Down);
-                }
-                state.apply(crate::buttons::ButtonEvent::Select);
+                open_from_settings(state, ScreenRoute::DeviceInfo);
                 state.apply(crate::buttons::ButtonEvent::Select);
             }),
             ("files", |state| {
-                state.home_selected = home_index(ScreenRoute::Files);
-                state.apply(crate::buttons::ButtonEvent::Select);
+                open_from_settings(state, ScreenRoute::Files);
             }),
             ("upload", |state| {
                 state.network.ipv4_address = Some("192.168.1.42".into());
@@ -628,6 +638,40 @@ mod tests {
             ("usb-disk-active", |state| {
                 state.router.navigate_to(ScreenRoute::UsbDisk);
                 state.usb_disk = crate::usb_disk::UsbDiskPhase::Active;
+            }),
+            ("usb-disk-no-card", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                state.router.navigate_to(ScreenRoute::UsbDisk);
+                state.usb_disk = crate::usb_disk::UsbDiskPhase::NoCard;
+            }),
+            ("settings-it", |state| {
+                state.regional.locale = crate::regional::Locale::Italian;
+                open_from_settings(state, ScreenRoute::Files);
+                state.router.back();
+            }),
+            ("files-protected", |state| {
+                use crate::storage::{StorageEntry, StorageEntryKind, StorageNotice};
+                state.regional.locale = crate::regional::Locale::Italian;
+                open_from_settings(state, ScreenRoute::Files);
+                state.storage.mounted = true;
+                state.storage.at_root = false;
+                state.storage.current_path = "/sdcard/RUSTMIX".into();
+                state.storage.entries = ["BOOKS", "READER", "CLOCK.TXT", "WIFI.TXT"]
+                    .iter()
+                    .map(|name| StorageEntry {
+                        name: (*name).into(),
+                        kind: if name.contains('.') {
+                            StorageEntryKind::File
+                        } else {
+                            StorageEntryKind::Directory
+                        },
+                        size_bytes: name.contains('.').then_some(120),
+                    })
+                    .collect();
+                state.storage.scan.retained_entries = 4;
+                state.storage.selected = 3;
+                state.storage.selected_protected = true;
+                state.storage.notice = Some(StorageNotice::Protected("WIFI.TXT".into()));
             }),
             ("audiobooks", |state| {
                 seed_audiobooks(state);

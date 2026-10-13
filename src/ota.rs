@@ -4,8 +4,10 @@
 //! against the GitHub release its [`UpdateChannel`] points at on
 //! `build_info::OTA_REPO_OWNER`/`OTA_REPO_NAME`: the latest release on the
 //! stable channel, the highest version among the recent ones, pre-releases
-//! included, on the beta channel. No JSON crate is used: only the fields
-//! actually needed, `tag_name`, `draft` and the first `.bin` asset URL, are
+//! included, on the beta channel. A bootloader comes from the newest release
+//! of the channel that carries one, which need not be the newest release. No
+//! JSON crate is used: only the fields actually needed, `tag_name`, `draft`,
+//! `prerelease`, the first `.bin` asset URL and the bootloader asset, are
 //! pulled out of the response with a small quoted-string scanner. ESP-IDF
 //! HTTPS wiring and flashing live below `cfg(target_os = "espidf")`.
 
@@ -33,14 +35,16 @@ pub const OTA_CHECK_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// still names the upstream fork, whose releases carry a different feature
 /// set. The manual check in Settings > Software Update keeps working.
 pub const OTA_AUTO_CHECK_ENABLED: bool = false;
-/// Upper bound on the buffered release *list* the beta channel reads:
-/// [`BETA_RELEASE_LIST_LENGTH`] releases, each about the size of one
-/// `releases/latest` response.
-pub const MAX_RELEASE_LIST_BYTES: usize = 96 * 1024;
-/// Releases the beta channel compares, newest first. The highest version
-/// among them wins, so a stable release published after a beta still
-/// reaches beta devices.
-pub const BETA_RELEASE_LIST_LENGTH: usize = 5;
+/// Upper bound on the buffered release *list*: [`RELEASE_LIST_LENGTH`]
+/// releases. Measured on the OTA repository: 10 releases take about 43 KB,
+/// the newest ones (longer notes, three assets) about 5 KB each.
+pub const MAX_RELEASE_LIST_BYTES: usize = 160 * 1024;
+/// Releases read from GitHub's list, newest first. The beta channel offers
+/// the highest version among them, so a stable release published after a
+/// beta still reaches beta devices; and both channels look among them for
+/// the newest release that carries a bootloader, which is not always the
+/// newest release.
+pub const RELEASE_LIST_LENGTH: usize = 20;
 /// Where the channel chosen on the Software Update screen is kept.
 pub const UPDATE_CONFIG_PATH: &str = "/sdcard/RUSTMIX/UPDATE.TXT";
 
@@ -91,8 +95,27 @@ impl UpdateChannel {
     pub fn releases_api_path(self) -> String {
         match self {
             Self::Stable => "releases/latest".into(),
-            Self::Beta => format!("releases?per_page={BETA_RELEASE_LIST_LENGTH}"),
+            Self::Beta => release_list_api_path(),
         }
+    }
+
+    /// The release list to look through for a bootloader when the release
+    /// offered carries none: only the stable channel needs a second request,
+    /// the beta channel already read the list.
+    #[must_use]
+    pub fn bootloader_search_api_path(self) -> Option<String> {
+        match self {
+            Self::Stable => Some(release_list_api_path()),
+            Self::Beta => None,
+        }
+    }
+
+    /// The newest release carrying a bootloader in a release list, among
+    /// the releases this channel follows: a stable device never takes the
+    /// bootloader of a beta.
+    #[must_use]
+    pub fn newest_bootloader(self, list_json: &str) -> Option<ReleaseBootloader> {
+        newest_bootloader(&parse_release_list(list_json), self)
     }
 
     /// Largest response the request for this channel may return.
@@ -109,9 +132,16 @@ impl UpdateChannel {
     pub fn parse_response(self, json: &str) -> Result<ReleaseInfo, ReleaseCheckError> {
         match self {
             Self::Stable => parse_release_response(json),
-            Self::Beta => newest_release(parse_release_list(json)).ok_or_else(|| {
-                ReleaseCheckError::InvalidResponse("no published release has a .bin asset".into())
-            }),
+            Self::Beta => {
+                let releases = parse_release_list(json);
+                let mut release = newest_release(&releases).ok_or_else(|| {
+                    ReleaseCheckError::InvalidResponse(
+                        "no published release has a .bin asset".into(),
+                    )
+                })?;
+                release.bootloader = newest_bootloader(&releases, self);
+                Ok(release)
+            }
         }
     }
 
@@ -153,14 +183,28 @@ impl UpdateChannel {
     }
 }
 
+/// GitHub API path of the release list, newest first.
+fn release_list_api_path() -> String {
+    format!("releases?per_page={RELEASE_LIST_LENGTH}")
+}
+
 /// One parsed GitHub "latest release" response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReleaseInfo {
     pub tag_name: String,
     pub download_url: String,
-    /// The bootloader attached to the release, if any (see
+    /// The newest bootloader published for the channel, if any (see
     /// [`crate::bootloader_update`]).
-    pub bootloader: Option<BootloaderAsset>,
+    pub bootloader: Option<ReleaseBootloader>,
+}
+
+/// A bootloader and the release it is attached to. Not necessarily the
+/// release whose firmware is offered: releases often come without one, and
+/// the newest release that carries one is the one that counts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReleaseBootloader {
+    pub tag_name: String,
+    pub asset: BootloaderAsset,
 }
 
 /// Release-check failure classified for logging.
@@ -499,10 +543,14 @@ fn parse_release_response(json: &str) -> Result<ReleaseInfo, ReleaseCheckError> 
         .ok_or_else(|| ReleaseCheckError::InvalidResponse("response has no tag_name".into()))?;
     let download_url = extract_first_bin_asset_url(json)
         .ok_or_else(|| ReleaseCheckError::InvalidResponse("release has no .bin asset".into()))?;
+    let bootloader = extract_bootloader_asset(json).map(|asset| ReleaseBootloader {
+        tag_name: tag_name.clone(),
+        asset,
+    });
     Ok(ReleaseInfo {
         tag_name,
         download_url,
-        bootloader: extract_bootloader_asset(json),
+        bootloader,
     })
 }
 
@@ -640,6 +688,7 @@ fn top_level_objects(json: &str) -> Vec<&str> {
 struct ReleaseEntry {
     tag_name: String,
     draft: bool,
+    prerelease: bool,
     download_url: Option<String>,
     bootloader: Option<BootloaderAsset>,
 }
@@ -653,6 +702,7 @@ fn parse_release_list(json: &str) -> Vec<ReleaseEntry> {
             Some(ReleaseEntry {
                 tag_name: extract_string_field(release, "tag_name")?,
                 draft: extract_bool_field(release, "draft").unwrap_or(false),
+                prerelease: extract_bool_field(release, "prerelease").unwrap_or(false),
                 download_url: extract_first_bin_asset_url(release),
                 bootloader: extract_bootloader_asset(release),
             })
@@ -660,31 +710,56 @@ fn parse_release_list(json: &str) -> Vec<ReleaseEntry> {
         .collect()
 }
 
-/// The highest version among the published releases with a `.bin` asset.
-/// Between equal versions, or tags that do not parse, the first listed
-/// wins: GitHub lists the newest first.
-fn newest_release(releases: Vec<ReleaseEntry>) -> Option<ReleaseInfo> {
-    let mut newest: Option<(Option<Version>, ReleaseInfo)> = None;
-    for release in releases {
-        if release.draft {
-            continue;
-        }
-        let Some(download_url) = release.download_url else {
+/// The highest version among the published releases in which `pick` finds
+/// something, with what it found. Between equal versions, or tags that do
+/// not parse, the first listed wins: GitHub lists the newest first.
+fn newest_with<T>(
+    releases: &[ReleaseEntry],
+    pick: impl Fn(&ReleaseEntry) -> Option<T>,
+) -> Option<(&ReleaseEntry, T)> {
+    let mut newest: Option<(Option<Version>, &ReleaseEntry, T)> = None;
+    for release in releases.iter().filter(|release| !release.draft) {
+        let Some(found) = pick(release) else {
             continue;
         };
         let version = parse_version(&release.tag_name);
-        if newest.as_ref().map_or(true, |(best, _)| version > *best) {
-            newest = Some((
-                version,
-                ReleaseInfo {
-                    tag_name: release.tag_name,
-                    download_url,
-                    bootloader: release.bootloader,
-                },
-            ));
+        if newest.as_ref().map_or(true, |(best, _, _)| version > *best) {
+            newest = Some((version, release, found));
         }
     }
-    newest.map(|(_, release)| release)
+    newest.map(|(_, release, found)| (release, found))
+}
+
+/// The highest version among the published releases with a `.bin` asset,
+/// without a bootloader yet: see [`newest_bootloader`].
+fn newest_release(releases: &[ReleaseEntry]) -> Option<ReleaseInfo> {
+    newest_with(releases, |release| release.download_url.clone()).map(|(release, download_url)| {
+        ReleaseInfo {
+            tag_name: release.tag_name.clone(),
+            download_url,
+            bootloader: None,
+        }
+    })
+}
+
+/// The newest release carrying a bootloader, among those `channel`
+/// follows. Releases often come without one, so the newest release is not
+/// the one to ask: a device that never installed the bootloader of an
+/// older release would not be offered it again.
+fn newest_bootloader(
+    releases: &[ReleaseEntry],
+    channel: UpdateChannel,
+) -> Option<ReleaseBootloader> {
+    newest_with(releases, |release| {
+        if channel == UpdateChannel::Stable && release.prerelease {
+            return None;
+        }
+        release.bootloader.clone()
+    })
+    .map(|(release, asset)| ReleaseBootloader {
+        tag_name: release.tag_name.clone(),
+        asset,
+    })
 }
 
 #[cfg(target_os = "espidf")]
@@ -707,7 +782,7 @@ pub mod espidf {
         build_info::{FIRMWARE_VERSION, OTA_REPO_NAME, OTA_REPO_OWNER},
         ota::{
             is_update_available, InstallProgress, OtaCheckState, ReleaseCheckError, ReleaseInfo,
-            UpdateChannel, OTA_DOWNLOAD_CHUNK_BYTES,
+            UpdateChannel, MAX_RELEASE_LIST_BYTES, OTA_DOWNLOAD_CHUNK_BYTES,
         },
         runtime_worker::{poll_named_worker, spawn_named_worker_in_psram, NamedWorkerError},
     };
@@ -773,8 +848,8 @@ pub mod espidf {
                         version: release.tag_name,
                         download_url: release.download_url,
                     }
-                } else if let Some(asset) = release.bootloader {
-                    bootloader_state(release.tag_name, asset)
+                } else if let Some(bootloader) = release.bootloader {
+                    bootloader_state(bootloader.tag_name, bootloader.asset)
                 } else {
                     info!(
                         "rustmix-wave=ota-check status=up-to-date current={FIRMWARE_VERSION} latest={}",
@@ -795,14 +870,15 @@ pub mod espidf {
         })
     }
 
-    /// Up to date, with a bootloader on the release: offered when the one in
+    /// Up to date, with a bootloader published for the channel (in
+    /// `release`, the newest release carrying one): offered when the one in
     /// flash differs from it. Reading flash takes a few milliseconds, on the
     /// main task like the rest of the poll.
     fn bootloader_state(release: String, asset: BootloaderAsset) -> OtaCheckState {
         match bootloader_update::espidf::read_installed() {
             Ok(region) if bootloader_update::is_installed(&region, &asset) => {
                 info!(
-                    "rustmix-wave=ota-check status=up-to-date bootloader=current latest={release}"
+                    "rustmix-wave=ota-check status=up-to-date bootloader=current bootloader-release={release}"
                 );
                 OtaCheckState::UpToDate
             }
@@ -810,7 +886,7 @@ pub mod espidf {
                 let installed =
                     bootloader_update::describe(&region).map(|description| description.label());
                 info!(
-                    "rustmix-wave=ota-check status=bootloader-available latest={release} installed={}",
+                    "rustmix-wave=ota-check status=bootloader-available bootloader-release={release} installed={}",
                     installed.as_deref().unwrap_or("unknown")
                 );
                 OtaCheckState::BootloaderAvailable {
@@ -827,6 +903,28 @@ pub mod espidf {
     }
 
     fn fetch_release(channel: UpdateChannel) -> Result<ReleaseInfo, ReleaseCheckError> {
+        let response = github_get(&channel.releases_api_path(), channel.response_limit_bytes())?;
+        let mut release = channel.parse_response(&response)?;
+        drop(response);
+        // A bootloader is offered only once the firmware is up to date.
+        let up_to_date = !is_update_available(FIRMWARE_VERSION, &release.tag_name);
+        if release.bootloader.is_none() && up_to_date {
+            if let Some(path) = channel.bootloader_search_api_path() {
+                // The firmware check stands even when this search fails.
+                match github_get(&path, MAX_RELEASE_LIST_BYTES) {
+                    Ok(list) => release.bootloader = channel.newest_bootloader(&list),
+                    Err(error) => warn!(
+                        "rustmix-wave=ota-check status=bootloader-search-failed error={error}"
+                    ),
+                }
+            }
+        }
+        Ok(release)
+    }
+
+    /// One GitHub API GET below the OTA repository, on a connection of its
+    /// own, refused when it reaches `limit` bytes.
+    fn github_get(path: &str, limit: usize) -> Result<String, ReleaseCheckError> {
         let http_config = HttpConfiguration {
             crt_bundle_attach: Some(sys::esp_crt_bundle_attach),
             timeout: Some(Duration::from_secs(GITHUB_HTTP_TIMEOUT_SECONDS)),
@@ -836,10 +934,7 @@ pub mod espidf {
             ReleaseCheckError::Transport(format!("HTTP connection init failed: {error}"))
         })?;
         let mut client = HttpClient::wrap(connection);
-        let url = format!(
-            "https://api.github.com/repos/{OTA_REPO_OWNER}/{OTA_REPO_NAME}/{}",
-            channel.releases_api_path()
-        );
+        let url = format!("https://api.github.com/repos/{OTA_REPO_OWNER}/{OTA_REPO_NAME}/{path}");
         let headers = [
             ("accept", "application/vnd.github+json"),
             ("user-agent", OTA_USER_AGENT),
@@ -856,7 +951,6 @@ pub mod espidf {
         if status != 200 {
             return Err(ReleaseCheckError::HttpStatus(status));
         }
-        let limit = channel.response_limit_bytes();
         let mut body = vec![0_u8; limit];
         let bytes_read = io::try_read_full(&mut response, &mut body).map_err(|error| {
             ReleaseCheckError::Transport(format!("response read failed: {}", error.0))
@@ -866,10 +960,10 @@ pub mod espidf {
                 "GitHub release response reached the {limit}-byte limit"
             )));
         }
-        let text = core::str::from_utf8(&body[..bytes_read]).map_err(|error| {
+        body.truncate(bytes_read);
+        String::from_utf8(body).map_err(|error| {
             ReleaseCheckError::InvalidResponse(format!("response is not UTF-8: {error}"))
-        })?;
-        channel.parse_response(text)
+        })
     }
 
     /// Download one firmware binary and stream it straight into the
@@ -1211,8 +1305,16 @@ mod tests {
         assert_eq!(UpdateChannel::Stable.releases_api_path(), "releases/latest");
         assert_eq!(
             UpdateChannel::Beta.releases_api_path(),
-            "releases?per_page=5"
+            "releases?per_page=20"
         );
+        // Only the stable channel needs the list again to find a bootloader.
+        assert_eq!(
+            UpdateChannel::Stable
+                .bootloader_search_api_path()
+                .as_deref(),
+            Some("releases?per_page=20")
+        );
+        assert_eq!(UpdateChannel::Beta.bootloader_search_api_path(), None);
         // The stable channel keeps reading the single-release response.
         let latest = "{\"tag_name\":\"v1.4.9\",\"assets\":[{\"browser_download_url\":\"https://example.com/s.bin\"}]}";
         assert_eq!(
@@ -1225,7 +1327,7 @@ mod tests {
     }
 
     /// The live release list of the OTA repository, saved with
-    /// `curl -s 'https://api.github.com/repos/<owner>/<repo>/releases?per_page=5'`.
+    /// `curl -s 'https://api.github.com/repos/<owner>/<repo>/releases?per_page=20'`.
     #[test]
     #[ignore = "needs RUSTMIX_RELEASES_JSON pointing at a saved GitHub release list"]
     fn real_release_list_smoke() {
@@ -1233,6 +1335,10 @@ mod tests {
         let json = std::fs::read_to_string(path).unwrap();
         let release = UpdateChannel::Beta.parse_response(&json).unwrap();
         println!("beta channel: {release:?}");
+        println!(
+            "stable bootloader: {:?}",
+            UpdateChannel::Stable.newest_bootloader(&json)
+        );
     }
 
     /// Shaped like GitHub's assets: an uploader object inside each, the
@@ -1256,6 +1362,8 @@ mod tests {
         // The .img is skipped when looking for the app image, even listed first.
         assert_eq!(release.download_url, "https://example.com/w-ota-update.bin");
         let bootloader = release.bootloader.unwrap();
+        assert_eq!(bootloader.tag_name, "v1.5.0-beta.2");
+        let bootloader = bootloader.asset;
         assert_eq!(
             bootloader.download_url,
             "https://example.com/w-bootloader.img"
@@ -1278,6 +1386,66 @@ mod tests {
             parse_release_response(&without_digest).unwrap().bootloader,
             None
         );
+    }
+
+    /// One release of a GitHub list: its `.bin`, and a bootloader before it
+    /// when `bootloader` is set.
+    fn release_json(tag: &str, prerelease: bool, draft: bool, bootloader: bool) -> String {
+        let mut assets = format!(
+            "{{\"name\":\"w-{tag}.bin\",\"browser_download_url\":\"https://example.com/{tag}.bin\"}}"
+        );
+        if bootloader {
+            assets = format!(
+                "{{\"name\":\"w-{tag}-bootloader.img\",\"size\":19008,\"digest\":\"sha256:{}\",\
+                 \"browser_download_url\":\"https://example.com/{tag}-bootloader.img\"}},{assets}",
+                "ab".repeat(32)
+            );
+        }
+        format!(
+            "{{\"tag_name\":\"{tag}\",\"draft\":{draft},\"prerelease\":{prerelease},\"assets\":[{assets}]}}"
+        )
+    }
+
+    #[test]
+    fn the_bootloader_comes_from_the_newest_release_that_carries_one() {
+        let list = format!(
+            "[{}]",
+            [
+                release_json("v1.5.0-beta.5", true, false, false),
+                release_json("v1.5.0-beta.4", true, false, false),
+                release_json("v1.6.0-beta.1", true, true, true),
+                release_json("v1.5.0-beta.2", true, false, true),
+                release_json("v1.4.9", false, false, true),
+            ]
+            .join(",")
+        );
+        // The firmware of the newest release, the bootloader of the newest
+        // one that has it; the draft does not count.
+        let release = UpdateChannel::Beta.parse_response(&list).unwrap();
+        assert_eq!(release.tag_name, "v1.5.0-beta.5");
+        let bootloader = release.bootloader.unwrap();
+        assert_eq!(bootloader.tag_name, "v1.5.0-beta.2");
+        assert_eq!(
+            bootloader.asset.download_url,
+            "https://example.com/v1.5.0-beta.2-bootloader.img"
+        );
+        // A stable device never takes the bootloader of a beta.
+        assert_eq!(
+            UpdateChannel::Stable
+                .newest_bootloader(&list)
+                .unwrap()
+                .tag_name,
+            "v1.4.9"
+        );
+        let without = format!("[{}]", release_json("v1.5.0-beta.5", true, false, false));
+        assert_eq!(
+            UpdateChannel::Beta
+                .parse_response(&without)
+                .unwrap()
+                .bootloader,
+            None
+        );
+        assert_eq!(UpdateChannel::Stable.newest_bootloader(&without), None);
     }
 
     #[test]
