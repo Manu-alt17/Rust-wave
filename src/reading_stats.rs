@@ -35,7 +35,7 @@ use crate::{date_math, ntp, regional::TimeZoneProfile, rtc::RtcDateTime};
 /// SD directory holding one append-only log file per calendar month, plus
 /// nothing else -- there is no cross-month summary cache; see this module's
 /// header comment for why that stays a lazy, bounded re-read instead.
-pub const STATS_DIRECTORY: &str = "/sdcard/RUSTMIX/STATS";
+pub const STATS_DIRECTORY: &str = "/sdcard/System/STATS";
 
 /// Default gap, in seconds, after the last page turn before an open session
 /// is considered abandoned ("book left open on the nightstand") rather than
@@ -1265,9 +1265,9 @@ mod tests {
 
     #[test]
     fn book_id_is_stable_and_distinguishes_books() {
-        let a = book_id_for("/sdcard/RUSTMIX/BOOKS/A.TXT", 1_000, 500);
-        let b = book_id_for("/sdcard/RUSTMIX/BOOKS/A.TXT", 1_000, 500);
-        let c = book_id_for("/sdcard/RUSTMIX/BOOKS/B.TXT", 1_000, 500);
+        let a = book_id_for("/sdcard/Books/A.TXT", 1_000, 500);
+        let b = book_id_for("/sdcard/Books/A.TXT", 1_000, 500);
+        let c = book_id_for("/sdcard/Books/B.TXT", 1_000, 500);
         assert_eq!(a, b);
         assert_ne!(a, c);
     }

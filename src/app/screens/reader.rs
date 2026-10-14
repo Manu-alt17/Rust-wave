@@ -489,8 +489,8 @@ pub fn render_library(
                 t(locale, "No books yet", "Nessun libro"),
                 t(
                     locale,
-                    "Press SELECT to open Upload and copy them from a phone or a computer. Books are EPUB or TXT files, kept in the RUSTMIX/BOOKS folder of the card.",
-                    "Premi SELECT per aprire Carica e copiarli dal telefono o dal computer. I libri sono file EPUB o TXT, nella cartella RUSTMIX/BOOKS della scheda.",
+                    "Press SELECT to open Upload and copy them from a phone or a computer. Books are EPUB or TXT files, kept in the Books folder of the card.",
+                    "Premi SELECT per aprire Carica e copiarli dal telefono o dal computer. I libri sono file EPUB o TXT, nella cartella Books della scheda.",
                 ),
             )
         };

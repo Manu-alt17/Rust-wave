@@ -1,5 +1,5 @@
 # Rustmix Wave Reader preferences
-# The Reader creates /RUSTMIX/READER/PREFS.TXT automatically after a change.
+# The Reader creates /System/READER/PREFS.TXT automatically after a change.
 # theme: classic | high-contrast
 # orientation: portrait | landscape
 # font_size: large | xlarge | xxlarge | xxxlarge (smallest to largest)

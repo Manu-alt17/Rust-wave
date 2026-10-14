@@ -270,16 +270,22 @@ assert '-Wl,--wrap=f_mkfs' in Path('components/usbdisk/CMakeLists.txt').read_tex
 # The in-reader lookup reuses the bounded X4 dictionary pack.
 dictionary = Path('src/dictionary.rs').read_text(encoding='utf-8')
 for fragment in (
-    'DICTIONARY_ROOT: &str = "/sdcard/RUSTMIX/APPS/DICT"',
+    'DICTIONARY_ROOT: &str = "/sdcard/System/APPS/DICT"',
     'DICTIONARY_INDEX_FILE: &str = "INDEX.TXT"',
     'DICTIONARY_SHARD_MAX_BYTES: usize = 16 * 1024',
 ):
     assert fragment in dictionary, f'dictionary contract missing: {fragment}'
 
 # Wi-Fi portal protects the configuration files by their resolved path.
-for protected in ('WIFI.TXT', 'CLOCK.TXT', 'DISPLAY.TXT'):
+for protected in ('SYSTEM/WIFI.TXT', 'SYSTEM/CLOCK.TXT', 'SYSTEM/DISPLAY.TXT'):
     assert f'"{protected}"' in wifi, f'protected portal path missing: {protected}'
 assert 'fn resolve_portal_path' in wifi
+# ... and the folder they are in, which the page never deletes or moves.
+assert 'is_portal_system_folder(&path)' in wifi
+assert 'is_portal_system_folder(&source)' in wifi
+
+# A card in the legacy layout moves to the new one before anything reads it.
+assert 'sd_layout::migrate_legacy_layout(SD_MOUNT_POINT)' in main
 PY
 }
 
@@ -287,19 +293,20 @@ sd_examples_contract() {
   python3 - <<'PY'
 from pathlib import Path
 required = (
-    'examples/sd-card/RUSTMIX/WIFI.TXT.example',
-    'examples/sd-card/RUSTMIX/DISPLAY.TXT.example',
-    'examples/sd-card/RUSTMIX/READER/PREFS.TXT.example',
-    'examples/sd-card/RUSTMIX/BOOKS/README.TXT.example',
-    'examples/sd-card/RUSTMIX/AUDIO/README.TXT.example',
-    'examples/sd-card/RUSTMIX/SLEEP/SLEEP.BMP',
-    'examples/sd-card/RUSTMIX/APPS/DICT/INDEX.TXT',
-    'examples/sd-card/RUSTMIX/APPS/DICT/DATA/AA.JSN',
+    'examples/sd-card/System/WIFI.TXT.example',
+    'examples/sd-card/System/DISPLAY.TXT.example',
+    'examples/sd-card/System/READER/PREFS.TXT.example',
+    'examples/sd-card/Books/README.TXT.example',
+    'examples/sd-card/Audiobooks/README.TXT.example',
+    'examples/sd-card/Wallpapers/SLEEP.BMP',
+    'examples/sd-card/System/APPS/DICT/INDEX.TXT',
+    'examples/sd-card/System/APPS/DICT/DATA/AA.JSN',
 )
 for path in required:
     assert Path(path).is_file(), f'SD example missing: {path}'
 for removed in ('APPS/DICT/MAIN.LUA', 'APPS/DICT/APP.TOM', 'APPS/CALENDAR', 'WEATHER.TXT.example', 'ALARMS.TXT.example'):
-    assert not Path('examples/sd-card/RUSTMIX', removed).exists(), f'example of a removed feature present: {removed}'
+    assert not Path('examples/sd-card/System', removed).exists(), f'example of a removed feature present: {removed}'
+assert not Path('examples/sd-card/RUSTMIX').exists(), 'examples still in the legacy RUSTMIX layout'
 PY
 }
 

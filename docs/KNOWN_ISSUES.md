@@ -9,7 +9,7 @@
 ## Upgrading from earlier versions
 
 - Positions and Recent entries saved before long file names were enabled use 8.3 names (`OSSESS~1.EPU`); they no longer match the long names the library now shows, so those books start again from the beginning once.
-- Audiobooks go in `RUSTMIX/AUDIO`; files left elsewhere (for example the E-ink firmware's `/audiobooks`) are not listed.
+- Audiobooks go in `/Audiobooks` (on FAT the same folder as the E-ink firmware's `/audiobooks`); files left elsewhere are not listed.
 - `CLOCK.TXT` keeps the time zone chosen before: the Europe/Rome default applies only where none was saved.
 
 ## PMIC power-off

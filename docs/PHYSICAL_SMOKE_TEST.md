@@ -12,6 +12,13 @@ Run this checklist after a release build or any cross-cutting runtime change. Do
 4. Confirm boot reaches the Home screen without panic or reset loops, and that a release build prints warnings only (no INFO lines from the bootloader or the app).
 5. Confirm Settings → Info shows the version in `Cargo.toml`.
 
+## microSD layout
+
+1. Boot a card of firmware up to 1.5.0-beta.5 (everything in `/RUSTMIX`), with a book being read, a bookmark and some reading statistics. Back it up first.
+2. The boot log has `sd-layout-migration ... finished=true`; the card holds `Books`, `Audiobooks`, `Wallpapers` and `System`, and no `RUSTMIX`.
+3. **Continua** on Home reopens the book at the same page, the bookmark is still there, and Statistics lists the book.
+4. A book of the same name in an old top-level `books` folder: the same book is kept once, a different one as `name (2)`.
+
 ## Button capture under load
 
 1. Trigger a global refresh (for example the display maintenance menu's **Clear ghosting now**).
@@ -39,7 +46,7 @@ Run this checklist after a release build or any cross-cutting runtime change. Do
 1. Open one TXT and one EPUB book: an EPUB with a cover opens on it, Down goes on to the text.
 2. Check page turns, the options (hold SELECT), preferences, table of contents and bookmark add/remove, and the dictionary lookup (SELECT, choose a word).
 3. Reboot and confirm **Continua** on Home restores the book and page.
-4. Confirm `/RUSTMIX/READER/POSITS.TXT` and the `READER/CACHE` files exist.
+4. Confirm `/System/READER/POSITS.TXT` and the `READER/CACHE` files exist.
 
 ## Library and covers
 
@@ -49,7 +56,7 @@ Run this checklist after a release build or any cross-cutting runtime change. Do
 
 ## Audiobooks
 
-1. Put one MP3 and one folder of numbered MP3 tracks in `/RUSTMIX/AUDIO`.
+1. Put one MP3 and one folder of numbered MP3 tracks in `/Audiobooks`.
 2. Play each: sound on the speaker, no clicks, the track order follows the numbers.
 3. Pause and resume, change the volume, use the player menu (30 s back and forward, previous and next track, stop).
 4. Go Back to the list while playing: playback goes on.
@@ -57,8 +64,8 @@ Run this checklist after a release build or any cross-cutting runtime change. Do
 
 ## Connect to PC
 
-1. Home → Carica → Cavo USB, connect the cable, press SELECT: the computer sees the microSD as a disk, and the serial port disappears.
-2. Copy a book and an audiobook, eject the disk on the computer, press a key on the device (not BOOT): it restarts, the serial port is back, and the new book and audiobook are listed.
+1. Home → Carica → Cavo USB, connect the cable: that one SELECT starts disk mode, the computer sees the microSD as a disk, and the serial port disappears.
+2. Copy a book and an audiobook, eject the disk on the computer, press any key on the device, BOOT included: it restarts, the serial port is back, and the new book and audiobook are listed.
 3. Repeat, pulling the cable without ejecting: the card must not be formatted.
 
 ## Network
@@ -80,5 +87,5 @@ Measures whether automatic light sleep is actually entered while the device sits
    - Reader page after the reader power-save grace period (`wifi-suspended-for-reading=true`).
    - Audiobook playback (expected to stay awake).
 4. `light-sleeps=0` means the chip never actually entered light sleep in that window. `min-freq-pct` is the share of time at the 40 MHz floor where light sleep is permitted (ESP-IDF's `SLEEP` mode), not time spent asleep; the lock rows with a growing `Time(us)` show what keeps it awake or at a raised frequency.
-5. While a PC is attached over USB, automatic light sleep is deliberately blocked (`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`: the USB Serial/JTAG console cannot survive it), and the lock rows show `usb_serial_jtag NO_LIGHT_SLEEP` held. To measure light sleep, confirm the build over USB first, then run the scenarios on battery or a wall charger with no PC attached. Every window is also appended to `/sdcard/RUSTMIX/PMPROF.TXT` (moved to `PMPROF.OLD` at 64 KB), prefixed with `uptime-ms=`; read it afterwards from the card or through the Wi-Fi transfer portal.
+5. While a PC is attached over USB, automatic light sleep is deliberately blocked (`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`: the USB Serial/JTAG console cannot survive it), and the lock rows show `usb_serial_jtag NO_LIGHT_SLEEP` held. To measure light sleep, confirm the build over USB first, then run the scenarios on battery or a wall charger with no PC attached. Every window is also appended to `/sdcard/System/PMPROF.TXT` (moved to `PMPROF.OLD` at 64 KB), prefixed with `uptime-ms=`; read it afterwards from the card or through the Wi-Fi transfer portal.
 6. Rebuild without the overlay before any battery-life measurement.

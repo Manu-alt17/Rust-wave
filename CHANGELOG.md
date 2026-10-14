@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+microSD layout:
+
+- The `RUSTMIX` folder is gone. The top of the card holds what people copy onto it and one folder for what the device manages itself: `Books`, `Audiobooks`, `Wallpapers` (the former `RUSTMIX/BOOKS`, `AUDIO`, `SLEEP`) and `System` (settings, reading positions, statistics, caches, the dictionary pack, with the same files and subfolders `RUSTMIX` had). On a new card the two read-me files are at the top, describing the four folders.
+- A card of an older firmware moves by itself on the first start, before anything reads it (`src/sd_layout.rs`). Folders and files are renamed, not copied, so a full card takes the same short time and keeps its dates. The book paths saved by the Reader (`STATE`, `POSITS`, `RECENT`, `MARKS`, and their `.BAK`) are rewritten, and so are the book fingerprints in the statistics, which hash the path. The caches, keyed by path, are dropped and rebuilt as books open; `MENU.TXT` and the old read-me files are dropped.
+- Nothing is overwritten. A file meeting one of the same name with the same contents takes its place, since it is the copy the reading positions know by its date; one with different contents is kept as `name (2)`. A folder of the E-ink firmware such as `books` or `audiobooks` becomes `Books` or `Audiobooks` (FAT takes them for the same folder, so the contents merge the same way). Whatever a power cut interrupts is finished on the next boot, and `RUSTMIX` goes once it is empty. On a real card that also had the E-ink firmware's `books`, holding the same five books: all moved, `RUSTMIX` removed, positions kept, in 1.4 s.
+- The Wi-Fi page is rooted at the whole card. `System` and Windows' `System Volume Information` are hidden with the other system files, and `System` can be opened but never deleted, moved or renamed from the page; its `WIFI.TXT`, `CLOCK.TXT` and `DISPLAY.TXT` stay refused as before. The Network screen names the whole card as the page's folder.
+- Scripts, examples and documents follow the new paths (`examples/sd-card/Books`, `Audiobooks`, `Wallpapers`, `System`).
+
 Books:
 
 - EPUBs over 16 MB open. The 16 MiB ceiling on the archive was a leftover of when books were read whole into memory; above 2 MB only the central directory and one member at a time are read, so the size of the file costs nothing. The limit is now the most a ZIP without ZIP64 can address (4 GB, as FAT32 too). What a damaged file could still make the device allocate is capped instead: the central directory at 1 MiB (4096 records with 200-byte names fit), refused with an error before anything is read. Checked on the device with a 17.8 MB EPUB: opened in 92 ms, and an image stored past the 16 MB mark read back intact.
@@ -12,7 +20,7 @@ Settings and Files:
 
 - **File** moved from Home into Settings (Opzioni), between **Lingua** and **Info**; BOOT from its top folder goes back to Settings. Home has five tiles.
 - Settings keeps its tiles in one fixed order. The **Più usate** / **Altro** sections, which moved the last three opened to the top, are gone, with `RUSTMIX/MENU.TXT` that kept them.
-- Files no longer deletes the files the device keeps its own state in: the `.TXT` files directly in `RUSTMIX` and in `RUSTMIX/READER` (Wi-Fi networks, clock, display, update channel, volume, reading positions, bookmarks...) and the statistics in `RUSTMIX/STATS`. Holding SELECT on one says why instead of asking to confirm, and the footer does not offer it. The Wi-Fi page already refused its own configuration files.
+- Files no longer deletes the files the device keeps its own state in: the `.TXT` files directly in `System` and in `System/READER` (Wi-Fi networks, clock, display, update channel, volume, reading positions, bookmarks...) and the statistics in `System/STATS`. Holding SELECT on one says why instead of asking to confirm, and the footer does not offer it. The Wi-Fi page already refused its own configuration files.
 
 Connect to PC:
 

@@ -1,4 +1,4 @@
-//! Audiobooks: the library under `/sdcard/RUSTMIX/AUDIO`, the listening
+//! Audiobooks: the library under `/sdcard/Audiobooks`, the listening
 //! position kept for each title, and what the first bytes of an MP3 file
 //! say about its length and where to seek.
 //!
@@ -15,9 +15,9 @@ use std::{
 };
 
 /// Folder the library is scanned from.
-pub const AUDIOBOOK_ROOT: &str = "/sdcard/RUSTMIX/AUDIO";
+pub const AUDIOBOOK_ROOT: &str = "/sdcard/Audiobooks";
 /// Listening positions, one line per title (FAT 8.3 name).
-pub const AUDIOBOOK_POSITIONS_PATH: &str = "/sdcard/RUSTMIX/AUDIOPOS.TXT";
+pub const AUDIOBOOK_POSITIONS_PATH: &str = "/sdcard/AudiobooksPOS.TXT";
 /// Titles whose position is remembered; the least recently played go first.
 pub const AUDIOBOOK_POSITIONS_MAX: usize = 200;
 /// Bytes read from the start of a track to find its first frame and VBR

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::regional::Locale;
 
 /// Portal root.  Browser requests may never escape this subtree.
-pub const WIFI_TRANSFER_ROOT: &str = "/sdcard/RUSTMIX";
+pub const WIFI_TRANSFER_ROOT: &str = "/sdcard";
 /// The ESP-IDF HTTP server task exists only while transfer mode is enabled.
 pub const WIFI_TRANSFER_SERVER_STACK_BYTES: usize = 24 * 1024;
 /// Upload and download bodies stream through one bounded scratch buffer.
@@ -224,7 +224,7 @@ pub fn is_same_origin_request(origin: Option<&str>, host: Option<&str>) -> bool 
 }
 
 /// Resolve one portal path, as it arrives from [`query_value`] (already
-/// percent-decoded, and decoded only once), beneath `/sdcard/RUSTMIX`.
+/// percent-decoded, and decoded only once), beneath `/sdcard`.
 /// Rejects traversal, absolute and overlong paths, names the SD card cannot
 /// store as typed, and the protected configuration files -- judged on the
 /// path actually resolved, so no other spelling of one (`./WIFI.TXT`,
@@ -270,7 +270,10 @@ pub fn is_protected_portal_path(relative: &str) -> bool {
         .map(str::to_ascii_uppercase)
         .collect::<Vec<_>>()
         .join("/");
-    matches!(canonical.as_str(), "WIFI.TXT" | "CLOCK.TXT" | "DISPLAY.TXT")
+    matches!(
+        canonical.as_str(),
+        "SYSTEM/WIFI.TXT" | "SYSTEM/CLOCK.TXT" | "SYSTEM/DISPLAY.TXT"
+    )
 }
 
 /// One file or folder name the SD card's FAT filesystem (long names on)
@@ -293,7 +296,7 @@ pub fn is_sd_safe_name(component: &str) -> bool {
 pub struct SleepScreenRequest {
     /// What standby is to show.
     pub mode: crate::app::display::SleepScreenMode,
-    /// With [`SleepScreenMode::Fixed`], the wallpaper of `/SLEEP` to keep;
+    /// With [`SleepScreenMode::Fixed`], the wallpaper of `/Wallpapers` to keep;
     /// `None` keeps the one standby shows now.
     ///
     /// [`SleepScreenMode::Fixed`]: crate::app::display::SleepScreenMode::Fixed
@@ -402,10 +405,22 @@ pub fn portal_locale_code() -> &'static str {
 
 /// Whether `path` is the card's own top folder, as [`resolve_portal_path`]
 /// returns it for `/`. Deleting a folder with what it holds stops here: the
-/// top folder holds the settings and everything else.
+/// top folder holds everything.
 #[must_use]
 pub fn is_portal_root(path: &Path) -> bool {
     path == Path::new(WIFI_TRANSFER_ROOT)
+}
+
+/// Whether `path` is the folder the device keeps its settings, reading
+/// positions and statistics in (`crate::sd_layout::SYSTEM_FOLDER`): the page
+/// may open it, but never delete, move or rename it, nor anything onto it.
+#[must_use]
+pub fn is_portal_system_folder(path: &Path) -> bool {
+    path.parent() == Some(Path::new(WIFI_TRANSFER_ROOT))
+        && path.file_name().is_some_and(|name| {
+            name.to_string_lossy()
+                .eq_ignore_ascii_case(crate::sd_layout::SYSTEM_FOLDER)
+        })
 }
 
 /// Tiny query parser used by the portal API.  The firmware intentionally avoids
@@ -485,13 +500,13 @@ pub mod espidf {
 
     use super::{
         download_content_disposition, download_content_type, is_portal_root,
-        is_protected_portal_path, is_same_origin_request, is_sleep_image_name, portal_locale_code,
-        query_value, resolve_portal_path, sleep_status_json, JoinAttemptState, PendingJoinRequest,
-        SleepScreenRequest, WifiTransferSnapshot, WifiTransferState,
-        NETWORK_PROVISION_INACTIVITY_SECONDS, WIFI_TRANSFER_HTTP_PORT,
-        WIFI_TRANSFER_INACTIVITY_SECONDS, WIFI_TRANSFER_MAX_DIRECTORY_ROWS,
-        WIFI_TRANSFER_MAX_UPLOAD_BYTES, WIFI_TRANSFER_ROOT, WIFI_TRANSFER_SERVER_STACK_BYTES,
-        WIFI_TRANSFER_STREAM_CHUNK_BYTES,
+        is_portal_system_folder, is_protected_portal_path, is_same_origin_request,
+        is_sleep_image_name, portal_locale_code, query_value, resolve_portal_path,
+        sleep_status_json, JoinAttemptState, PendingJoinRequest, SleepScreenRequest,
+        WifiTransferSnapshot, WifiTransferState, NETWORK_PROVISION_INACTIVITY_SECONDS,
+        WIFI_TRANSFER_HTTP_PORT, WIFI_TRANSFER_INACTIVITY_SECONDS,
+        WIFI_TRANSFER_MAX_DIRECTORY_ROWS, WIFI_TRANSFER_MAX_UPLOAD_BYTES, WIFI_TRANSFER_ROOT,
+        WIFI_TRANSFER_SERVER_STACK_BYTES, WIFI_TRANSFER_STREAM_CHUNK_BYTES,
     };
 
     const PORTAL_HTML: &str = r##"<!doctype html>
@@ -1109,7 +1124,7 @@ function downloadPaths(paths){
 // errori "not enough space" alla lettura successiva: generare qui, e
 // caricare solo il file binario gia pronto (.THB, stesso formato che
 // CoverCache scrive su SD), evita del tutto quel rischio.
-const COVER_THUMB_W=208,COVER_THUMB_H=252,COVER_CACHE_DIR='/READER/CACHE';
+const COVER_THUMB_W=208,COVER_THUMB_H=252,COVER_CACHE_DIR='/System/READER/CACHE';
 function fnv1a64(bytes){
   let hash=0xcbf29ce484222325n;const prime=0x100000001b3n,mask=0xffffffffffffffffn;
   for(let i=0;i<bytes.length;i++){hash^=BigInt(bytes[i]);hash=(hash*prime)&mask}
@@ -1233,22 +1248,23 @@ async function pregenerateBookCoverClientSide(item){
   let fileBytes=new Uint8Array(await item.file.arrayBuffer());
   let cover=await extractEpubCoverBytes(fileBytes);
   if(!cover)return;
-  let bookPath='/BOOKS/'+item.name;
+  let bookPath='/Books/'+item.name;
   // A plain directory stat, not /api/books: that endpoint re-derives every
   // EPUB's title from its OPF (one ZIP-parsing worker thread per book) on
   // every call, which is wasted work here — only this one file's size/mtime
   // are needed to compute the fingerprint.
-  let dirEntries=JSON.parse(await api('/api/list?path=/BOOKS'));
+  let dirEntries=JSON.parse(await api('/api/list?path=/Books'));
   let stat=dirEntries.find(e=>e.name===item.name);
   if(!stat)return;
   let bits=await buildCoverBits(cover.bytes,cover.mediaType);
-  let fingerprint=coverFingerprint('/sdcard/RUSTMIX'+bookPath,stat.size,stat.modified);
+  let fingerprint=coverFingerprint('/sdcard'+bookPath,stat.size,stat.modified);
   let fingerprintHex=(fingerprint&0xffffffffn).toString(16).toUpperCase().padStart(8,'0');
   let thb=buildThbFile(bits,fingerprint);
   // /api/mkdir only creates one level at a time, so ensure the parent
   // exists first: a device that has never opened the Reader yet may not
-  // have /READER on the card at all.
-  await ensureDir('/READER');
+  // have /System/READER on the card at all.
+  await ensureDir('/System');
+  await ensureDir('/System/READER');
   await ensureDir(COVER_CACHE_DIR);
   await api('/api/upload?path='+enc(COVER_CACHE_DIR+'/'+fingerprintHex+'.THB'),{method:'POST',body:new Blob([thb])});
 }
@@ -1257,11 +1273,11 @@ async function pregenerateBookCoverClientSide(item){
 // pregenerateBookCoverClientSide sopra), quindi sia questa pagina che la
 // schermata Libreria del dispositivo le trovano gia in cache.
 let books=[];
-const booksUploader=createUploader({containerId:'queueBooks',getDir:()=>'/BOOKS',getExisting:()=>new Set(books.map(b=>baseName(b.path).toLowerCase())),onItemDone:pregenerateBookCoverClientSide,onDone:()=>{status(L('Libri caricati','Books uploaded'));refreshBooks();fetchSpace()}});
+const booksUploader=createUploader({containerId:'queueBooks',getDir:()=>'/Books',getExisting:()=>new Set(books.map(b=>baseName(b.path).toLowerCase())),onItemDone:pregenerateBookCoverClientSide,onDone:()=>{status(L('Libri caricati','Books uploaded'));refreshBooks();fetchSpace()}});
 wireDropZone('dropBooks','fileBooks',booksUploader);
 async function refreshBooks(){
   try{
-    await ensureDir('/BOOKS');
+    await ensureDir('/Books');
     books=JSON.parse(await api('/api/books'));
     renderBooks();
   }catch(e){$('bookGrid').innerHTML='<p class="hint">'+escapeHtml(explainError(e))+'</p>'}
@@ -1283,7 +1299,7 @@ function deleteBook(path){deleteWithUndo([{path:path,folder:false}],done=>{if(do
 // --- audiolibri: un file MP3 e un titolo; una cartella di MP3 e un titolo
 // con le sue tracce (come li legge il dispositivo, vedi `audiobook.rs`).
 let audioEntries=[],audioInfo=new Map();
-const audioUploader=createUploader({containerId:'queueAudio',getDir:()=>'/AUDIO',getExisting:()=>new Set(),onDone:()=>{status(L('Audiolibro caricato','Audiobook uploaded'));refreshAudio();fetchSpace()}});
+const audioUploader=createUploader({containerId:'queueAudio',getDir:()=>'/Audiobooks',getExisting:()=>new Set(),onDone:()=>{status(L('Audiolibro caricato','Audiobook uploaded'));refreshAudio();fetchSpace()}});
 function commonTitle(files){
   let names=files.map(f=>f.name.replace(/\.mp3$/i,''));
   let prefix=names[0];
@@ -1295,13 +1311,13 @@ async function audioFilesChosen(list){
   let files=Array.from(list).filter(f=>/\.mp3$/i.test(f.name));
   if(!files.length){toast(L('Servono file MP3.','MP3 files are needed.'),{error:true});return}
   if(files.length===1){
-    audioUploader.handleFiles(files,'/AUDIO',new Set(audioEntries.map(e=>e.name.toLowerCase())));
+    audioUploader.handleFiles(files,'/Audiobooks',new Set(audioEntries.map(e=>e.name.toLowerCase())));
     return;
   }
   let title=await askText(L('Titolo dell\'audiolibro','Title of the audiobook'),commonTitle(files),L('Carica','Upload'),L(files.length+' tracce, in una cartella con questo nome.',files.length+' tracks, in a folder of this name.'));
   if(!title)return;
-  let dir='/AUDIO/'+safeName(title);
-  await ensureDir('/AUDIO');
+  let dir='/Audiobooks/'+safeName(title);
+  await ensureDir('/Audiobooks');
   await ensureDir(dir);
   let existing=new Set();
   try{existing=new Set(JSON.parse(await api('/api/list?path='+enc(dir))).map(e=>e.name.toLowerCase()))}catch(e){fail(e);return}
@@ -1317,15 +1333,15 @@ async function audioFilesChosen(list){
 })();
 async function refreshAudio(){
   try{
-    await ensureDir('/AUDIO');
-    audioEntries=JSON.parse(await api('/api/list?path=/AUDIO')).filter(e=>e.kind==='folder'||/\.mp3$/i.test(e.name));
+    await ensureDir('/Audiobooks');
+    audioEntries=JSON.parse(await api('/api/list?path=/Audiobooks')).filter(e=>e.kind==='folder'||/\.mp3$/i.test(e.name));
     audioEntries.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}));
     renderAudio();
     // One folder at a time: the device answers a single request comfortably.
     for(const e of audioEntries){
       if(e.kind!=='folder'||activeTab!=='audio')continue;
       try{
-        let tracks=JSON.parse(await api('/api/list?path='+enc('/AUDIO/'+e.name))).filter(t=>t.kind==='file'&&/\.mp3$/i.test(t.name));
+        let tracks=JSON.parse(await api('/api/list?path='+enc('/Audiobooks/'+e.name))).filter(t=>t.kind==='file'&&/\.mp3$/i.test(t.name));
         audioInfo.set(e.name,{count:tracks.length,size:tracks.reduce((sum,t)=>sum+t.size,0)});
         renderAudio();
       }catch(err){}
@@ -1335,7 +1351,7 @@ async function refreshAudio(){
 function renderAudio(){
   let html='';
   for(const e of audioEntries){
-    let path='/AUDIO/'+e.name;
+    let path='/Audiobooks/'+e.name;
     if(isPendingDelete(path))continue;
     let folder=e.kind==='folder',info=audioInfo.get(e.name);
     let meta=folder?(info?info.count+' '+(info.count===1?L('traccia','track'):L('tracce','tracks'))+' · '+formatBytes(info.size):'...'):'1 file · '+formatBytes(e.size);
@@ -1570,8 +1586,8 @@ function buildSleepBmp(dithered){
 // The file gets the first free SLEEPnnn.BMP: a name is nothing the user has
 // to think about.
 async function nextSleepName(){
-  await ensureDir('/SLEEP');
-  let existing=new Set(JSON.parse(await api('/api/list?path=/SLEEP')).map(e=>e.name.toUpperCase()));
+  await ensureDir('/Wallpapers');
+  let existing=new Set(JSON.parse(await api('/api/list?path=/Wallpapers')).map(e=>e.name.toUpperCase()));
   for(let i=1;i<=999;i++){
     let candidate='SLEEP'+String(i).padStart(3,'0')+'.BMP';
     if(!existing.has(candidate))return candidate;
@@ -1588,7 +1604,7 @@ async function uploadBackground(){
     let blob=new Blob([bytes],{type:'application/octet-stream'});
     await new Promise((resolve,reject)=>{
       let xhr=new XMLHttpRequest();
-      xhr.open('POST','/api/upload?path='+enc('/SLEEP/'+name));
+      xhr.open('POST','/api/upload?path='+enc('/Wallpapers/'+name));
       xhr.upload.onprogress=function(e){if(e.lengthComputable)bgStatus(L('Salvataggio ','Saving ')+Math.round(e.loaded/e.total*100)+'%')};
       xhr.onload=function(){if(xhr.status>=200&&xhr.status<300)resolve();else reject(new Error(xhr.responseText||('HTTP '+xhr.status)))};
       xhr.onerror=function(){reject(new Error('Failed to fetch'))};
@@ -1709,16 +1725,16 @@ async function setSleepMode(mode,name){
 }
 async function refreshSleepGallery(){
   try{
-    await ensureDir('/SLEEP');
+    await ensureDir('/Wallpapers');
     try{await readStatus(false)}catch(e){}
-    sleepEntries=JSON.parse(await api('/api/list?path=/SLEEP')).filter(e=>e.kind==='file');
+    sleepEntries=JSON.parse(await api('/api/list?path=/Wallpapers')).filter(e=>e.kind==='file');
     renderSleepGallery();
   }catch(e){$('sleepGallery').innerHTML='<p class="hint">'+escapeHtml(explainError(e))+'</p>'}
 }
 async function renderSleepGallery(){
   let gallery=$('sleepGallery'),html='';
   for(const e of sleepEntries){
-    let path='/SLEEP/'+e.name;
+    let path='/Wallpapers/'+e.name;
     if(isPendingDelete(path))continue;
     let p=escapeHtml(path);
     let fixed=isFixedWallpaper(e.name),n=escapeHtml(e.name);
@@ -1741,25 +1757,24 @@ function deleteSleepImage(path){deleteWithUndo([{path:path,folder:false}],done=>
 // the right button opens the menu, F2 renames, Del deletes, and a row can be
 // dragged onto a folder. The device only ever sees list, upload, rename
 // (which also moves), mkdir and delete.
-const FRIENDLY={BOOKS:['Libri','Books'],AUDIO:['Audiolibri','Audiobooks'],SLEEP:['Sfondi','Wallpapers'],APPS:['App e dizionari','Apps and dictionaries']};
+const FRIENDLY={Books:['Libri','Books'],Audiobooks:['Audiolibri','Audiobooks'],Wallpapers:['Sfondi','Wallpapers'],System:['Sistema','System']};
 let fx={path:'/',entries:[],sel:new Set(),selMode:false,sort:'name',asc:true,showSys:false,anchor:null,loaded:false};
 let fxCounts=new Map(),fxDragging=null,fxLongPress=null,fxSkipClick=false;
 const fxMouse=matchMedia('(hover:hover) and (pointer:fine)');
 function fxFriendly(dir,name){return dir==='/'&&FRIENDLY[name]?L(FRIENDLY[name][0],FRIENDLY[name][1]):name}
-// What the device keeps for itself: at the top of the card, every file but
-// the two "read me" ones, and the folders of reading positions and
-// statistics. Hidden until asked for, so they are not deleted by mistake.
+// What the device keeps for itself: its System folder, and the one Windows
+// leaves on every card. Hidden until asked for, so they are not deleted by
+// mistake.
 function fxIsSystem(dir,e){
   if(e.name.startsWith('.'))return true;
-  if(dir!=='/')return false;
-  if(e.kind==='folder')return e.name==='READER'||e.name==='STATS';
-  return !/^(LEGGIMI|README)\.TXT$/i.test(e.name);
+  if(dir!=='/'||e.kind!=='folder')return false;
+  return /^(system|system volume information)$/i.test(e.name);
 }
 function fxExt(name){let i=name.lastIndexOf('.');return i<0?'':name.slice(i+1).toLowerCase()}
 function fxKind(dir,e){
   if(e.kind==='folder')return 'folder';
   let ext=fxExt(e.name);
-  if(ext==='epub'||(ext==='txt'&&dir.startsWith('/BOOKS')))return 'book';
+  if(ext==='epub'||(ext==='txt'&&dir.startsWith('/Books')))return 'book';
   if(ext==='mp3')return 'music';
   if(ext==='bmp'||ext==='png'||ext==='jpg'||ext==='jpeg')return 'img';
   return 'file';
@@ -1768,7 +1783,7 @@ function fxTypeLabel(dir,e){
   if(e.kind==='folder')return L('Cartella','Folder');
   let ext=fxExt(e.name);
   if(ext==='epub')return L('Libro (EPUB)','Book (EPUB)');
-  if(ext==='txt')return dir.startsWith('/BOOKS')?L('Libro (testo)','Book (text)'):L('Testo','Text');
+  if(ext==='txt')return dir.startsWith('/Books')?L('Libro (testo)','Book (text)'):L('Testo','Text');
   if(ext==='mp3')return 'Audio MP3';
   if(ext==='bmp'||ext==='png'||ext==='jpg'||ext==='jpeg')return L('Immagine','Picture');
   return ext?'File '+ext.toUpperCase():'File';
@@ -1844,7 +1859,7 @@ function fxRender(){
   $('fxSys').hidden=hidden===0;
   $('fxSys').innerHTML=ICON.folder+'<span>'+(fx.showSys?L('File di sistema mostrati','System files shown'):L('File di sistema nascosti','System files hidden'))+' ('+hidden+')</span><button onclick="fxToggleSys()">'+(fx.showSys?L('Nascondi','Hide'):L('Mostra','Show'))+'</button>';
   let side=(p,icon,label,cls)=>'<button data-p="'+p+'" class="'+(cls||'')+(dir===p||(p!=='/'&&dir.startsWith(p+'/'))?' on':'')+'">'+ICON[icon]+escapeHtml(label)+'</button>';
-  $('fxSide').innerHTML='<div class="lab">'+L('Raccolte','Collections')+'</div>'+side('/BOOKS','book',L('Libri','Books'))+side('/AUDIO','music',L('Audiolibri','Audiobooks'))+side('/SLEEP','img',L('Sfondi','Wallpapers'))+'<div class="lab">'+L('Scheda di memoria','Memory card')+'</div><button data-p="/" class="'+(dir==='/'?'on':'')+'">'+ICON.folder+L('Tutti i file','All files')+'</button><button class="sub'+(fx.showSys?' on':'')+'" onclick="fxToggleSys()">'+ICON.eye+L('File di sistema','System files')+'</button>';
+  $('fxSide').innerHTML='<div class="lab">'+L('Raccolte','Collections')+'</div>'+side('/Books','book',L('Libri','Books'))+side('/Audiobooks','music',L('Audiolibri','Audiobooks'))+side('/Wallpapers','img',L('Sfondi','Wallpapers'))+'<div class="lab">'+L('Scheda di memoria','Memory card')+'</div><button data-p="/" class="'+(dir==='/'?'on':'')+'">'+ICON.folder+L('Tutti i file','All files')+'</button><button class="sub'+(fx.showSys?' on':'')+'" onclick="fxToggleSys()">'+ICON.eye+L('File di sistema','System files')+'</button>';
   $('fxDropHint').textContent=L('Trascina qui i file per caricarli in «','Drag files here to upload them to "')+(dir==='/'?L('Scheda di memoria','Memory card'):fxFriendly(parentOf(dir),baseName(dir)))+L('»','"');
   fxRenderSelection(list);
 }
@@ -1976,7 +1991,7 @@ async function fxPreview(path,e){
   let ext=fxExt(e.name),body;
   if(['bmp','png','jpg','jpeg'].includes(ext)){
     // A sleep image is stored turned: shown the way the device shows it.
-    body=path.startsWith('/SLEEP/')&&ext==='bmp'?'<div class="sleep-thumb" style="max-width:240px;margin:.4rem auto" data-empty="'+L('Anteprima non disponibile','No preview')+'"><canvas id="previewCanvas" width="480" height="800"></canvas></div>':'<img class="preview" src="/api/download?path='+enc(path)+'" alt="">';
+    body=path.startsWith('/Wallpapers/')&&ext==='bmp'?'<div class="sleep-thumb" style="max-width:240px;margin:.4rem auto" data-empty="'+L('Anteprima non disponibile','No preview')+'"><canvas id="previewCanvas" width="480" height="800"></canvas></div>':'<img class="preview" src="/api/download?path='+enc(path)+'" alt="">';
   }else{
     try{let text=await api('/api/download?path='+enc(path));body='<pre>'+escapeHtml(text.slice(0,20000))+(text.length>20000?'\n...':'')+'</pre>'}catch(err){fail(err);return}
   }
@@ -2466,6 +2481,9 @@ initApp();
                     if is_portal_root(&path) {
                         bail!("the card's top folder cannot be deleted");
                     }
+                    if is_portal_system_folder(&path) {
+                        bail!("the device's System folder cannot be deleted");
+                    }
                     if recursive {
                         fs::remove_dir_all(&path)?;
                     } else {
@@ -2499,6 +2517,9 @@ initApp();
                 let to = required_query(request.uri(), "to")?;
                 let source = resolve_portal_path(&from).map_err(|error| anyhow!(error))?;
                 let destination = resolve_portal_path(&to).map_err(|error| anyhow!(error))?;
+                if is_portal_system_folder(&source) || is_portal_system_folder(&destination) {
+                    bail!("the device's System folder cannot be moved or renamed");
+                }
                 fs::rename(&source, &destination)?;
                 lock(&rename_shared).touch(format!("Renamed {from}"), 0);
                 info!("rustmix-wave=wifi-transfer-request method=POST route=rename from={from} to={to} status=completed");
@@ -2628,7 +2649,7 @@ initApp();
                     if !is_sleep_image_name(&name) {
                         bail!("not a wallpaper name");
                     }
-                    let path = resolve_portal_path(&format!("/SLEEP/{name}"))
+                    let path = resolve_portal_path(&format!("/Wallpapers/{name}"))
                         .map_err(|error| anyhow!(error))?;
                     if !path.is_file() {
                         bail!("no such wallpaper");
@@ -3091,10 +3112,10 @@ mod tests {
 
     #[test]
     fn portal_paths_are_confined_and_sd_safe() {
-        assert!(resolve_portal_path("/BOOKS/POIROT01.EPU").is_ok());
-        assert!(resolve_portal_path("/BOOKS/L'amica geniale - Elena Ferrante.epub").is_ok());
+        assert!(resolve_portal_path("/Books/POIROT01.EPU").is_ok());
+        assert!(resolve_portal_path("/Books/L'amica geniale - Elena Ferrante.epub").is_ok());
         assert!(resolve_portal_path("../WIFI.TXT").is_err());
-        assert!(resolve_portal_path("/BOOKS/what?.txt").is_err());
+        assert!(resolve_portal_path("/Books/what?.txt").is_err());
         assert!(is_sd_safe_name("MAIN.LUA"));
         assert!(is_sd_safe_name("Perché «così» (2021).epub"));
         assert!(!is_sd_safe_name("a:b.txt"));
@@ -3106,9 +3127,10 @@ mod tests {
 
     #[test]
     fn configuration_files_are_protected() {
-        assert!(is_protected_portal_path("/WIFI.TXT"));
-        assert!(is_protected_portal_path("CLOCK.TXT"));
-        assert!(!is_protected_portal_path("/BOOKS/NOTES001.TXT"));
+        assert!(is_protected_portal_path("/System/WIFI.TXT"));
+        assert!(is_protected_portal_path("system/CLOCK.TXT"));
+        assert!(!is_protected_portal_path("/Books/NOTES001.TXT"));
+        assert!(!is_protected_portal_path("/WIFI.TXT"));
     }
 
     /// Every spelling that resolves to a protected file is refused by the
@@ -3117,32 +3139,33 @@ mod tests {
     fn no_spelling_of_a_protected_file_resolves() {
         let from_query = |raw: &str| query_value(&format!("/api/download?path={raw}"), "path");
         for raw in [
-            "WIFI.TXT",
-            "/WIFI.TXT",
-            "./WIFI.TXT",
-            "/./WIFI.TXT",
-            "WIFI.TXT/",
-            "//WIFI.TXT",
-            "wifi.txt",
-            "WiFi.Txt",
-            "%2E%2FWIFI.TXT",
-            "%57IFI.TXT",
-            "WIFI.TXT.",
-            "WIFI.TXT%20",
-            "WIFI.TXT+",
-            "BOOKS/../WIFI.TXT",
-            "display.txt",
+            "System/WIFI.TXT",
+            "/System/WIFI.TXT",
+            "./System/WIFI.TXT",
+            "/./System/./WIFI.TXT",
+            "System/WIFI.TXT/",
+            "//System//WIFI.TXT",
+            "system/wifi.txt",
+            "SYSTEM/WiFi.Txt",
+            "%2E%2FSystem%2FWIFI.TXT",
+            "System/%57IFI.TXT",
+            "System/WIFI.TXT.",
+            "System/WIFI.TXT%20",
+            "System/WIFI.TXT+",
+            "Books/../System/WIFI.TXT",
+            "System/display.txt",
         ] {
             let decoded = from_query(raw).unwrap();
             assert!(resolve_portal_path(&decoded).is_err(), "{raw} -> {decoded}");
         }
         // Encoded twice, the name is decoded once: a literal "%57IFI.TXT",
         // which is some other file, never WIFI.TXT.
-        let literal = resolve_portal_path(&from_query("%2557IFI.TXT").unwrap()).unwrap();
+        let literal = resolve_portal_path(&from_query("System/%2557IFI.TXT").unwrap()).unwrap();
         assert_eq!(literal.file_name().unwrap(), "%57IFI.TXT");
         // Ordinary files next to them still resolve.
-        assert!(resolve_portal_path("./BOOKS/WIFI.TXT").is_ok());
-        assert!(resolve_portal_path("MENU.TXT").is_ok());
+        assert!(resolve_portal_path("./Books/WIFI.TXT").is_ok());
+        assert!(resolve_portal_path("WIFI.TXT").is_ok());
+        assert!(resolve_portal_path("System/UPDATE.TXT").is_ok());
     }
 
     #[test]
@@ -3301,7 +3324,10 @@ mod tests {
 
     #[test]
     fn the_page_language_follows_the_device_and_the_top_folder_is_never_deleted() {
-        use super::{is_portal_root, portal_locale_code, resolve_portal_path, set_portal_locale};
+        use super::{
+            is_portal_root, is_portal_system_folder, portal_locale_code, resolve_portal_path,
+            set_portal_locale,
+        };
         use crate::regional::Locale;
 
         set_portal_locale(Locale::English);
@@ -3313,9 +3339,20 @@ mod tests {
             let path = resolve_portal_path(spelling).unwrap();
             assert!(is_portal_root(&path), "{spelling:?}");
         }
-        assert!(!is_portal_root(&resolve_portal_path("/BOOKS").unwrap()));
+        assert!(!is_portal_root(&resolve_portal_path("/Books").unwrap()));
         assert!(!is_portal_root(
-            &resolve_portal_path("/AUDIO/Titolo").unwrap()
+            &resolve_portal_path("/Audiobooks/Titolo").unwrap()
+        ));
+        // The device's own folder, in any spelling, and nothing below it.
+        for spelling in ["/System", "system", "/./SYSTEM/"] {
+            let path = resolve_portal_path(spelling).unwrap();
+            assert!(is_portal_system_folder(&path), "{spelling:?}");
+        }
+        assert!(!is_portal_system_folder(
+            &resolve_portal_path("/System/READER").unwrap()
+        ));
+        assert!(!is_portal_system_folder(
+            &resolve_portal_path("/Books/System").unwrap()
         ));
     }
 
@@ -3337,8 +3374,8 @@ mod tests {
     #[test]
     fn query_parser_decodes_portal_paths() {
         assert_eq!(
-            query_value("/api/list?sort=name&path=%2FBOOKS", "path").as_deref(),
-            Some("/BOOKS")
+            query_value("/api/list?sort=name&path=%2FBooks", "path").as_deref(),
+            Some("/Books")
         );
     }
 }

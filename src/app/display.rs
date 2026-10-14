@@ -1,6 +1,6 @@
 //! Persistent global UI display preferences.
 //!
-//! Preferences are loaded from `/sdcard/RUSTMIX/DISPLAY.TXT` at boot. The UI
+//! Preferences are loaded from `/sdcard/System/DISPLAY.TXT` at boot. The UI
 //! remains usable when the SD card or file is unavailable: Standard is
 //! always the safe default. Changes are persisted best-effort by the runtime.
 
@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use crate::regional::Locale;
 
 /// SD-backed global UI typography preference file.
-pub const DISPLAY_CONFIG_PATH: &str = "/sdcard/RUSTMIX/DISPLAY.TXT";
+pub const DISPLAY_CONFIG_PATH: &str = "/sdcard/System/DISPLAY.TXT";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UiFontSize {
@@ -77,14 +77,14 @@ impl UiFontSize {
 /// What the panel shows while the device is in deep sleep.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SleepScreenMode {
-    /// `/sdcard/RUSTMIX/SLEEP` images in file-name order, one step per sleep,
+    /// `/sdcard/Wallpapers` images in file-name order, one step per sleep,
     /// wrapping back to the first.
     #[default]
     Sequential,
-    /// A random `/sdcard/RUSTMIX/SLEEP` image, never the same one twice in a
+    /// A random `/sdcard/Wallpapers` image, never the same one twice in a
     /// row.
     Random,
-    /// Always the same `/sdcard/RUSTMIX/SLEEP` image: the one chosen in
+    /// Always the same `/sdcard/Wallpapers` image: the one chosen in
     /// Settings or from the Wi-Fi page, otherwise the last one shown.
     Fixed,
     /// Full-screen cover of the book being read, with a progress tab. Falls
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn the_sd_card_example_parses() {
-        let example = include_str!("../../examples/sd-card/RUSTMIX/DISPLAY.TXT.example");
+        let example = include_str!("../../examples/sd-card/System/DISPLAY.TXT.example");
         let parsed = DisplayPreferences::parse(example).unwrap();
         assert_eq!(parsed, DisplayPreferences::default());
     }

@@ -546,7 +546,11 @@ fn draw_portal_card(
             heading,
             text_width,
         )?;
-        let folder_line = format!("{}: /RUSTMIX", t(locale, "Folder", "Cartella"));
+        let folder_line = format!(
+            "{}: {}",
+            t(locale, "Folder", "Cartella"),
+            t(locale, "the whole card", "tutta la scheda")
+        );
         draw_text_fit(
             display,
             &folder_line,

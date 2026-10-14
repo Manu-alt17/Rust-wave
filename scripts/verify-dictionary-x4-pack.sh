@@ -7,7 +7,7 @@ if [[ -z "$VOLUME" || ! -d "$VOLUME" ]]; then
   exit 1
 fi
 
-DICT="$VOLUME/RUSTMIX/APPS/DICT"
+DICT="$VOLUME/System/APPS/DICT"
 INDEX="$DICT/INDEX.TXT"
 if [[ ! -f "$INDEX" ]]; then
   echo "dictionary-x4-pack-verification=failed missing=$INDEX" >&2

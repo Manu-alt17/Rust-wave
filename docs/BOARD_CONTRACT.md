@@ -82,7 +82,8 @@ See `src/mcu_deep_sleep.rs`.
 Interface      SDMMC 4-bit, 20 MHz; CMD GPIO17, CLK GPIO16, D0 GPIO15,
                D1 GPIO7, D2 GPIO8, D3 GPIO18
 SD mount       /sdcard (FAT, long file names in UTF-8, 5 open files)
-Product root   /sdcard/RUSTMIX
+Layout         /sdcard/Books, Audiobooks, Wallpapers; the device's
+               own files in /sdcard/System (src/sd_layout.rs)
 DMA            Internal RAM only: reads into PSRAM go through an internal
                buffer (src/sd_io.rs); writes never come straight from flash
 ```

@@ -174,7 +174,7 @@ fn audiobooks(state: &mut AppState, count: usize, long: bool) {
             title: key,
             tracks: (1..=12)
                 .map(|track| AudiobookTrack {
-                    path: format!("/sdcard/RUSTMIX/AUDIO/x/{track:02}.mp3").into(),
+                    path: format!("/sdcard/Audiobooks/x/{track:02}.mp3").into(),
                     title: format!(
                         "{track:02} - Capitolo {track} con un titolo piuttosto lungo davvero"
                     ),
@@ -209,7 +209,7 @@ fn audiobooks(state: &mut AppState, count: usize, long: bool) {
 
 fn files(state: &mut AppState, long: bool) {
     let mut entries = vec![StorageEntry {
-        name: "RUSTMIX".into(),
+        name: "System".into(),
         kind: StorageEntryKind::Directory,
         size_bytes: None,
     }];
@@ -847,7 +847,7 @@ fn scenarios() -> Vec<(String, Arrange)> {
         Box::new(|state| {
             files(state, false);
             state.storage.at_root = false;
-            state.storage.current_path = "/sdcard/RUSTMIX/BOOKS".into();
+            state.storage.current_path = "/sdcard/Books".into();
             state.storage.notice = Some(StorageNotice::Deleted(
                 "Un nome di file davvero molto lungo numero 3 versione finale.epub".into(),
             ));
@@ -870,7 +870,7 @@ fn scenarios() -> Vec<(String, Arrange)> {
             state.storage.entries.clear();
             state.storage.scan.retained_entries = 0;
             state.storage.at_root = false;
-            state.storage.current_path = "/sdcard/RUSTMIX/VUOTA".into();
+            state.storage.current_path = "/sdcard/System/VUOTA".into();
         }),
     );
     add(
@@ -1041,7 +1041,7 @@ fn scenarios() -> Vec<(String, Arrange)> {
             WifiTransferSnapshot {
                 state: WifiTransferState::Ready,
                 url: Some("http://192.168.178.123/".into()),
-                last_action: "Uploaded /BOOKS/Il meraviglioso viaggio di Nils Holgersson.epub"
+                last_action: "Uploaded /Books/Il meraviglioso viaggio di Nils Holgersson.epub"
                     .into(),
                 last_bytes: 1_234_567,
                 ..Default::default()
@@ -1298,7 +1298,7 @@ fn scenarios() -> Vec<(String, Arrange)> {
     // already shows, an empty folder, a file that cannot be read.
     let wallpaper = || {
         crate::sleep_images::decode_sleep_bmp(include_bytes!(
-            "../../examples/sd-card/RUSTMIX/SLEEP/SLEEP.BMP"
+            "../../examples/sd-card/Wallpapers/SLEEP.BMP"
         ))
         .expect("the example wallpaper decodes")
     };

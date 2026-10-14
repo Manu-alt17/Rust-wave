@@ -87,7 +87,7 @@ const MAX_PNG_REDUCTION_FACTOR: u32 = 256;
 /// (Reader's `.EPX`/`.EPP`/`.CCH` sidecars live under `<state_root>/CACHE`)
 /// should pass that same directory to [`CoverCache::new`] instead, so
 /// thumbnail files (`.THB`) sit alongside them.
-pub const DEFAULT_COVER_CACHE_DIRECTORY: &str = "/sdcard/RUSTMIX/CACHE";
+pub const DEFAULT_COVER_CACHE_DIRECTORY: &str = "/sdcard/System/CACHE";
 
 const CACHE_MAGIC: [u8; 4] = *b"RWTH";
 const CACHE_VERSION: u8 = 1;
@@ -2574,7 +2574,7 @@ mod tests {
     fn inline_image_cache_file_names_fit_fat_8_3() {
         // The device's FAT volume has no long-file-name support: a longer
         // stem fails every write with EINVAL, so nothing is ever cached.
-        let cache = EpubImageCache::new("/sdcard/RUSTMIX/CACHE");
+        let cache = EpubImageCache::new("/sdcard/System/CACHE");
         let book = sample_book("/sdcard/BOOKS/A.EPUB");
         for (href, width, height) in [("OEBPS/cover.jpg", 752, 663), ("x.png", 1, 1)] {
             let path = cache.cache_path(&book, href, width, height);

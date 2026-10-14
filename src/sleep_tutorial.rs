@@ -1,6 +1,6 @@
 //! Sleep screen of a card without wallpapers: the steps to add one.
 //!
-//! Standby used to fall back to an empty frame when `RUSTMIX/SLEEP` held no
+//! Standby used to fall back to an empty frame when `Wallpapers` held no
 //! usable image, which said nothing about what belongs there. This frame
 //! takes its place and tells how a wallpaper gets on the card: from the
 //! phone, through the Wi-Fi page.

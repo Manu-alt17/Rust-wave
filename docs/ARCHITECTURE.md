@@ -69,7 +69,7 @@ Power long press  -> display maintenance menu (src/power_key_menu.rs)
 Power press while off -> boot, restoring the route in use
 ```
 
-Standby draws the sleep screen (`src/sleep_images.rs` for the BMPs in `RUSTMIX/SLEEP`, `src/sleep_cover.rs` for the current book's cover, `src/sleep_tutorial.rs` for the steps to add a wallpaper when the card has none), saves state, writes a shutdown marker to the PMIC and powers the board off. Should the power-off not happen, a PMIC watchdog armed just before it cuts power 16 s later, and meanwhile the MCU is in deep sleep; either way the next boot finds the marker and resumes. Automatic standby follows the idle time in the Display settings; it is held off while an audiobook plays or the microSD is connected to a PC.
+Standby draws the sleep screen (`src/sleep_images.rs` for the BMPs in `Wallpapers`, `src/sleep_cover.rs` for the current book's cover, `src/sleep_tutorial.rs` for the steps to add a wallpaper when the card has none), saves state, writes a shutdown marker to the PMIC and powers the board off. Should the power-off not happen, a PMIC watchdog armed just before it cuts power 16 s later, and meanwhile the MCU is in deep sleep; either way the next boot finds the marker and resumes. Automatic standby follows the idle time in the Display settings; it is held off while an audiobook plays or the microSD is connected to a PC.
 
 So every wake is a full boot, kept short: no PSRAM self-test, no check of the app image by the bootloader at power-on (see `sdkconfig.defaults`), warnings-only logs. Volume, positions and preferences are on the card and read back at boot.
 
@@ -81,17 +81,19 @@ GPIO0 BOOT is Back. It never wakes or restarts the board, being a strapping pin.
 
 A parsed book's flattened text is written once to an `.EPX` cache file and read back in windows; the file read last stays open for the next page (`epub::release_kept_text_file` closes it before a rewrite or a library scan).
 
-The in-reader dictionary lookup (`src/dictionary.rs`) reads the bounded Rustmix X4 prefix-shard pack from `RUSTMIX/APPS/DICT`.
+The in-reader dictionary lookup (`src/dictionary.rs`) reads the bounded Rustmix X4 prefix-shard pack from `System/APPS/DICT`.
+
+`src/sd_layout.rs` names the card's folders (`Books`, `Audiobooks`, `Wallpapers`, `System`) and, right after the card is mounted and before anything reads it, moves a card of firmware up to 1.5.0-beta.5 out of its single `RUSTMIX` folder: renames rather than copies, never overwrites, rewrites the book paths the Reader saved and the book fingerprints of the statistics, and finishes on a later boot whatever a power cut interrupted.
 
 ```text
-/sdcard/RUSTMIX/READER/
+/sdcard/System/READER/
   STATE.TXT  POSITS.TXT  RECENT.TXT  MARKS.TXT  PREFS.TXT
-/sdcard/RUSTMIX/READER/CACHE/
+/sdcard/System/READER/CACHE/
   <8HEX>.EPX .EPP .CCH   text, page index, TXT cache
   <8HEX>.THB .SLC .EPI   thumbnails, sleep covers, inline images
 ```
 
-`src/reading_stats.rs` appends one line per reading session to a monthly log in `RUSTMIX/STATS` and aggregates days, weeks, months and streaks in the device's time zone. The Statistics screen asks it for one week or one month at a time (`StatsView`, kept in `AppState`); a period older than the logs the streak already reads costs one to three more log reads, done before the paint that follows the key.
+`src/reading_stats.rs` appends one line per reading session to a monthly log in `System/STATS` and aggregates days, weeks, months and streaks in the device's time zone. The Statistics screen asks it for one week or one month at a time (`StatsView`, kept in `AppState`); a period older than the logs the streak already reads costs one to three more log reads, done before the paint that follows the key.
 
 ## Images
 
@@ -106,7 +108,7 @@ Library and Home covers are stretched to the cell's shape, so the whole cover sh
 
 ## Audio engine
 
-`src/audio/engine.rs` runs a dedicated thread (priority 6, core 1, 12 KiB stack) that owns the ES8311 codec, the NS4150B amplifier and the I2S channel. The main loop sends it commands and polls a compact state; the thread decodes MP3 with libhelix (`src/audio/mp3.rs`), recreating the I2S channel at each file's sample rate (MCLK = 256 × fs, so the codec's divider setup never changes). `src/audiobook.rs` scans `RUSTMIX/AUDIO`, sorts tracks naturally and keeps positions in `RUSTMIX/AUDIOPOS.TXT`. Around standby the engine is suspended and positions saved.
+`src/audio/engine.rs` runs a dedicated thread (priority 6, core 1, 12 KiB stack) that owns the ES8311 codec, the NS4150B amplifier and the I2S channel. The main loop sends it commands and polls a compact state; the thread decodes MP3 with libhelix (`src/audio/mp3.rs`), recreating the I2S channel at each file's sample rate (MCLK = 256 × fs, so the codec's divider setup never changes). `src/audiobook.rs` scans `Audiobooks`, sorts tracks naturally and keeps positions in `System/AUDIOPOS.TXT`. Around standby the engine is suspended and positions saved.
 
 ## Connect to PC
 
@@ -120,7 +122,7 @@ Library and Home covers are stretched to the cell's shape, so the whole cover sh
 
 ## Wi-Fi transfer and network
 
-`src/wifi_transfer.rs` serves a portal rooted at `/sdcard/RUSTMIX`, started from Home → Upload and stopped after inactivity. No code is asked: the portal is open to the network it is on while the Upload screen is shown. Requests that change something are refused when their `Origin` names another site (`is_same_origin_request`), so a web page cannot make a browser on the network post to the device. Paths are decoded once and checked after resolution (`resolve_portal_path`), names must be FAT-safe, and replacements are written atomically. `WIFI.TXT`, `CLOCK.TXT` and `DISPLAY.TXT` are protected against download, upload, rename and delete.
+`src/wifi_transfer.rs` serves a portal rooted at the card's top folder, `/sdcard` (its `System` folder hidden, and never deleted or moved), started from Home → Upload and stopped after inactivity. No code is asked: the portal is open to the network it is on while the Upload screen is shown. Requests that change something are refused when their `Origin` names another site (`is_same_origin_request`), so a web page cannot make a browser on the network post to the device. Paths are decoded once and checked after resolution (`resolve_portal_path`), names must be FAT-safe, and replacements are written atomically. `WIFI.TXT`, `CLOCK.TXT` and `DISPLAY.TXT` are protected against download, upload, rename and delete.
 
 Without a saved network the same screen opens a hotspot (`Configuration::Mixed`, AP + STA) with a QR code to join it; `src/dns_captive_portal.rs` answers every DNS query with the device's address so the phone opens the setup page by itself. Up to 8 networks are saved. With several saved networks the boot scans first and tries the ones in range; with one it connects straight away.
 

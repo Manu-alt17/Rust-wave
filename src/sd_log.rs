@@ -60,14 +60,14 @@ mod tests {
     #[test]
     fn a_full_log_moves_to_old_and_starts_over() {
         let dir = temp_dir("rotate");
-        let log = dir.join("RUSTMIX").join("BOOTTIME.LOG");
+        let log = dir.join("System").join("BOOTTIME.LOG");
         append_with_limit(&log, "first\n", 10).unwrap();
         append_with_limit(&log, "second\n", 10).unwrap();
         assert_eq!(fs::read_to_string(&log).unwrap(), "first\nsecond\n");
         // 13 bytes, over the limit: the next line starts a new file.
         append_with_limit(&log, "third\n", 10).unwrap();
         assert_eq!(fs::read_to_string(&log).unwrap(), "third\n");
-        let old = dir.join("RUSTMIX").join("BOOTTIME.OLD");
+        let old = dir.join("System").join("BOOTTIME.OLD");
         assert_eq!(fs::read_to_string(&old).unwrap(), "first\nsecond\n");
         // A second rotation replaces the previous .OLD.
         append_with_limit(&log, "fourth, long enough\n", 10).unwrap();

@@ -25,9 +25,9 @@ use crate::{
 };
 
 /// SD-card library owned by the Reader subsystem.
-pub const READER_BOOKS_DIRECTORY: &str = "/sdcard/RUSTMIX/BOOKS";
+pub const READER_BOOKS_DIRECTORY: &str = "/sdcard/Books";
 /// SD-card state directory owned by the Reader subsystem.
-pub const READER_STATE_DIRECTORY: &str = "/sdcard/RUSTMIX/READER";
+pub const READER_STATE_DIRECTORY: &str = "/sdcard/System/READER";
 /// Persistent last-read state file.
 pub const READER_STATE_FILE: &str = "STATE.TXT";
 /// Persistent per-book last-position map.
@@ -412,7 +412,7 @@ impl ReaderOrientation {
 }
 
 /// Reader-specific book font size. This is intentionally independent from
-/// `/sdcard/RUSTMIX/DISPLAY.TXT`.
+/// `/sdcard/System/DISPLAY.TXT`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BookFontSize {
     Large,
@@ -663,7 +663,7 @@ pub struct ReaderLayout {
     pub full_screen: bool,
 }
 
-/// Reader-owned preference file persisted as `/RUSTMIX/READER/PREFS.TXT`.
+/// Reader-owned preference file persisted as `/System/READER/PREFS.TXT`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReaderPreferences {
     pub theme: ReadingTheme,
@@ -6732,7 +6732,7 @@ fn is_fat83_safe_file_name(path: &Path) -> bool {
 /// Power-safe bounded text replacement for Reader-owned state. The previous
 /// primary is retained as .BAK until the new .TMP file has been renamed into
 /// place. Readers accept the backup if startup observes an interrupted write.
-fn atomic_replace_text(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn atomic_replace_text(path: &Path, text: &str) -> Result<(), String> {
     atomic_replace_text_with_durability(path, text, true)
 }
 
@@ -10208,7 +10208,7 @@ mod backward_navigation_tests {
 
     #[test]
     fn the_sd_card_prefs_example_parses() {
-        let example = include_str!("../examples/sd-card/RUSTMIX/READER/PREFS.TXT.example");
+        let example = include_str!("../examples/sd-card/System/READER/PREFS.TXT.example");
         let prefs = ReaderPreferences::parse(example).unwrap();
         assert_eq!(prefs, ReaderPreferences::default());
     }

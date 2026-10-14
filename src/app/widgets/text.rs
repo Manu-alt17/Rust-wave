@@ -239,7 +239,7 @@ mod tests {
         let cut = truncate_to_width(style, "Un nome di file davvero molto lungo", 120);
         assert!(cut.ends_with(ELLIPSIS));
         assert!(style.text_width(&cut) <= 120);
-        let cut = truncate_start_to_width(style, "/sdcard/RUSTMIX/BOOKS/Narrativa", 120);
+        let cut = truncate_start_to_width(style, "/sdcard/Books/Narrativa", 120);
         assert!(cut.starts_with(ELLIPSIS) && cut.ends_with("Narrativa"));
         assert!(style.text_width(&cut) <= 120);
     }

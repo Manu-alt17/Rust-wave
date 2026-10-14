@@ -96,7 +96,7 @@ mod firmware {
         },
         regional::{RegionalPreferences, CLOCK_CONFIG_PATH},
         runtime_memory::{debug_runtime_memory, log_runtime_memory},
-        sd_log,
+        sd_layout, sd_log,
         shared_i2c::SharedI2cBus,
         sleep_cover::{compose_cover_sleep_frame, SLEEP_COVER_HEIGHT, SLEEP_COVER_WIDTH},
         sleep_images::{SleepImageCatalog, SleepImageSelection, SLEEP_IMAGE_DIRECTORY},
@@ -129,18 +129,18 @@ mod firmware {
     // 8.3 names, valid with or without FAT long names; before long names
     // were enabled, the first name tried here ("BOOT_TIMING.LOG") failed to
     // create silently.
-    const BOOT_TIMING_LOG_PATH: &str = "/sdcard/RUSTMIX/BOOTTIME.LOG";
+    const BOOT_TIMING_LOG_PATH: &str = "/sdcard/System/BOOTTIME.LOG";
 
     /// UTC unix time of the last sleep entry, read back on wake to decide
     /// between the fast and the full waveform (see
     /// `panel_refresh::wake_uses_fast_waveform`). FAT 8.3 name.
-    const SLEEP_TIMESTAMP_PATH: &str = "/sdcard/RUSTMIX/SLEEPAT.TXT";
+    const SLEEP_TIMESTAMP_PATH: &str = "/sdcard/WallpapersAT.TXT";
 
     /// SD record of every reset that is not a plain power-on or deep-sleep
     /// wake, plus the error text of any fatal `firmware::run` exit (see
     /// `main`). A hang or reboot on battery leaves no serial log, so this is
     /// what survives to explain it. FAT 8.3 name, same as `BOOTTIME.LOG`.
-    pub(crate) const RESET_LOG_PATH: &str = "/sdcard/RUSTMIX/RESETS.LOG";
+    pub(crate) const RESET_LOG_PATH: &str = "/sdcard/System/RESETS.LOG";
 
     /// Best-effort append of one line to [`RESET_LOG_PATH`].
     pub(crate) fn append_reset_log(line: &str) {
@@ -335,6 +335,30 @@ mod firmware {
             }
         };
         sd_span.end();
+        // A card written by firmware up to v1.5.0-beta.5 keeps everything in
+        // one RUSTMIX folder: it moves to the new layout here, before
+        // anything else reads or writes the card (see `sd_layout`).
+        if mounted_sd.is_some() {
+            let _migration_span = boot_profile::span("sd-layout-migration");
+            let started = Instant::now();
+            if let Some(report) = sd_layout::migrate_legacy_layout(SD_MOUNT_POINT) {
+                let line = format!(
+                    "rustmix-wave=sd-layout-migration moved={} renamed={} kept={} path-files={} stats-lines={} finished={} ms={}",
+                    report.moved,
+                    report.renamed,
+                    report.kept,
+                    report.path_files,
+                    report.stats_lines,
+                    report.finished,
+                    started.elapsed().as_millis()
+                );
+                if report.finished {
+                    info!("{line}");
+                } else {
+                    warn!("{line}");
+                }
+            }
+        }
         let reset_reason_span = boot_profile::span("reset-reason-record");
         record_reset_reason(mounted_sd.is_some());
         reset_reason_span.end();
@@ -4119,7 +4143,7 @@ mod firmware {
         }
     }
 
-    /// Rescan `RUSTMIX/AUDIO`, creating it the first time so whoever puts
+    /// Rescan `Audiobooks`, creating it the first time so whoever puts
     /// the card in a PC finds where audiobooks go.
     fn refresh_audiobook_library(state: &mut AppState) {
         let root = std::path::Path::new(AUDIOBOOK_ROOT);

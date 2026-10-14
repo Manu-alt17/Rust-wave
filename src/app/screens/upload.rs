@@ -71,8 +71,8 @@ pub fn render_upload(
             t(locale, "The card as a USB disk", "La scheda come disco USB"),
             t(
                 locale,
-                "Connect the device to a computer with its USB cable: the microSD shows up as a disk, and you copy books into BOOKS and audiobooks into AUDIO. The quickest way for many or large files. The device cannot be used meanwhile, and restarts when done.",
-                "Collega il dispositivo al computer col cavo USB: la microSD compare come un disco e copi i libri in BOOKS e gli audiolibri in AUDIO. \u{00C8} il modo pi\u{00F9} rapido per tanti file o file grandi. Nel frattempo il dispositivo non si usa, e alla fine si riavvia.",
+                "Connect the device to a computer with its USB cable: the microSD shows up as a disk, and you copy books into Books and audiobooks into Audiobooks. The quickest way for many or large files. The device cannot be used meanwhile, and restarts when done.",
+                "Collega il dispositivo al computer col cavo USB: la microSD compare come un disco e copi i libri in Books e gli audiolibri in Audiobooks. \u{00C8} il modo pi\u{00F9} rapido per tanti file o file grandi. Nel frattempo il dispositivo non si usa, e alla fine si riavvia.",
             ),
         )
     } else if state.wifi_page_closed_notice {

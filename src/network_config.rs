@@ -17,7 +17,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 /// Read-only provisioning file consumed at boot.
-pub const WIFI_CONFIG_PATH: &str = "/sdcard/RUSTMIX/WIFI.TXT";
+pub const WIFI_CONFIG_PATH: &str = "/sdcard/System/WIFI.TXT";
 /// Default SNTP pool used when the optional key is omitted.
 pub const DEFAULT_NTP_SERVER: &str = "pool.ntp.org";
 /// Default timezone profile used when the optional key is omitted.
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn the_sd_card_example_parses() {
-        let example = include_str!("../examples/sd-card/RUSTMIX/WIFI.TXT.example");
+        let example = include_str!("../examples/sd-card/System/WIFI.TXT.example");
         let config = NetworkConfig::parse(example).unwrap();
         assert_eq!(config.networks.len(), 1);
         assert_eq!(config.timezone, DEFAULT_TIMEZONE);

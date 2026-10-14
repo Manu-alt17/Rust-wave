@@ -6,8 +6,8 @@ if [[ -z "$VOLUME" ]]; then
   echo "usage: $0 /Volumes/YOUR_SD_CARD" >&2
   exit 1
 fi
-DEST="$VOLUME/RUSTMIX/SLEEP"
+DEST="$VOLUME/Wallpapers"
 mkdir -p "$DEST"
-cp "$ROOT/examples/sd-card/RUSTMIX/SLEEP/SLEEP.BMP" "$DEST/SLEEP.BMP"
-cp "$ROOT/examples/sd-card/RUSTMIX/SLEEP/SLEEP01.BMP" "$DEST/SLEEP01.BMP"
+cp "$ROOT/examples/sd-card/Wallpapers/SLEEP.BMP" "$DEST/SLEEP.BMP"
+cp "$ROOT/examples/sd-card/Wallpapers/SLEEP01.BMP" "$DEST/SLEEP01.BMP"
 echo "rustmix-wave-sleep-images-installed=$DEST"

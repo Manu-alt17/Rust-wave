@@ -14,7 +14,7 @@ use crate::{date_math::days_in_month, rtc::RtcDateTime};
 /// provisioning so choosing a timezone from the Clock screen's "Set date &
 /// time" editor survives a reboot (including a real deep-sleep wake, which is
 /// a full reboot) even when the device has no `WIFI.TXT` on the SD card.
-pub const CLOCK_CONFIG_PATH: &str = "/sdcard/RUSTMIX/CLOCK.TXT";
+pub const CLOCK_CONFIG_PATH: &str = "/sdcard/System/CLOCK.TXT";
 
 /// RTC wall-clock basis inherited from the uploaded sample application.
 pub const SAMPLE_RTC_STORAGE_UTC_OFFSET_MINUTES: i16 = 8 * 60;

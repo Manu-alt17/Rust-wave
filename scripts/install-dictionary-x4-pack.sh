@@ -9,7 +9,7 @@ usage() {
 usage: scripts/install-dictionary-x4-pack.sh [--force] [--x4-repo PATH] /Volumes/YOUR_SD_CARD
 
 Copies the complete Rustmix X4 dictionary SD pack into:
-  /RUSTMIX/APPS/DICT
+  /System/APPS/DICT
 
 Use --x4-repo to copy from an existing rustmix-x4-firmware checkout. Without
 that option, the script downloads the public main-branch archive temporarily.
@@ -48,7 +48,7 @@ if [[ -z "$X4_REPO" ]]; then
 fi
 
 SRC="$X4_REPO/examples/sd-card/RUSTMIX/APPS/DICT"
-DEST="$VOLUME/RUSTMIX/APPS/DICT"
+DEST="$VOLUME/System/APPS/DICT"
 for required in INDEX.TXT DATA; do
   if [[ ! -e "$SRC/$required" ]]; then
     echo "dictionary-x4-pack=failed missing=$SRC/$required" >&2
@@ -87,7 +87,7 @@ if [[ -e "$DEST" && "$FORCE" -ne 1 ]]; then
   exit 0
 fi
 
-mkdir -p "$VOLUME/RUSTMIX/APPS"
+mkdir -p "$VOLUME/System/APPS"
 rm -rf "$DEST"
 cp -R "$SRC" "$DEST"
 

@@ -166,7 +166,7 @@ mod tests {
             title: key.into(),
             tracks: (1..=tracks)
                 .map(|index| AudiobookTrack {
-                    path: format!("/sdcard/RUSTMIX/AUDIO/{key}/{index:02}.mp3").into(),
+                    path: format!("/sdcard/Audiobooks/{key}/{index:02}.mp3").into(),
                     title: format!("{index:02} - Capitolo {index}"),
                     size_bytes: 20_000_000,
                 })
@@ -649,14 +649,43 @@ mod tests {
                 open_from_settings(state, ScreenRoute::Files);
                 state.router.back();
             }),
+            ("files-root", |state| {
+                use crate::storage::{StorageEntry, StorageEntryKind};
+                state.regional.locale = crate::regional::Locale::Italian;
+                open_from_settings(state, ScreenRoute::Files);
+                state.storage.mounted = true;
+                state.storage.at_root = true;
+                state.storage.current_path = "/sdcard".into();
+                state.storage.entries = [
+                    ("Audiobooks", None),
+                    ("Books", None),
+                    ("System", None),
+                    ("Wallpapers", None),
+                    ("LEGGIMI.TXT", Some(1_046)),
+                    ("README.TXT", Some(1_003)),
+                ]
+                .iter()
+                .map(|(name, size)| StorageEntry {
+                    name: (*name).into(),
+                    kind: if size.is_some() {
+                        StorageEntryKind::File
+                    } else {
+                        StorageEntryKind::Directory
+                    },
+                    size_bytes: *size,
+                })
+                .collect();
+                state.storage.scan.retained_entries = 6;
+                state.storage.selected = 1;
+            }),
             ("files-protected", |state| {
                 use crate::storage::{StorageEntry, StorageEntryKind, StorageNotice};
                 state.regional.locale = crate::regional::Locale::Italian;
                 open_from_settings(state, ScreenRoute::Files);
                 state.storage.mounted = true;
                 state.storage.at_root = false;
-                state.storage.current_path = "/sdcard/RUSTMIX".into();
-                state.storage.entries = ["BOOKS", "READER", "CLOCK.TXT", "WIFI.TXT"]
+                state.storage.current_path = "/sdcard/System".into();
+                state.storage.entries = ["READER", "STATS", "CLOCK.TXT", "WIFI.TXT"]
                     .iter()
                     .map(|name| StorageEntry {
                         name: (*name).into(),

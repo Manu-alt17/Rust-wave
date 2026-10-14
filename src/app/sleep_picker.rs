@@ -1,7 +1,7 @@
 //! The screen that chooses the fixed sleep wallpaper: Settings > Display >
 //! Fixed wallpaper.
 //!
-//! The wallpapers of `/sdcard/RUSTMIX/SLEEP` are shown one at a time, as
+//! The wallpapers of `/sdcard/Wallpapers` are shown one at a time, as
 //! standby will show them; their names (`SLEEP003.BMP`) say nothing, so the
 //! picture itself is what is chosen. This is only the state: the runtime
 //! owner in main.rs lists the folder, decodes the wallpaper under the cursor

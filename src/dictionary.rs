@@ -2,7 +2,7 @@
 //! behind the Reader's in-page word lookup.
 //!
 //! The X4 pack remains authoritative on removable storage:
-//! `/sdcard/RUSTMIX/APPS/DICT/INDEX.TXT` selects one bounded
+//! `/sdcard/System/APPS/DICT/INDEX.TXT` selects one bounded
 //! `DATA/*.JSN` prefix shard.
 //!
 //! INDEX.TXT is byte-sorted, so it is binary-searched in place on the SD card
@@ -22,7 +22,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 /// Rustmix X4-compatible dictionary app root.
-pub const DICTIONARY_ROOT: &str = "/sdcard/RUSTMIX/APPS/DICT";
+pub const DICTIONARY_ROOT: &str = "/sdcard/System/APPS/DICT";
 /// X4 pack shard index filename.
 pub const DICTIONARY_INDEX_FILE: &str = "INDEX.TXT";
 /// Prefix-shard files stay intentionally small for bounded SD reads.

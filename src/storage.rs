@@ -207,10 +207,10 @@ pub enum StorageNotice {
 }
 
 /// Whether `relative`, a path below the card's top folder, is a file the
-/// device keeps its own state in: the `.TXT` files directly in `RUSTMIX`
+/// device keeps its own state in: the `.TXT` files directly in `System`
 /// (Wi-Fi networks, clock, display, update channel, volume, audiobook
-/// positions...) and in `RUSTMIX/READER` (reading positions, bookmarks,
-/// preferences), and the monthly logs in `RUSTMIX/STATS`. Deleting one from
+/// positions...) and in `System/READER` (reading positions, bookmarks,
+/// preferences), and the monthly logs in `System/STATS`. Deleting one from
 /// Files would silently forget them, so it is refused, as the Wi-Fi portal
 /// refuses its own configuration files. FAT names are case-insensitive.
 #[must_use]
@@ -228,8 +228,8 @@ pub fn is_protected_device_file(relative: &Path) -> bool {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["RUSTMIX", name] | ["RUSTMIX", "READER", name] => name.ends_with(".TXT"),
-        ["RUSTMIX", "STATS", _] => true,
+        ["SYSTEM", name] | ["SYSTEM", "READER", name] => name.ends_with(".TXT"),
+        ["SYSTEM", "STATS", _] => true,
         _ => false,
     }
 }
@@ -934,18 +934,18 @@ mod tests {
     #[test]
     fn the_devices_own_files_are_recognised() {
         for path in [
-            "RUSTMIX/WIFI.TXT",
-            "rustmix/update.txt",
-            "RUSTMIX/READER/POSITS.TXT",
-            "RUSTMIX/STATS/2026-10.TXT",
+            "System/WIFI.TXT",
+            "system/update.txt",
+            "System/READER/POSITS.TXT",
+            "System/STATS/202610.LOG",
         ] {
             assert!(is_protected_device_file(Path::new(path)), "{path}");
         }
         for path in [
-            "RUSTMIX/BOOKS/A.TXT",
-            "RUSTMIX/RESETS.LOG",
-            "RUSTMIX/READER/CACHE/1234ABCD.EPX",
-            "RUSTMIX/SLEEP/cover.png",
+            "Books/A.TXT",
+            "System/RESETS.LOG",
+            "System/READER/CACHE/1234ABCD.EPX",
+            "Wallpapers/cover.png",
             "WIFI.TXT",
         ] {
             assert!(!is_protected_device_file(Path::new(path)), "{path}");
@@ -955,7 +955,7 @@ mod tests {
     #[test]
     fn a_held_select_on_a_device_file_explains_instead_of_deleting() {
         let root = fixture_root("protected");
-        let data = root.join("RUSTMIX");
+        let data = root.join("System");
         fs::create_dir_all(&data).unwrap();
         fs::write(data.join("WIFI.TXT"), b"networks").unwrap();
         let mut browser = StorageBrowser::new(&root, true);

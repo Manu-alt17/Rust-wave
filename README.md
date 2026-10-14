@@ -36,16 +36,16 @@ See [`docs/BOARD_CONTRACT.md`](docs/BOARD_CONTRACT.md) for the stable board boun
 ## microSD layout
 
 ```text
-/sdcard/RUSTMIX/
-  BOOKS/        books: .txt and .epub
-  AUDIO/        audiobooks: one .mp3, or a folder of .mp3 tracks per book
-  SLEEP/        sleep images: 800 × 480 1-bpp BMP
-  APPS/DICT/    dictionary pack for the in-reader lookup (optional)
-  WIFI.TXT      saved Wi-Fi networks (the phone setup writes it)
-  READER/ STATS/ ...   kept by the firmware (READER/CACHE holds covers and caches)
+/sdcard/
+  Books/        books: .txt and .epub
+  Audiobooks/   audiobooks: one .mp3, or a folder of .mp3 tracks per book
+  Wallpapers/   sleep images: 800 × 480 1-bpp BMP
+  System/       the device's own files: WIFI.TXT (saved Wi-Fi networks),
+                READER/ STATS/ ... (READER/CACHE holds covers and caches),
+                APPS/DICT/ (dictionary pack for the in-reader lookup, optional)
 ```
 
-See [`docs/SD_CARD_SETUP.md`](docs/SD_CARD_SETUP.md) for every file.
+See [`docs/SD_CARD_SETUP.md`](docs/SD_CARD_SETUP.md) for every file, and for how a card of firmware up to 1.5.0-beta.5, which kept everything in `/sdcard/RUSTMIX`, moves to this layout by itself.
 
 ## Build
 

@@ -61,8 +61,8 @@ pub fn render_audiobook_library(
         } else {
             t(
                 locale,
-                "No audiobooks yet. Press SELECT to open Upload and copy them from a computer or a phone. They are MP3 files in the RUSTMIX/AUDIO folder of the card: one file per title, or one folder per title with its tracks inside.",
-                "Nessun audiolibro. Premi SELECT per aprire Carica e copiarli dal computer o dal telefono. Sono file MP3 nella cartella RUSTMIX/AUDIO della scheda: un file per titolo, oppure una cartella per titolo con dentro le tracce.",
+                "No audiobooks yet. Press SELECT to open Upload and copy them from a computer or a phone. They are MP3 files in the Audiobooks folder of the card: one file per title, or one folder per title with its tracks inside.",
+                "Nessun audiolibro. Premi SELECT per aprire Carica e copiarli dal computer o dal telefono. Sono file MP3 nella cartella Audiobooks della scheda: un file per titolo, oppure una cartella per titolo con dentro le tracce.",
             )
         };
         let after = draw_paragraph(display, message, LEFT, FIRST_BASELINE, body, WIDTH, 9, 6)?;

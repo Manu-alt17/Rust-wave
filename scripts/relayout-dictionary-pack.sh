@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-usage: scripts/relayout-dictionary-pack.sh /path/to/RUSTMIX/APPS/DICT
+usage: scripts/relayout-dictionary-pack.sh /path/to/System/APPS/DICT
 
 Moves every flat DATA/NAME.JSN shard into a two-character bucket directory
 (DATA/CA/CASA.JSN) and rewrites INDEX.TXT to match, keeping its byte order.

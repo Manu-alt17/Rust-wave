@@ -52,8 +52,8 @@ pub fn render_usb_disk(
             t(locale, "Connected", "Collegato"),
             t(
                 locale,
-                "Connect the device to a computer with its USB cable: the microSD shows up as a disk, to copy books into BOOKS and audiobooks into AUDIO. The device cannot be used meanwhile. When done, eject the disk on the computer, then press any key: the device restarts and reads the new files.",
-                "Collega il dispositivo al computer col cavo USB: la microSD compare come un disco, per copiare i libri in BOOKS e gli audiolibri in AUDIO. Nel frattempo il dispositivo non si usa. Finito, espelli il disco dal computer e premi un tasto qualsiasi: il dispositivo si riavvia e legge i nuovi file.",
+                "Connect the device to a computer with its USB cable: the microSD shows up as a disk, to copy books into Books and audiobooks into Audiobooks. The device cannot be used meanwhile. When done, eject the disk on the computer, then press any key: the device restarts and reads the new files.",
+                "Collega il dispositivo al computer col cavo USB: la microSD compare come un disco, per copiare i libri in Books e gli audiolibri in Audiobooks. Nel frattempo il dispositivo non si usa. Finito, espelli il disco dal computer e premi un tasto qualsiasi: il dispositivo si riavvia e legge i nuovi file.",
             )
             .to_string(),
             restart_hint(locale),

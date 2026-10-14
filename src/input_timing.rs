@@ -38,7 +38,7 @@ use crate::boot_profile::now_us;
 pub const ENABLED: bool = false;
 
 /// SD copy of the report, for runs made on battery with no serial monitor.
-pub const REPORT_PATH: &str = "/sdcard/RUSTMIX/INTIMING.TXT";
+pub const REPORT_PATH: &str = "/sdcard/System/INTIMING.TXT";
 
 /// Keys sampled by the firmware's 1 ms level sampler, as bits of the mask
 /// passed to [`sample_levels`]. A set bit is a high level (key released).

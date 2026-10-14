@@ -1,6 +1,6 @@
 //! Sleep-image discovery and strict native-panel BMP decoding.
 //!
-//! Sleep assets live below `/sdcard/RUSTMIX/SLEEP`. They are deliberately
+//! Sleep assets live below `/sdcard/Wallpapers`. They are deliberately
 //! decoded into the panel's native 800 × 480, 1-bpp framebuffer rather than
 //! passing through the logical 480 × 800 portrait UI rotation layer.
 
@@ -16,13 +16,13 @@ use embedded_graphics::prelude::Point;
 use crate::framebuffer::{FrameBuffer, FRAMEBUFFER_SIZE, HEIGHT, ROW_BYTES, WIDTH};
 
 /// Runtime directory containing removable-SD sleep images.
-pub const SLEEP_IMAGE_DIRECTORY: &str = "/sdcard/RUSTMIX/SLEEP";
+pub const SLEEP_IMAGE_DIRECTORY: &str = "/sdcard/Wallpapers";
 /// Name of the last sleep image shown. Deep sleep is a full MCU reboot, so
 /// the in-order rotation (and random anti-repeat) must survive on SD rather
 /// than in RAM. Kept outside the SLEEP directory so it is never a candidate.
 /// It is also the image the "fixed" sleep screen keeps showing: choosing a
 /// fixed wallpaper writes its name here, and nothing advances it.
-pub const SLEEP_IMAGE_CURSOR_PATH: &str = "/sdcard/RUSTMIX/SLEEPIDX.TXT";
+pub const SLEEP_IMAGE_CURSOR_PATH: &str = "/sdcard/WallpapersIDX.TXT";
 /// Bounded number of files examined on each entry to sleep mode.
 pub const MAX_SLEEP_IMAGE_CANDIDATES: usize = 32;
 const BMP_FILE_HEADER_BYTES: usize = 14;
@@ -610,7 +610,7 @@ mod tests {
     use crate::framebuffer::{FRAMEBUFFER_SIZE, HEIGHT, ROW_BYTES, WIDTH};
 
     fn fixture() -> Vec<u8> {
-        include_bytes!("../examples/sd-card/RUSTMIX/SLEEP/SLEEP.BMP").to_vec()
+        include_bytes!("../examples/sd-card/Wallpapers/SLEEP.BMP").to_vec()
     }
 
     #[test]

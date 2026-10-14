@@ -149,7 +149,7 @@ impl AudioSnapshot {
 /// The volume last chosen on the device, from the audiobook player or the
 /// Audio settings. Without it every boot -- and every wake from standby is
 /// one -- started again from [`DEFAULT_AUDIO_VOLUME_PERCENT`].
-pub const AUDIO_VOLUME_PATH: &str = "/sdcard/RUSTMIX/VOLUME.TXT";
+pub const AUDIO_VOLUME_PATH: &str = "/sdcard/System/VOLUME.TXT";
 
 /// The `volume=` value of a saved volume file, within the codec's range.
 #[must_use]

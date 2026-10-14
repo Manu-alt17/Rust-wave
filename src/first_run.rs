@@ -17,29 +17,38 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::regional::Locale;
+use crate::{
+    regional::Locale,
+    sd_layout::{AUDIOBOOKS_FOLDER, BOOKS_FOLDER, SYSTEM_FOLDER, WALLPAPERS_FOLDER},
+};
 
-/// Folder that holds everything the firmware keeps on the card.
-const DATA_DIRECTORY: &str = "RUSTMIX";
-/// Folders made on every boot when they are missing: books, audiobooks and
-/// sleep-screen images.
-const CONTENT_DIRECTORIES: [&str; 3] = ["BOOKS", "AUDIO", "SLEEP"];
-/// Where the first-run pages keep how far they got.
+/// Folders made on every boot when they are missing: books, audiobooks,
+/// sleep-screen images, and the one the device keeps its own files in (see
+/// `sd_layout`).
+const CARD_FOLDERS: [&str; 4] = [
+    BOOKS_FOLDER,
+    AUDIOBOOKS_FOLDER,
+    WALLPAPERS_FOLDER,
+    SYSTEM_FOLDER,
+];
+/// Where the first-run pages keep how far they got, in the system folder.
 const MARKER_FILE: &str = "SETUP.TXT";
-/// Settings files whose presence means the card was already used.
-const SETTINGS_FILES: [&str; 7] = [
+/// Settings files, in the system folder, whose presence means the card was
+/// already used.
+const SETTINGS_FILES: [&str; 6] = [
     "WIFI.TXT",
     "CLOCK.TXT",
     "DISPLAY.TXT",
-    "MENU.TXT",
     "UPDATE.TXT",
     "VOLUME.TXT",
     "AUDIOPOS.TXT",
 ];
 /// Folders that mean the card was already used as soon as they hold
-/// anything.
-const USED_DIRECTORIES: [&str; 4] = ["BOOKS", "AUDIO", "READER", "STATS"];
-/// The two "read me" files, one per language.
+/// anything: books and audiobooks at the top of the card...
+const USED_CONTENT_FOLDERS: [&str; 2] = [BOOKS_FOLDER, AUDIOBOOKS_FOLDER];
+/// ...and reading positions and statistics in the system folder.
+const USED_SYSTEM_FOLDERS: [&str; 2] = ["READER", "STATS"];
+/// The two "read me" files, one per language, at the top of the card.
 const README_ITALIAN: &str = "LEGGIMI.TXT";
 const README_ENGLISH: &str = "README.TXT";
 
@@ -67,26 +76,26 @@ pub enum SetupProgress {
     Done,
 }
 
-fn data_directory(root: &Path) -> PathBuf {
-    root.join(DATA_DIRECTORY)
+fn system_directory(root: &Path) -> PathBuf {
+    root.join(SYSTEM_FOLDER)
 }
 
 fn marker_path(root: &Path) -> PathBuf {
-    data_directory(root).join(MARKER_FILE)
+    system_directory(root).join(MARKER_FILE)
 }
 
 /// Makes the folders the firmware expects, when they are missing. Returns
 /// whether the books folder had to be made, which is when the "read me"
 /// files are worth writing (see [`write_readme`]).
 pub fn prepare_card(root: impl AsRef<Path>) -> io::Result<bool> {
-    let data = data_directory(root.as_ref());
-    let books_missing = match fs::metadata(data.join(CONTENT_DIRECTORIES[0])) {
+    let root = root.as_ref();
+    let books_missing = match fs::metadata(root.join(BOOKS_FOLDER)) {
         Ok(_) => false,
         Err(error) if error.kind() == ErrorKind::NotFound => true,
         Err(error) => return Err(error),
     };
-    for (index, directory) in CONTENT_DIRECTORIES.into_iter().enumerate() {
-        let path = data.join(directory);
+    for (index, directory) in CARD_FOLDERS.into_iter().enumerate() {
+        let path = root.join(directory);
         // One look per folder on a card that already has them, which is
         // every boot but the first.
         let missing = if index == 0 {
@@ -173,14 +182,18 @@ fn inspect(root: &Path) -> io::Result<Inspection> {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let data = data_directory(root);
+    let system = system_directory(root);
     for file in SETTINGS_FILES {
-        if exists(&data.join(file))? {
+        if exists(&system.join(file))? {
             return Ok(Inspection::Used);
         }
     }
-    for directory in USED_DIRECTORIES {
-        if holds_anything(&data.join(directory))? {
+    let used_folders = USED_CONTENT_FOLDERS
+        .iter()
+        .map(|folder| root.join(folder))
+        .chain(USED_SYSTEM_FOLDERS.iter().map(|folder| system.join(folder)));
+    for folder in used_folders {
+        if holds_anything(&folder)? {
             return Ok(Inspection::Used);
         }
     }
@@ -208,7 +221,7 @@ pub fn card_setup(root: impl AsRef<Path>) -> CardSetup {
 /// could not be read: only a folder known to be empty counts.
 #[must_use]
 pub fn books_folder_is_empty(root: impl AsRef<Path>) -> bool {
-    let books = data_directory(root.as_ref()).join(CONTENT_DIRECTORIES[0]);
+    let books = root.as_ref().join(BOOKS_FOLDER);
     matches!(
         fs::read_dir(books).map(|mut entries| entries.next()),
         Ok(None)
@@ -218,7 +231,7 @@ pub fn books_folder_is_empty(root: impl AsRef<Path>) -> bool {
 /// Writes how far the first-run pages got.
 pub fn save_progress(root: impl AsRef<Path>, progress: SetupProgress) -> io::Result<()> {
     let root = root.as_ref();
-    fs::create_dir_all(data_directory(root))?;
+    fs::create_dir_all(system_directory(root))?;
     let line = match progress {
         SetupProgress::Page(page) => format!("page={page}"),
         SetupProgress::Done => "done=1".to_string(),
@@ -239,13 +252,12 @@ fn write_if_missing(path: &Path, text: &str) -> io::Result<bool> {
     Ok(true)
 }
 
-/// Leaves the two "read me" files in the data folder, in Italian and in
-/// English. Files already there are never replaced.
+/// Leaves the two "read me" files at the top of the card, in Italian and
+/// in English. Files already there are never replaced.
 pub fn write_readme(root: impl AsRef<Path>) -> io::Result<()> {
-    let data = data_directory(root.as_ref());
-    fs::create_dir_all(&data)?;
-    write_if_missing(&data.join(README_ITALIAN), README_TEXT_ITALIAN)?;
-    write_if_missing(&data.join(README_ENGLISH), README_TEXT_ENGLISH)?;
+    let root = root.as_ref();
+    write_if_missing(&root.join(README_ITALIAN), README_TEXT_ITALIAN)?;
+    write_if_missing(&root.join(README_ENGLISH), README_TEXT_ENGLISH)?;
     Ok(())
 }
 
@@ -261,7 +273,7 @@ pub const fn quick_guide_file_name(locale: Locale) -> &'static str {
 /// Puts the quick guide in the books folder as a first book, in `locale`.
 /// A file already there is never replaced; returns whether it wrote.
 pub fn write_quick_guide(root: impl AsRef<Path>, locale: Locale) -> io::Result<bool> {
-    let books = data_directory(root.as_ref()).join(CONTENT_DIRECTORIES[0]);
+    let books = root.as_ref().join(BOOKS_FOLDER);
     fs::create_dir_all(&books)?;
     let text = match locale {
         Locale::English => QUICK_GUIDE_ENGLISH,
@@ -271,44 +283,44 @@ pub fn write_quick_guide(root: impl AsRef<Path>, locale: Locale) -> io::Result<b
 }
 
 const README_TEXT_ITALIAN: &str = "\
-RUSTMIX WAVE - COSA C'E' IN QUESTA CARTELLA\r\n\
+RUSTMIX WAVE - COSA C'E' SU QUESTA SCHEDA\r\n\
 \r\n\
-Questa cartella e' usata dal lettore. Le sottocartelle da riempire sono tre:\r\n\
+Le cartelle da riempire sono tre:\r\n\
 \r\n\
-BOOKS   i libri, in formato EPUB o TXT\r\n\
-AUDIO   gli audiolibri in MP3: un file per titolo, oppure una cartella\r\n\
-        per titolo con dentro le tracce\r\n\
-SLEEP   le immagini mostrate quando il dispositivo e' in standby\r\n\
+Books        i libri, in formato EPUB o TXT\r\n\
+Audiobooks   gli audiolibri in MP3: un file per titolo, oppure una\r\n\
+             cartella per titolo con dentro le tracce\r\n\
+Wallpapers   le immagini mostrate quando il dispositivo e' in standby\r\n\
 \r\n\
 Per copiare i file puoi:\r\n\
 - collegare il dispositivo al computer: Home > Carica > Cavo USB;\r\n\
 - usare il telefono, senza cavo: Home > Carica > Wi-Fi;\r\n\
 - togliere la scheda e leggerla dal computer.\r\n\
 \r\n\
-Gli altri file (WIFI.TXT, CLOCK.TXT, DISPLAY.TXT, la cartella READER e\r\n\
-simili) sono impostazioni e posizioni di lettura: non serve toccarli.\r\n\
-Cancellarli riporta il dispositivo alle impostazioni iniziali.\r\n\
+La cartella System contiene impostazioni, posizioni di lettura e\r\n\
+statistiche: non serve toccarla. Cancellarla riporta il dispositivo alle\r\n\
+impostazioni iniziali.\r\n\
 \r\n\
 La scheda deve essere formattata in FAT32 (non exFAT).\r\n";
 
 const README_TEXT_ENGLISH: &str = "\
-RUSTMIX WAVE - WHAT IS IN THIS FOLDER\r\n\
+RUSTMIX WAVE - WHAT IS ON THIS CARD\r\n\
 \r\n\
-This folder is used by the reader. There are three folders to fill:\r\n\
+There are three folders to fill:\r\n\
 \r\n\
-BOOKS   books, as EPUB or TXT files\r\n\
-AUDIO   MP3 audiobooks: one file per title, or one folder per title\r\n\
-        with its tracks inside\r\n\
-SLEEP   images shown while the device is in standby\r\n\
+Books        books, as EPUB or TXT files\r\n\
+Audiobooks   MP3 audiobooks: one file per title, or one folder per title\r\n\
+             with its tracks inside\r\n\
+Wallpapers   images shown while the device is in standby\r\n\
 \r\n\
 To copy files you can:\r\n\
 - connect the device to a computer: Home > Upload > USB cable;\r\n\
 - use a phone, without a cable: Home > Upload > Wi-Fi;\r\n\
 - take the card out and read it from a computer.\r\n\
 \r\n\
-The other files (WIFI.TXT, CLOCK.TXT, DISPLAY.TXT, the READER folder and\r\n\
-the like) are settings and reading positions: there is no need to touch\r\n\
-them. Deleting them puts the device back to its first settings.\r\n\
+The System folder holds settings, reading positions and statistics: there\r\n\
+is no need to touch it. Deleting it puts the device back to its first\r\n\
+settings.\r\n\
 \r\n\
 The card must be formatted as FAT32 (not exFAT).\r\n";
 
@@ -346,7 +358,7 @@ La posizione si salva da sola a ogni pagina. Dalla Home, \u{00AB}Continua\u{00BB
 \n\
 AGGIUNGERE LIBRI\n\
 \n\
-I libri sono file EPUB o TXT nella cartella RUSTMIX/BOOKS della scheda di memoria. Dalla Home apri \u{00AB}Carica\u{00BB} e scegli come copiarli.\n\
+I libri sono file EPUB o TXT nella cartella Books della scheda di memoria. Dalla Home apri \u{00AB}Carica\u{00BB} e scegli come copiarli.\n\
 \n\
 Wi-Fi: il dispositivo mostra un codice QR. Inquadralo con il telefono e si apre una pagina da cui caricare i libri. Se non hai ancora collegato una rete, la stessa pagina serve anche ad aggiungerla.\n\
 \n\
@@ -355,7 +367,7 @@ Cavo USB: collega il dispositivo al computer e la scheda compare come un disco. 
 \n\
 AUDIOLIBRI\n\
 \n\
-Gli audiolibri sono file MP3 nella cartella RUSTMIX/AUDIO: un file per titolo, oppure una cartella per titolo con dentro le tracce. Nel lettore la rotella regola il volume, SELECT mette in pausa e la rotella tenuta premuta apre il menu.\n\
+Gli audiolibri sono file MP3 nella cartella Audiobooks: un file per titolo, oppure una cartella per titolo con dentro le tracce. Nel lettore la rotella regola il volume, SELECT mette in pausa e la rotella tenuta premuta apre il menu.\n\
 \n\
 \n\
 LO SCHERMO\n\
@@ -405,7 +417,7 @@ Your place is saved by itself at every page. From Home, \"Continue\" reopens the
 \n\
 ADDING BOOKS\n\
 \n\
-Books are EPUB or TXT files in the RUSTMIX/BOOKS folder of the memory card. From Home open \"Upload\" and choose how to copy them.\n\
+Books are EPUB or TXT files in the Books folder of the memory card. From Home open \"Upload\" and choose how to copy them.\n\
 \n\
 Wi-Fi: the device shows a QR code. Point a phone at it and a page opens to upload books from. If no network is connected yet, the same page also adds one.\n\
 \n\
@@ -414,7 +426,7 @@ USB cable: connect the device to a computer and the card shows up as a disk. It 
 \n\
 AUDIOBOOKS\n\
 \n\
-Audiobooks are MP3 files in the RUSTMIX/AUDIO folder: one file per title, or one folder per title with its tracks inside. In the player the rocker sets the volume, SELECT pauses and the rocker held down opens the menu.\n\
+Audiobooks are MP3 files in the Audiobooks folder: one file per title, or one folder per title with its tracks inside. In the player the rocker sets the volume, SELECT pauses and the rocker held down opens the menu.\n\
 \n\
 \n\
 THE SCREEN\n\
@@ -457,12 +469,12 @@ mod tests {
     #[test]
     fn an_empty_card_gets_its_folders_and_counts_as_new() {
         let card = temp_card("new");
-        // The boot log makes RUSTMIX before anything looks at the card.
-        fs::create_dir_all(card.join("RUSTMIX")).unwrap();
-        fs::write(card.join("RUSTMIX/BOOTTIME.LOG"), "boot\n").unwrap();
+        // The boot log makes System before anything looks at the card.
+        fs::create_dir_all(card.join("System")).unwrap();
+        fs::write(card.join("System/BOOTTIME.LOG"), "boot\n").unwrap();
         assert!(prepare_card(&card).unwrap());
-        for directory in ["BOOKS", "AUDIO", "SLEEP"] {
-            assert!(card.join("RUSTMIX").join(directory).is_dir());
+        for directory in ["Books", "Audiobooks", "Wallpapers", "System"] {
+            assert!(card.join(directory).is_dir());
         }
         // Empty folders and logs are not use.
         assert_eq!(card_setup(&card), CardSetup::New);
@@ -474,16 +486,22 @@ mod tests {
 
     #[test]
     fn settings_or_books_mean_the_card_was_used() {
-        for used in ["WIFI.TXT", "CLOCK.TXT", "DISPLAY.TXT", "BOOKS/Libro.epub"] {
+        for used in [
+            "System/WIFI.TXT",
+            "System/CLOCK.TXT",
+            "System/DISPLAY.TXT",
+            "Books/Libro.epub",
+            "Audiobooks/Racconto.mp3",
+        ] {
             let card = temp_card("used");
             prepare_card(&card).unwrap();
-            fs::write(card.join("RUSTMIX").join(used), "x").unwrap();
+            fs::write(card.join(used), "x").unwrap();
             assert_eq!(card_setup(&card), CardSetup::Used, "{used}");
             fs::remove_dir_all(&card).unwrap();
         }
         let card = temp_card("used-reader");
-        fs::create_dir_all(card.join("RUSTMIX/READER")).unwrap();
-        fs::write(card.join("RUSTMIX/READER/STATE.TXT"), "x").unwrap();
+        fs::create_dir_all(card.join("System/READER")).unwrap();
+        fs::write(card.join("System/READER/STATE.TXT"), "x").unwrap();
         assert_eq!(card_setup(&card), CardSetup::Used);
         fs::remove_dir_all(&card).unwrap();
     }
@@ -509,7 +527,7 @@ mod tests {
         save_progress(&card, SetupProgress::Done).unwrap();
         assert_eq!(card_setup(&card), CardSetup::Done);
         // A marker with nothing usable in it never restarts the pages.
-        fs::write(card.join("RUSTMIX/SETUP.TXT"), "garbage\n").unwrap();
+        fs::write(card.join("System/SETUP.TXT"), "garbage\n").unwrap();
         assert_eq!(card_setup(&card), CardSetup::Done);
         fs::remove_dir_all(&card).unwrap();
     }
@@ -520,7 +538,7 @@ mod tests {
         prepare_card(&card).unwrap();
         write_quick_guide(&card, Locale::Italian).unwrap();
         write_quick_guide(&card, Locale::English).unwrap();
-        let books = crate::reader::scan_txt_library(card.join("RUSTMIX/BOOKS"), &[]).unwrap();
+        let books = crate::reader::scan_txt_library(card.join("Books"), &[]).unwrap();
         let titles: Vec<&str> = books.iter().map(|book| book.title.as_str()).collect();
         assert_eq!(titles, ["Guida rapida", "Quick guide"]);
         fs::remove_dir_all(&card).unwrap();
@@ -531,22 +549,19 @@ mod tests {
         let card = temp_card("guide");
         prepare_card(&card).unwrap();
         let guide = card
-            .join("RUSTMIX/BOOKS")
+            .join("Books")
             .join(quick_guide_file_name(Locale::English));
         fs::write(&guide, "mine").unwrap();
         assert!(!write_quick_guide(&card, Locale::English).unwrap());
         assert_eq!(fs::read_to_string(&guide).unwrap(), "mine");
         assert!(write_quick_guide(&card, Locale::Italian).unwrap());
 
-        fs::write(card.join("RUSTMIX/README.TXT"), "mine").unwrap();
+        fs::write(card.join("README.TXT"), "mine").unwrap();
         write_readme(&card).unwrap();
-        assert_eq!(
-            fs::read_to_string(card.join("RUSTMIX/README.TXT")).unwrap(),
-            "mine"
-        );
-        assert!(fs::read_to_string(card.join("RUSTMIX/LEGGIMI.TXT"))
+        assert_eq!(fs::read_to_string(card.join("README.TXT")).unwrap(), "mine");
+        assert!(fs::read_to_string(card.join("LEGGIMI.TXT"))
             .unwrap()
-            .contains("BOOKS"));
+            .contains("Books"));
         fs::remove_dir_all(&card).unwrap();
     }
 }

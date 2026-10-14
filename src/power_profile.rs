@@ -207,7 +207,7 @@ impl PowerProfileTracker {
 /// Serial/JTAG console cannot survive it), so the windows that matter are
 /// recorded on battery or a wall charger with no serial monitor attached,
 /// and read back from the card afterwards.
-pub const POWER_PROFILE_SD_LOG_PATH: &str = "/sdcard/RUSTMIX/PMPROF.TXT";
+pub const POWER_PROFILE_SD_LOG_PATH: &str = "/sdcard/System/PMPROF.TXT";
 
 /// Append one window's lines to [`POWER_PROFILE_SD_LOG_PATH`], prefixed with
 /// uptime so windows from different boots can be told apart. Best effort:

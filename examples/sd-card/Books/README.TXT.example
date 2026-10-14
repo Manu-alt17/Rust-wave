@@ -1,7 +1,7 @@
 Rustmix Wave books
 
-Copy .txt and .epub books into /RUSTMIX/BOOKS on the SD card.
+Copy .txt and .epub books into /Books on the SD card.
 Text files may be UTF-8 (with or without BOM) or Windows-1252.
 
 Reader state, recent books, bookmarks, covers and page caches are created
-automatically under /RUSTMIX/READER.
+automatically under /System/READER.

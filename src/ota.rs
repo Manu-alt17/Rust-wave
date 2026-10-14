@@ -46,7 +46,7 @@ pub const MAX_RELEASE_LIST_BYTES: usize = 160 * 1024;
 /// newest release.
 pub const RELEASE_LIST_LENGTH: usize = 20;
 /// Where the channel chosen on the Software Update screen is kept.
-pub const UPDATE_CONFIG_PATH: &str = "/sdcard/RUSTMIX/UPDATE.TXT";
+pub const UPDATE_CONFIG_PATH: &str = "/sdcard/System/UPDATE.TXT";
 
 /// Which releases the device updates from. Stable follows GitHub's latest
 /// release, which is never a pre-release. Beta follows the highest version
