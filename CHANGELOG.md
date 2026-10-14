@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.5.0 — Stable: the card in four folders, big books, a USB disk that lets go
+
+The first stable release of the E-ink merge: everything in the v1.5.0 betas below, published as stable from `feature/ota-update`, which now holds the beta line. A card of an earlier firmware is moved to the new folders by itself on the first start. Since v1.5.0-beta.5:
 
 microSD layout:
 
@@ -191,6 +193,12 @@ Faster:
 - SD at 20 MHz again, and large reads into PSRAM through an internal buffer (2.3 times faster).
 - SD reads that start mid-sector go up to the sector boundary first: the SD driver read them one sector per command (a 1.46 MB cover: 4.7 s, now 1.3 s).
 - The library visible set, sleep-image checks, the kept `.EPX` handle, and no Wi-Fi scan with a single saved network.
+
+## v1.4.9 — Portal Fix and Update Channels
+
+- Wi-Fi portal: the protected configuration files (`WIFI.TXT` and the others) are refused by the path actually resolved, in the resolver every file endpoint goes through, instead of by the raw query value, so no other spelling of their names gets past the check.
+- Software Update: choose the update channel with UP/DOWN. Stable keeps following the latest release; Beta takes the highest version among the five most recent releases, pre-releases included. Versions now compare with SemVer precedence (`1.5.0-beta.1` < `1.5.0-beta.2` < `1.5.0`). The channel is saved in `/RUSTMIX/UPDATE.TXT`.
+- `docs/RELEASE.md` explains how to publish stable and beta OTA releases; `docs/USER_GUIDE.md` documents the Software Update screen.
 
 ## v1.4.x — PMIC Power-Off Shutdown
 
