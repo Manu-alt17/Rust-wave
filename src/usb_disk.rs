@@ -21,6 +21,8 @@ pub enum UsbDiskPhase {
     /// Disk mode could not start after the card was unmounted; a key
     /// restarts the device, which mounts it again.
     Failed(String),
+    /// A key ended disk mode: the device is restarting.
+    Restarting,
 }
 
 #[cfg(target_os = "espidf")]

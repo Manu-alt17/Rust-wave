@@ -2820,7 +2820,22 @@ mod firmware {
                                     }
                                     // The card is unmounted either way:
                                     // only a restart mounts it again.
-                                    wait_for_usb_disk_exit(&input_queue);
+                                    let key =
+                                        wait_for_usb_disk_exit(&input_queue, &mut board_services);
+                                    info!("rustmix-wave=usb-disk status=restarting key={key}");
+                                    // Said on the glass: Home takes a few
+                                    // seconds to come back.
+                                    state.usb_disk = UsbDiskPhase::Restarting;
+                                    if let Err(error) = refresh_screen(
+                                        &mut panel,
+                                        &mut frame,
+                                        &mut state,
+                                        &mut panel_refresh,
+                                        RefreshRequest::Normal,
+                                    ) {
+                                        warn!("rustmix-wave=usb-disk status=restart-screen-failed error={error:?}");
+                                    }
+                                    usb_disk::espidf::restart();
                                 }
                             }
                         }
@@ -4233,21 +4248,29 @@ mod firmware {
     }
 
     /// Disk mode's only loop: nothing else runs while the PC owns the card.
-    /// Any key restarts the device, BOOT too: GPIO0 is a strapping pin, and
-    /// a restart with it held down would enter download mode, but its event
-    /// arrives only once the key is up again (see `BootBackButton::poll`).
-    /// Presses queued before disk mode began are dropped, so only a fresh
-    /// one ends it.
-    fn wait_for_usb_disk_exit(input_queue: &InputEventQueue) -> ! {
+    /// Returns the key that ends it, for the caller to restart: any key,
+    /// BOOT too, or the power key. GPIO0 is a strapping pin, and a restart
+    /// with it held down would enter download mode, but its event arrives
+    /// only once the key is up again (see `BootBackButton::poll`). Presses
+    /// queued before disk mode began are dropped, so only a fresh one ends
+    /// it.
+    fn wait_for_usb_disk_exit<I2C>(
+        input_queue: &InputEventQueue,
+        board_services: &mut BoardServices<I2C>,
+    ) -> &'static str
+    where
+        I2C: embedded_hal::i2c::I2c,
+        I2C::Error: core::fmt::Debug,
+    {
         while input_queue.pop().is_some() {}
+        let _ = board_services.take_power_key_event();
         loop {
-            input_queue.wait_timeout(Duration::from_millis(500));
+            input_queue.wait_timeout(Duration::from_millis(250));
             if let Some(event) = input_queue.pop() {
-                info!(
-                    "rustmix-wave=usb-disk status=restarting key={}",
-                    event.marker()
-                );
-                usb_disk::espidf::restart();
+                return event.marker();
+            }
+            if let Ok(Some(event)) = board_services.take_power_key_event() {
+                return event.marker();
             }
         }
     }

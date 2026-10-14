@@ -1434,6 +1434,13 @@ fn scenarios() -> Vec<(String, Arrange)> {
             state.router.navigate_to(ScreenRoute::UsbDisk);
         }),
     );
+    add(
+        "usb-restarting",
+        Box::new(|state| {
+            state.usb_disk = UsbDiskPhase::Restarting;
+            state.router.navigate_to(ScreenRoute::UsbDisk);
+        }),
+    );
 
     // --- First run ---------------------------------------------------------
     add(

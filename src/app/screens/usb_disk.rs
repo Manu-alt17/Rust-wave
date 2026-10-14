@@ -68,6 +68,16 @@ pub fn render_usb_disk(
             .to_string(),
             footer_hints(locale, &[(FooterKey::Boot, back_action(locale))]),
         ),
+        UsbDiskPhase::Restarting => (
+            t(locale, "Restarting", "Riavvio"),
+            t(
+                locale,
+                "The device restarts and reads the card again.",
+                "Il dispositivo si riavvia e rilegge la scheda.",
+            )
+            .to_string(),
+            String::new(),
+        ),
         UsbDiskPhase::Failed(error) => (
             t(locale, "Not connected", "Collegamento non riuscito"),
             format!(

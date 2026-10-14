@@ -5,8 +5,10 @@
 #include "driver/sdmmc_host.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "ff.h"
+#include "sdkconfig.h"
 #include "sdmmc_cmd.h"
 #include "soc/rtc_cntl_struct.h"
 #include "tinyusb.h"
@@ -35,9 +37,33 @@ FRESULT __wrap_f_mkfs(const TCHAR *path, const MKFS_PARM *opt, void *work, UINT 
     return FR_DENIED;
 }
 
-/* Same bus speed the firmware mounts the card at (SDMMC_STABLE_SPEED_KHZ in
- * src/storage.rs). USB 1.1 Full Speed caps the transfer well below it. */
+/* Half the bus speed the firmware mounts the card at (SDMMC_STABLE_SPEED_KHZ
+ * in src/storage.rs): USB 1.1 Full Speed caps the transfer well below both. */
 #define USBDISK_SD_SPEED_KHZ 10000
+
+/* Disk mode keeps the chip awake and at full clock until it restarts.
+ * Automatic light sleep stops USB-OTG's clocks, and the guard the firmware
+ * relies on for the serial port (CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION) only
+ * watches the USB-Serial-JTAG side: with the PHY handed to USB-OTG it saw no
+ * host, and let the chip sleep between two requests of a PC reading the
+ * disk. Nothing releases these locks: disk mode ends with a restart. */
+static void keep_awake(void)
+{
+#if CONFIG_PM_ENABLE
+    static const esp_pm_lock_type_t kinds[] = {
+        ESP_PM_NO_LIGHT_SLEEP,
+        ESP_PM_APB_FREQ_MAX,
+        ESP_PM_CPU_FREQ_MAX,
+    };
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        esp_pm_lock_handle_t lock = NULL;
+        if (esp_pm_lock_create(kinds[i], 0, "usbdisk", &lock) != ESP_OK
+                || esp_pm_lock_acquire(lock) != ESP_OK) {
+            ESP_LOGW(TAG, "power lock %d not held", (int) kinds[i]);
+        }
+    }
+#endif
+}
 
 /* --- USB descriptors ---
  *
@@ -75,8 +101,11 @@ static tusb_desc_device_t s_device_desc = {
     .bNumConfigurations = 0x01,
 };
 
+/* No remote wakeup, unlike the example: a disk never wakes the PC, and
+ * offering it lets the host suspend the device whenever it is idle, which
+ * laptops do to save power. */
 static const uint8_t s_fs_config_desc[] = {
-    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, TUSB_DESC_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, TUSB_DESC_TOTAL_LEN, 0, 100),
     TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, 0, EDPT_MSC_OUT, EDPT_MSC_IN, 64),
 };
 
@@ -142,6 +171,7 @@ static esp_err_t init_card_raw(int clk, int cmd, int d0, int d1, int d2, int d3,
 
 esp_err_t usbdisk_start(int clk, int cmd, int d0, int d1, int d2, int d3)
 {
+    keep_awake();
     sdmmc_card_t *card = NULL;
     ESP_RETURN_ON_ERROR(init_card_raw(clk, cmd, d0, d1, d2, d3, &card), TAG, "SD card init failed");
 

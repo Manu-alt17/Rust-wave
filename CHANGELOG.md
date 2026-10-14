@@ -25,7 +25,9 @@ Settings and Files:
 Connect to PC:
 
 - **Cavo USB** in Upload starts disk mode with that SELECT; the second SELECT on the screen that followed is gone. **Collega al PC** in the first-run pages does the same.
-- Any key ends disk mode and restarts the device, BOOT included: it was ignored, and the screen looked impossible to leave. BOOT is safe here because its event arrives only once the key is up again, so GPIO0, a strapping pin, is no longer held at the restart.
+- The device fell into automatic light sleep while a computer was using the disk: the guard that keeps it awake with a host attached (`CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`) watches the USB-Serial-JTAG side, which in disk mode no longer has the PHY, so it saw no host. Light sleep stops USB-OTG's clocks: the disk stopped answering between two requests, Windows Explorer crashed on a laptop, and the device no longer reacted to any key, only to the power key held down. Disk mode now holds the no-light-sleep, APB and CPU frequency locks until its restart (`components/usbdisk`), and no longer offers USB remote wakeup, which lets a laptop suspend an idle device. Checked on a desktop and on the laptop that crashed.
+- Any key ends disk mode and restarts the device, BOOT included, and so does the power key. BOOT is safe here because its event arrives only once the key is up again, so GPIO0, a strapping pin, is no longer held at the restart. The screen says **Riavvio** at once.
+- Building: esp-idf-sys does not rebuild the C components when only their sources change; after editing `components/usbdisk`, run `cargo clean -p esp-idf-sys --release` before the build, or the old code is linked.
 - Without a readable card nothing is handed over: the screen says so and BOOT goes back. Before, the device stayed in the disk-mode loop, waiting for a key that would only restart it.
 - What is still only in memory (the reading position, the open statistics session) is saved before the card goes to the computer, as before a restart.
 

@@ -65,7 +65,7 @@ Run this checklist after a release build or any cross-cutting runtime change. Do
 ## Connect to PC
 
 1. Home → Carica → Cavo USB, connect the cable: that one SELECT starts disk mode, the computer sees the microSD as a disk, and the serial port disappears.
-2. Copy a book and an audiobook, eject the disk on the computer, press any key on the device, BOOT included: it restarts, the serial port is back, and the new book and audiobook are listed.
+2. Copy a book and an audiobook, eject the disk on the computer, press any key on the device, BOOT or the power key included: it shows **Riavvio** and restarts, the serial port is back, and the new book and audiobook are listed. Do it on a laptop too, leaving the disk idle in Explorer for a minute first: the device must keep answering.
 3. Repeat, pulling the cable without ejecting: the card must not be formatted.
 
 ## Network

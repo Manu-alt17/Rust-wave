@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "usbdisk.c"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES sdmmc esp_driver_sdmmc fatfs
+    PRIV_REQUIRES sdmmc esp_driver_sdmmc fatfs esp_pm
 )
 
 # Nothing in this firmware may ever format the SD card: every call to

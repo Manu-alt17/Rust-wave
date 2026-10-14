@@ -198,7 +198,7 @@ Home → Carica → **Cavo USB** starts it with that same SELECT. Connect the bo
 
 <img src="../screenshots/rendered-usb-disk-active.png" width="360" alt="Connected to PC">
 
-When done, eject the disk on the computer, then press any key on the device, BOOT included: it restarts and finds the new files. The firmware never formats the card, not even when the computer is unplugged without ejecting.
+When done, eject the disk on the computer, then press any key on the device, BOOT or the power key included: it shows **Riavvio**, restarts and finds the new files. The firmware never formats the card, not even when the computer is unplugged without ejecting.
 
 ## 10. Standby and power
 
